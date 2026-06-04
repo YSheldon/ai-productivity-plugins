@@ -8,12 +8,13 @@ __pycache__/
 !.env.example
 
 # Never commit real mailbox credentials or generated account files.
-.china-email/
+.imap-smtp-mail/
 accounts.json
 config/accounts.json
 plugins/*/config/accounts.json
 
 # Local plugin/runtime outputs.
+.omx/
 downloads/
 plugins/*/downloads/
 

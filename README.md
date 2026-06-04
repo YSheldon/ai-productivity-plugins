@@ -41,9 +41,9 @@ cp ./plugins/imap-smtp-mail/config/accounts.example.json ~/.imap-smtp-mail/accou
 
 该插件不新增独立 MCP wrapper，也不重新封装 OpenAPI；它打包现有 `lark-*` skill，并沿用本机已安装和已登录的 `lark-cli`。
 
-## 从 GitLab 安装
+## 从 GitHub 安装
 
-把这个仓库发布到 GitLab 后，其他用户在 Codex App 中打开或克隆该仓库即可看到这个本地插件市场。
+把这个仓库发布到 GitHub 后，其他用户在 Codex App 中打开或克隆该仓库即可看到这个本地插件市场。
 如果要进入官方公共插件市场，还需要按官方发布流程提交审核；本仓库已经具备本地 marketplace 结构。
 
 本仓库只提交插件源码、skill 和示例配置，不包含任何真实邮箱账号、授权码、飞书 token 或本机缓存。真实邮箱账号配置会保存在使用者自己的 `~/.imap-smtp-mail/accounts.json`。

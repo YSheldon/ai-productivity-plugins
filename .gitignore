@@ -1,0 +1,22 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.pyo
+
+.env
+.env.*
+!.env.example
+
+# Never commit real mailbox credentials or generated account files.
+.china-email/
+accounts.json
+config/accounts.json
+plugins/*/config/accounts.json
+
+# Local plugin/runtime outputs.
+downloads/
+plugins/*/downloads/
+
+# Unrelated local experiments in this workspace; not part of the plugin repo.
+bilibili-homepage/
+saas-pricing/

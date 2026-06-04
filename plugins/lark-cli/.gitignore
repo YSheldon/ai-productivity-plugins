@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Do not store exported Feishu/Lark content or local credentials in the plugin.
+downloads/
+exports/
+.env
+.env.*

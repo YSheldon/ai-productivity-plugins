@@ -1,0 +1,37 @@
+{
+  "name": "lark-cli",
+  "version": "0.1.0",
+  "description": "Bundle existing Lark/Feishu lark-cli skills for Codex.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "lark",
+    "feishu",
+    "cli",
+    "docs",
+    "wiki"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "飞书 / Lark CLI",
+    "shortDescription": "通过本机 lark-cli 操作飞书",
+    "longDescription": "Packaged and maintained by Sheldon. This plugin bundles the existing Feishu/Lark skills for lark-cli so Codex can use the same documented workflows for docs, wiki, sheets, base, calendar, IM, mail, approval, tasks, whiteboards, meetings, and OpenAPI exploration.",
+    "developerName": "Sheldon",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "读取飞书文档并总结",
+      "用飞书云文档创建一份报告",
+      "查询我的飞书日程"
+    ],
+    "brandColor": "#3370FF",
+    "composerIcon": "./assets/lark-cli.svg",
+    "logo": "./assets/lark-cli.svg",
+    "screenshots": []
+  }
+}

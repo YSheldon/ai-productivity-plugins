@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Lark CLI">
+  <rect width="128" height="128" rx="28" fill="#3370ff"/>
+  <path d="M33 37h39c13 0 23 10 23 23v31H82V61c0-6-4-11-10-11H33V37z" fill="#fff"/>
+  <path d="M33 61h25c8 0 14 6 14 14v16H59V76c0-2-2-4-4-4H33V61z" fill="#9fd0ff"/>
+  <path d="M33 85h14v14H33V85z" fill="#fff"/>
+</svg>

@@ -1,0 +1,32 @@
+{
+  "name": "ai-productivity-plugins",
+  "interface": {
+    "displayName": "AI 生产力插件集"
+  },
+  "plugins": [
+    {
+      "name": "imap-smtp-mail",
+      "source": {
+        "source": "local",
+        "path": "./plugins/imap-smtp-mail"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "lark-cli",
+      "source": {
+        "source": "local",
+        "path": "./plugins/lark-cli"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

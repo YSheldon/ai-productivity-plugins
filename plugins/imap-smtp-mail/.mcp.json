@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "imap-smtp-mail": {
+      "command": "python3",
+      "args": [
+        "./src/imap_smtp_mail_mcp.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

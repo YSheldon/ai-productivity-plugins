@@ -1,0 +1,35 @@
+{
+  "accounts": [
+    {
+      "name": "qq-personal",
+      "provider": "qq",
+      "email": "your-name@qq.com",
+      "username": "your-name@qq.com",
+      "password": "use-email-authorization-code-here"
+    },
+    {
+      "name": "netease-163",
+      "provider": "163",
+      "email": "your-name@163.com",
+      "username": "your-name@163.com",
+      "password": "use-client-authorization-password-here"
+    },
+    {
+      "name": "custom-company",
+      "provider": "custom",
+      "email": "you@example.cn",
+      "username": "you@example.cn",
+      "password": "use-client-or-app-password-here",
+      "imap": {
+        "host": "imap.example.cn",
+        "port": 993,
+        "secure": true
+      },
+      "smtp": {
+        "host": "smtp.example.cn",
+        "port": 465,
+        "secure": true
+      }
+    }
+  ]
+}

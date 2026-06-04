@@ -1,0 +1,39 @@
+{
+  "name": "imap-smtp-mail",
+  "version": "0.1.0",
+  "description": "Read, search, summarize, and send email through IMAP/SMTP providers.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "email",
+    "imap",
+    "smtp",
+    "qq-mail",
+    "netease-mail",
+    "mail"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "IMAP/SMTP 邮箱",
+    "shortDescription": "连接 IMAP/SMTP 邮箱",
+    "longDescription": "Developed and maintained by Sheldon. Use IMAP/SMTP mailboxes such as QQ Mail, NetEase Mail, Ali Mail, 139 Mail, and custom enterprise mailboxes to search inboxes, read threads, save attachments, and draft or send email from Codex.",
+    "developerName": "Sheldon",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "打开邮箱配置向导",
+      "总结我最近的邮箱收件箱",
+      "帮我起草一封中文邮件回复"
+    ],
+    "brandColor": "#C2412D",
+    "composerIcon": "./assets/mail.svg",
+    "logo": "./assets/mail.svg",
+    "screenshots": []
+  }
+}

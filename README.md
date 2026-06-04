@@ -1,49 +1,50 @@
-# AI 生产力插件集
+# AI Productivity Plugins
 
-这个仓库是 Sheldon 维护的本地 Codex 插件市场。入口文件是：
+This repository is a local Codex plugin marketplace maintained by Sheldon. The marketplace entrypoint is:
 
 - `.agents/plugins/marketplace.json`
 
-当前已接入插件：
+## Included Plugins
 
-- `imap-smtp-mail`：Sheldon 开发和维护的 IMAP/SMTP 邮箱插件，支持 QQ 邮箱、网易 163/126/yeah、腾讯企业邮箱、阿里企业邮箱、139 邮箱和自定义 IMAP/SMTP 邮箱。
-- `lark-cli`：Sheldon 打包和维护的飞书 / Lark CLI 插件，复用现有飞书 `lark-*` skills，通过本机 `lark-cli` 操作文档、知识库、日程、消息、多维表格等。
+- `imap-smtp-mail`: an IMAP/SMTP mail plugin adapted from the original `imap-smtp-email` skill by [gzlicanyi](https://github.com/gzlicanyi). Original source: [openclaw/skills: skills/gzlicanyi/imap-smtp-email](https://github.com/openclaw/skills/tree/main/skills/gzlicanyi/imap-smtp-email). This local adaptation supports QQ Mail, NetEase 163/126/yeah, Tencent Exmail, Ali Mail, 139 Mail, and custom IMAP/SMTP mailboxes.
+- `lark-cli`: a Lark/Feishu CLI plugin packaged and maintained by Sheldon. It bundles the existing `lark-*` skills and uses the locally installed `lark-cli` to work with docs, wikis, calendars, messages, Base tables, sheets, and related workflows.
 
-## 在 Codex 中使用
+## Use In Codex
 
-在 Codex App 中打开这个仓库后，插件市场会读取 `.agents/plugins/marketplace.json`，并展示 `AI 生产力插件集` 下的 `IMAP/SMTP 邮箱` 和 `飞书 / Lark CLI` 插件。
+Open this repository in Codex App. Codex reads `.agents/plugins/marketplace.json` and shows the `IMAP/SMTP Mail` and `Lark / Feishu CLI` plugins under this local marketplace.
 
-安装 IMAP/SMTP 邮箱插件后，推荐直接让 Codex 打开本地配置向导：
+After installing the IMAP/SMTP Mail plugin, the recommended setup path is the local setup wizard. Ask Codex:
 
 ```text
-打开邮箱配置向导
+Open the mail setup wizard
 ```
 
-向导会在本机浏览器打开，用户选择邮箱服务商，填写邮箱地址和授权码，然后点保存即可，不需要手动改 JSON。
+The wizard opens a local browser page. Choose the mail provider, enter the mailbox address and client authorization code, then save. You do not need to edit JSON by hand.
 
-也可以手动配置：
+Manual configuration is also supported:
 
 ```bash
 mkdir -p ~/.imap-smtp-mail
 cp ./plugins/imap-smtp-mail/config/accounts.example.json ~/.imap-smtp-mail/accounts.json
 ```
 
-编辑 `~/.imap-smtp-mail/accounts.json`，填入邮箱地址、账号名和客户端授权码。
+Edit `~/.imap-smtp-mail/accounts.json` with the email address, username, and client authorization code.
 
-不要使用网页登录密码；QQ、网易等邮箱通常需要先在网页端设置里开启 IMAP/SMTP，并生成授权码或客户端专用密码。
+Do not use a web login password. Providers such as QQ Mail and NetEase usually require IMAP/SMTP to be enabled in the web mailbox settings first, then an authorization code or app-specific password must be generated.
 
-安装飞书 / Lark CLI 插件后，可以直接使用现有飞书 skill 的表达方式，例如：
+After installing the Lark / Feishu CLI plugin, use the existing Lark skill prompts, for example:
 
 ```text
-读取飞书文档并总结
-查询我的飞书日程
+Read and summarize a Lark document
+Check my Lark calendar
 ```
 
-该插件不新增独立 MCP wrapper，也不重新封装 OpenAPI；它打包现有 `lark-*` skill，并沿用本机已安装和已登录的 `lark-cli`。
+The plugin does not add a separate MCP wrapper and does not reimplement Lark OpenAPI calls. It packages the existing `lark-*` skills and keeps using the locally installed and authenticated `lark-cli`.
 
-## 从 GitHub 安装
+## Install From GitHub
 
-把这个仓库发布到 GitHub 后，其他用户在 Codex App 中打开或克隆该仓库即可看到这个本地插件市场。
-如果要进入官方公共插件市场，还需要按官方发布流程提交审核；本仓库已经具备本地 marketplace 结构。
+Clone or open this repository in Codex App to load the local plugin marketplace.
 
-本仓库只提交插件源码、skill 和示例配置，不包含任何真实邮箱账号、授权码、飞书 token 或本机缓存。真实邮箱账号配置会保存在使用者自己的 `~/.imap-smtp-mail/accounts.json`。
+To publish these plugins in the official public marketplace, follow the official review and submission process. This repository already contains the local marketplace structure.
+
+Only plugin source, skills, and example configuration are committed. Real mailbox accounts, authorization codes, Lark tokens, and local runtime caches are not included. Real mailbox configuration belongs in each user's local `~/.imap-smtp-mail/accounts.json`.

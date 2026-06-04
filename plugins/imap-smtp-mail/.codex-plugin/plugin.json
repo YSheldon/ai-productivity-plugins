@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Read, search, summarize, and send email through IMAP/SMTP providers.",
   "author": {
-    "name": "Sheldon"
+    "name": "gzlicanyi; adapted by Sheldon"
   },
   "license": "MIT",
   "keywords": [
@@ -19,8 +19,8 @@
   "interface": {
     "displayName": "IMAP/SMTP 邮箱",
     "shortDescription": "连接 IMAP/SMTP 邮箱",
-    "longDescription": "Developed and maintained by Sheldon. Use IMAP/SMTP mailboxes such as QQ Mail, NetEase Mail, Ali Mail, 139 Mail, and custom enterprise mailboxes to search inboxes, read threads, save attachments, and draft or send email from Codex.",
-    "developerName": "Sheldon",
+    "longDescription": "Adapted from the original imap-smtp-email skill by gzlicanyi (https://github.com/gzlicanyi; source: https://github.com/openclaw/skills/tree/main/skills/gzlicanyi/imap-smtp-email). Use IMAP/SMTP mailboxes such as QQ Mail, NetEase Mail, Ali Mail, 139 Mail, and custom enterprise mailboxes to search inboxes, read threads, save attachments, and draft or send email from Codex.",
+    "developerName": "gzlicanyi; adapted by Sheldon",
     "category": "Productivity",
     "capabilities": [
       "Interactive",

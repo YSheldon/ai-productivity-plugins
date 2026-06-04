@@ -1,6 +1,7 @@
 # IMAP/SMTP Mail Codex Plugin
 
-Developed and maintained by Sheldon.
+Adapted from the original `imap-smtp-email` skill by [gzlicanyi](https://github.com/gzlicanyi).
+Original source: [openclaw/skills: skills/gzlicanyi/imap-smtp-email](https://github.com/openclaw/skills/tree/main/skills/gzlicanyi/imap-smtp-email).
 
 This plugin connects Codex to email providers through standard IMAP and SMTP.
 It is provider-neutral: QQ Mail, NetEase 163/126/yeah, Ali Mail, Tencent Exmail, 139 Mail,

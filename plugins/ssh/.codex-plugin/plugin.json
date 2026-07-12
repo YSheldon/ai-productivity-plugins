@@ -1,0 +1,39 @@
+{
+  "name": "ssh",
+  "version": "0.1.0",
+  "description": "Connect to verified SSH hosts, run remote commands and scripts, transfer files, and manage local SSH agent identities.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "ssh",
+    "openssh",
+    "remote-shell",
+    "scp",
+    "ssh-agent",
+    "server-operations"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "SSH",
+    "shortDescription": "Operate verified SSH hosts",
+    "longDescription": "Use the local OpenSSH client from Codex with strict host-key checking, public-key-only authentication, explicit connection timeouts, remote stdin scripts, SCP transfers, and local ssh-agent lifecycle helpers.",
+    "developerName": "Sheldon",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Test my SSH connection",
+      "Inspect the remote host over SSH",
+      "Run this remote maintenance script over SSH"
+    ],
+    "brandColor": "#1F6FEB",
+    "composerIcon": "./assets/ssh.svg",
+    "logo": "./assets/ssh.svg",
+    "screenshots": []
+  }
+}

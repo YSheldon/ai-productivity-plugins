@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "python3",
+      "args": [
+        "./src/ssh_mcp.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

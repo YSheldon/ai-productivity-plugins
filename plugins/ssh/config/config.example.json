@@ -1,0 +1,15 @@
+{
+  "default": "example",
+  "profiles": {
+    "example": {
+      "host": "ssh.example.internal",
+      "user": "root",
+      "port": 22,
+      "identity_file": "~/.ssh/id_ed25519",
+      "known_hosts_file": "~/.ssh/known_hosts",
+      "strict_host_key_checking": "yes",
+      "identities_only": true,
+      "connect_timeout_seconds": 10
+    }
+  }
+}

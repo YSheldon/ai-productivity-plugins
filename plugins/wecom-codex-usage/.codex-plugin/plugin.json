@@ -1,0 +1,38 @@
+{
+  "name": "wecom-codex-usage",
+  "version": "0.1.0",
+  "description": "Send WeCom app messages and read local Codex usage signals.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "wecom",
+    "wechat-work",
+    "codex",
+    "usage",
+    "notification"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "企业微信 / Codex 用量",
+    "shortDescription": "连接企业微信并汇总 Codex 用量",
+    "longDescription": "Connect Codex to WeCom through a self-built internal application, send application messages to users or departments, and read local Codex usage signals from the current machine. Secrets stay in the user profile config file and are not committed to the plugin.",
+    "developerName": "Sheldon",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "打开企业微信配置向导",
+      "发送一条企业微信测试消息给我",
+      "汇总当前 Codex 用量"
+    ],
+    "brandColor": "#1AAD19",
+    "composerIcon": "./assets/wecom.svg",
+    "logo": "./assets/wecom.svg",
+    "screenshots": []
+  }
+}

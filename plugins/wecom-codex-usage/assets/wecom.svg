@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="WeCom Codex Usage">
+  <rect width="128" height="128" rx="28" fill="#1AAD19"/>
+  <path fill="#fff" d="M37 40h54c8.3 0 15 6.7 15 15v18c0 8.3-6.7 15-15 15H63L47.5 99.4c-2.6 1.9-6.2 0-6.2-3.2V88H37c-8.3 0-15-6.7-15-15V55c0-8.3 6.7-15 15-15Z"/>
+  <circle cx="49" cy="64" r="6" fill="#1AAD19"/>
+  <circle cx="64" cy="64" r="6" fill="#1AAD19"/>
+  <circle cx="79" cy="64" r="6" fill="#1AAD19"/>
+  <path fill="#1AAD19" d="M55 27h36c8.8 0 16 7.2 16 16v7.3c-4.1-8-12.4-13.5-22-13.5H48.7C51.4 31 57.2 27 64 27h-9Z" opacity=".72"/>
+</svg>

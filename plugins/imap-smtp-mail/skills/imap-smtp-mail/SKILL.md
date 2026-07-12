@@ -15,7 +15,7 @@ The plugin is protocol-based, so prefer IMAP search and message reads before mak
 - The mailbox must have IMAP/SMTP enabled in the provider's web settings.
 - The password should be an authorization code, app password, or client password.
 - Prefer `imap_smtp_mail_start_setup` for setup so users do not need to edit JSON.
-- The account config is saved to `~/.imap-smtp-mail/accounts.json` by the setup wizard, and can still be overridden with `IMAP_SMTP_MAIL_CONFIG` or single-account environment variables.
+- The account config is saved to `~/.imap-smtp-mail/accounts.json` by the setup wizard. On Windows, credentials are protected with CurrentUser DPAPI before they are written, and the file ACL is restricted after every write. The path can still be overridden with `IMAP_SMTP_MAIL_CONFIG` or single-account environment variables.
 
 ## Workflow
 

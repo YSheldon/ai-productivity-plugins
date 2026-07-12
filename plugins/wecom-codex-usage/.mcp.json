@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "wecom-codex-usage": {
+      "command": "python3",
+      "args": [
+        "./src/wecom_codex_usage_mcp.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

@@ -9,9 +9,11 @@ __pycache__/
 
 # Never commit real mailbox credentials or generated account files.
 .imap-smtp-mail/
+.wecom-codex-usage/
 accounts.json
 config/accounts.json
 plugins/*/config/accounts.json
+plugins/*/config/config.json
 
 # Local plugin/runtime outputs.
 .omx/

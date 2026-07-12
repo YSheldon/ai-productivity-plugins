@@ -1,0 +1,11 @@
+{
+  "accounts": [
+    {
+      "name": "work",
+      "corp_id": "ww0000000000000000",
+      "corp_secret": "replace-with-your-wecom-app-secret",
+      "agent_id": 1000002,
+      "default_to_user": "@all"
+    }
+  ]
+}

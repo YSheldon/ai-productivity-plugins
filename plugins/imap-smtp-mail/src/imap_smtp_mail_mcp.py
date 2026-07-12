@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import base64
+import ctypes
 import email
 import email.utils
 import html
@@ -17,6 +19,7 @@ import secrets
 import smtplib
 import socketserver
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -50,6 +53,8 @@ DRAFT_MAILBOX_CANDIDATES: dict[str, list[str]] = {
     "yeah": ["&g0l6P3ux-", "Drafts"],
 }
 COMMON_DRAFT_MAILBOX_CANDIDATES = ["Drafts", "&g0l6P3ux-", "草稿箱", "草稿"]
+DPAPI_PREFIX = "dpapi-v1:"
+DPAPI_ENTROPY = b"imap-smtp-mail:password:v1"
 
 
 PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
@@ -135,6 +140,97 @@ def load_json_file(path: pathlib.Path) -> Any:
         return json.load(handle)
 
 
+class _DataBlob(ctypes.Structure):
+    _fields_ = [
+        ("cbData", ctypes.c_uint32),
+        ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
+    ]
+
+
+def _blob_from_bytes(value: bytes) -> tuple[_DataBlob, ctypes.Array[Any]]:
+    buffer = ctypes.create_string_buffer(value)
+    blob = _DataBlob(len(value), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    return blob, buffer
+
+
+def _require_windows_dpapi() -> None:
+    if os.name != "nt":
+        raise ToolError("Windows DPAPI credentials are only available on Windows.")
+
+
+def protect_password_dpapi(password: str) -> str:
+    _require_windows_dpapi()
+    plaintext_blob, plaintext_buffer = _blob_from_bytes(password.encode("utf-8"))
+    entropy_blob, entropy_buffer = _blob_from_bytes(DPAPI_ENTROPY)
+    protected_blob = _DataBlob()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    success = crypt32.CryptProtectData(
+        ctypes.byref(plaintext_blob),
+        SERVER_NAME,
+        ctypes.byref(entropy_blob),
+        None,
+        None,
+        0x1,
+        ctypes.byref(protected_blob),
+    )
+    del plaintext_buffer, entropy_buffer
+    if not success:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        protected = ctypes.string_at(protected_blob.pbData, protected_blob.cbData)
+        return DPAPI_PREFIX + base64.b64encode(protected).decode("ascii")
+    finally:
+        kernel32.LocalFree(protected_blob.pbData)
+
+
+def unprotect_password_dpapi(value: str) -> str:
+    _require_windows_dpapi()
+    if not value.startswith(DPAPI_PREFIX):
+        raise ToolError("Unsupported DPAPI password format.")
+    try:
+        protected = base64.b64decode(value[len(DPAPI_PREFIX) :], validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ToolError("Invalid DPAPI password payload.") from exc
+    protected_blob, protected_buffer = _blob_from_bytes(protected)
+    entropy_blob, entropy_buffer = _blob_from_bytes(DPAPI_ENTROPY)
+    plaintext_blob = _DataBlob()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    success = crypt32.CryptUnprotectData(
+        ctypes.byref(protected_blob),
+        None,
+        ctypes.byref(entropy_blob),
+        None,
+        None,
+        0x1,
+        ctypes.byref(plaintext_blob),
+    )
+    del protected_buffer, entropy_buffer
+    if not success:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        plaintext = ctypes.string_at(plaintext_blob.pbData, plaintext_blob.cbData)
+        return plaintext.decode("utf-8")
+    finally:
+        kernel32.LocalFree(plaintext_blob.pbData)
+
+
+def secure_raw_account_password(raw: dict[str, Any]) -> dict[str, Any]:
+    secured = dict(raw)
+    plaintext = secured.get("password") or secured.get("authCode") or secured.get("authorizationCode")
+    if plaintext:
+        if os.name != "nt":
+            return secured
+        secured["password_dpapi"] = protect_password_dpapi(str(plaintext))
+    elif not secured.get("password_dpapi"):
+        raise ToolError(f"Account {secured.get('name')} is missing password or authorization code.")
+    secured.pop("password", None)
+    secured.pop("authCode", None)
+    secured.pop("authorizationCode", None)
+    return secured
+
+
 def load_raw_accounts() -> tuple[list[dict[str, Any]], str | None]:
     accounts: list[dict[str, Any]] = []
     source: str | None = None
@@ -199,6 +295,8 @@ def normalize_account(raw: dict[str, Any]) -> dict[str, Any]:
     address = raw.get("email") or raw.get("address")
     username = raw.get("username") or raw.get("user") or address
     password = raw.get("password") or raw.get("authCode") or raw.get("authorizationCode")
+    if not password and raw.get("password_dpapi"):
+        password = unprotect_password_dpapi(str(raw["password_dpapi"]))
 
     if not raw.get("name"):
         raise ToolError("Each account needs a unique name.")
@@ -264,29 +362,81 @@ def load_config_payload(path: pathlib.Path) -> dict[str, Any]:
     raise ToolError(f"{path} must be a JSON object or array.")
 
 
+def harden_windows_config_acl(path: pathlib.Path) -> None:
+    if os.name != "nt":
+        return
+    identity = subprocess.run(
+        ["whoami.exe", "/user", "/fo", "csv", "/nh"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    sid_match = re.search(r"\bS-\d-(?:\d+-)+\d+\b", identity.stdout)
+    if identity.returncode != 0 or sid_match is None:
+        raise ToolError("Unable to resolve the current Windows user SID for credential ACL hardening.")
+
+    acl = subprocess.run(
+        [
+            "icacls.exe",
+            str(path),
+            "/inheritance:r",
+            "/grant:r",
+            f"*{sid_match.group(0)}:(F)",
+            "*S-1-5-18:(F)",
+            "*S-1-5-32-544:(F)",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if acl.returncode != 0:
+        detail = (acl.stderr or acl.stdout).strip()
+        raise ToolError(f"Unable to harden the credential config ACL: {detail}")
+
+
 def write_config_payload(path: pathlib.Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp_path.replace(path)
+    harden_windows_config_acl(path)
     try:
         os.chmod(path, 0o600)
     except OSError:
         pass
 
 
+def migrate_plaintext_passwords(path: pathlib.Path = DEFAULT_CONFIG_PATH) -> int:
+    payload = load_config_payload(path)
+    accounts = payload.setdefault("accounts", [])
+    migrated = 0
+    for index, raw_account in enumerate(accounts):
+        if not isinstance(raw_account, dict):
+            raise ToolError("Every account entry must be an object.")
+        has_plaintext = any(raw_account.get(key) for key in ("password", "authCode", "authorizationCode"))
+        secured_account = secure_raw_account_password(raw_account)
+        normalize_account(secured_account)
+        accounts[index] = secured_account
+        if has_plaintext:
+            migrated += 1
+    if migrated:
+        write_config_payload(path, payload)
+    return migrated
+
+
 def upsert_raw_account(raw_account: dict[str, Any], path: pathlib.Path = DEFAULT_CONFIG_PATH) -> None:
-    normalize_account(raw_account)
+    secured_account = secure_raw_account_password(raw_account)
+    normalize_account(secured_account)
     payload = load_config_payload(path)
     accounts = payload.setdefault("accounts", [])
     replaced = False
     for index, existing in enumerate(accounts):
         if isinstance(existing, dict) and existing.get("name") == raw_account["name"]:
-            accounts[index] = raw_account
+            accounts[index] = secured_account
             replaced = True
             break
     if not replaced:
-        accounts.append(raw_account)
+        accounts.append(secured_account)
     write_config_payload(path, payload)
 
 
@@ -862,7 +1012,7 @@ def render_setup_page(token: str, provider: str | None = None, account_name: str
 <body>
   <main>
     <h1>邮箱配置向导</h1>
-    <p>选择邮箱服务商，填入邮箱地址和客户端授权码。配置会保存在本机 <code>~/.imap-smtp-mail/accounts.json</code>，不会上传到外部服务。</p>
+    <p>选择邮箱服务商，填入邮箱地址和客户端授权码。配置会保存在本机 <code>~/.imap-smtp-mail/accounts.json</code>；密码由 Windows 当前用户 DPAPI 加密，不会以明文写入配置文件。</p>
     {message_html}
     <form method="post" action="/save">
       <input type="hidden" name="token" value="{html_escape(token)}">
@@ -1692,5 +1842,8 @@ def run_stdio_server() -> None:
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "setup":
         run_setup_wizard_cli()
+    elif len(sys.argv) > 1 and sys.argv[1] == "migrate-credentials":
+        migrated_count = migrate_plaintext_passwords()
+        print(f"Migrated {migrated_count} plaintext credential(s) to CurrentUser DPAPI.")
     else:
         run_stdio_server()

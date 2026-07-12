@@ -34,7 +34,7 @@ The recommended path is the local setup wizard. After installing the plugin, ask
 打开邮箱配置向导
 ```
 
-The plugin starts a local browser page on `127.0.0.1`. Choose the provider, enter the email address and mailbox authorization code, then click save. The wizard writes the account file for you.
+The plugin starts a local browser page on `127.0.0.1`. Choose the provider, enter the email address and mailbox authorization code, then click save. On Windows, the wizard protects the credential with CurrentUser DPAPI and restricts the account file ACL to the current user, SYSTEM, and Administrators.
 
 You can also run the wizard directly:
 
@@ -53,6 +53,11 @@ Then edit `~/.imap-smtp-mail/accounts.json`.
 
 Use email client authorization codes or app passwords, not normal web login passwords.
 For many providers, IMAP/SMTP must be enabled in the web mailbox settings first.
+On Windows, migrate any legacy plaintext account file immediately after editing it:
+
+```powershell
+python .\src\imap_smtp_mail_mcp.py migrate-credentials
+```
 
 You can also point the plugin at another file:
 
@@ -105,6 +110,7 @@ Then send JSON-RPC messages over stdin. For example:
 
 - Do not commit real account configuration.
 - Prefer provider authorization codes over account passwords.
+- On Windows, the setup wizard and `migrate-credentials` store credentials as CurrentUser DPAPI ciphertext rather than plaintext JSON and re-harden the account file ACL after every write.
 - Prefer the local setup wizard over sending passwords or authorization codes in a Codex chat message.
 - Keep sending as an explicit action. The `imap_smtp_mail_send_email` tool defaults to `dry_run`, which writes a mailbox draft unless `preview_only` is set.
 - Attachment writes default to `~/Downloads/imap-smtp-mail-attachments`.

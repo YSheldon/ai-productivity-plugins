@@ -10,10 +10,11 @@ This repository is a local Codex plugin marketplace maintained by Sheldon. The m
 - `lark-cli`: a Lark/Feishu CLI plugin packaged and maintained by Sheldon. It bundles the existing `lark-*` skills and uses the locally installed `lark-cli` to work with docs, wikis, calendars, messages, Base tables, sheets, and related workflows.
 - `gitlab`: a GitLab REST API plugin for Codex. It supports project discovery, merge request and issue inspection, discussions, CI pipeline lookup, comments, approvals, merge actions, repository file reads, and a raw API escape hatch for unsupported GitLab REST endpoints.
 - `ssh`: an OpenSSH plugin for Codex. It supports strict-key connection tests, explicit remote commands and stdin scripts, SCP transfers, SSH-agent lifecycle operations, and public-key fingerprint checks.
+- `wecom-codex-usage`: a WeCom / Enterprise WeChat plugin packaged and maintained by Sheldon. It connects to a self-built WeCom internal application for message delivery and summarizes local Codex usage signals from the current machine's Codex config and logs.
 
 ## Use In Codex
 
-Open this repository in Codex App. Codex reads `.agents/plugins/marketplace.json` and shows the `IMAP/SMTP Mail`, `Lark / Feishu CLI`, `GitLab`, and `SSH` plugins under this local marketplace.
+Open this repository in Codex App. Codex reads `.agents/plugins/marketplace.json` and shows the `IMAP/SMTP Mail`, `Lark / Feishu CLI`, `GitLab`, `SSH`, and `WeCom Codex Usage` plugins under this local marketplace.
 
 After installing the IMAP/SMTP Mail plugin, the recommended setup path is the local setup wizard. Ask Codex:
 
@@ -63,10 +64,18 @@ $env:SSH_KNOWN_HOSTS_FILE = "$env:USERPROFILE\.ssh\known_hosts"
 
 The plugin uses the local OpenSSH tools with strict host-key checking and public-key-only authentication. It does not store passwords or private keys. Use `ssh_test_connection` before remote commands, and remove temporary keys from `ssh-agent` after the task.
 
+After installing the WeCom Codex Usage plugin, configure a WeCom self-built internal application:
+
+```text
+打开企业微信配置向导
+```
+
+The wizard stores `corp_id`, app `corp_secret`, and `agent_id` in `~/.wecom-codex-usage/config.json`. The plugin can then test the connection, send WeCom app messages, and build a local Codex usage summary from `~/.codex/config.toml` plus recent `~/.codex/log/codex-tui.log` token usage lines. It does not claim to read a stable hosted profile-usage API.
+
 ## Install From GitHub
 
 Clone or open this repository in Codex App to load the local plugin marketplace.
 
 To publish these plugins in the official public marketplace, follow the official review and submission process. This repository already contains the local marketplace structure.
 
-Only plugin source, skills, and example configuration are committed. Real mailbox accounts, authorization codes, GitLab tokens, Lark tokens, SSH private keys, SSH profiles, and local runtime caches are not included. Real mailbox configuration belongs in each user's local `~/.imap-smtp-mail/accounts.json`.
+Only plugin source, skills, and example configuration are committed. Real mailbox accounts, authorization codes, GitLab tokens, WeCom app secrets, Lark tokens, SSH private keys, SSH profiles, and local runtime caches are not included. Real mailbox configuration belongs in each user's local `~/.imap-smtp-mail/accounts.json`; real WeCom configuration belongs in `~/.wecom-codex-usage/config.json`.

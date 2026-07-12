@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "gitlab": {
+      "command": "python3",
+      "args": [
+        "./src/gitlab_mcp.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

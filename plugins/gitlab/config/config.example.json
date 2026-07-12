@@ -1,0 +1,15 @@
+{
+  "default": "main",
+  "profiles": {
+    "main": {
+      "url": "https://gitlab.example.com",
+      "token_env": "GITLAB_TOKEN",
+      "auth_header": "PRIVATE-TOKEN"
+    },
+    "gitlab-com": {
+      "url": "https://gitlab.com",
+      "token_env": "GITLAB_COM_TOKEN",
+      "auth_header": "PRIVATE-TOKEN"
+    }
+  }
+}

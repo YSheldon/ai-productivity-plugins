@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="GitLab">
+  <path fill="#FC6D26" d="M32 58 6 39.1l4.2-13 8.6-20.7c.4-1 1.9-.9 2.2.1l4.3 13.2h13.4L43 5.5c.3-1 1.8-1.1 2.2-.1l8.6 20.7 4.2 13L32 58Z"/>
+  <path fill="#E24329" d="m6 39.1 19.3-20.4-6.5-13.3L6 39.1Zm52 0L38.7 18.7l6.5-13.3L58 39.1Z"/>
+  <path fill="#FCA326" d="M32 58 25.3 18.7h13.4L32 58Z"/>
+</svg>

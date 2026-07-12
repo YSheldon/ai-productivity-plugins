@@ -1,0 +1,39 @@
+{
+  "name": "gitlab",
+  "version": "0.1.0",
+  "description": "Inspect and operate GitLab projects, merge requests, issues, pipelines, and discussions from Codex.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "gitlab",
+    "merge-request",
+    "code-review",
+    "issues",
+    "ci",
+    "pipelines"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "GitLab",
+    "shortDescription": "Triage GitLab MRs, issues, and pipelines",
+    "longDescription": "Use GitLab from Codex through a local MCP server backed by the GitLab REST API. It supports project discovery, merge request and issue inspection, discussions, CI pipeline lookup, comments, approvals, merge actions, and a raw API escape hatch for unsupported endpoints.",
+    "developerName": "Sheldon",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Inspect my GitLab merge requests",
+      "Review a GitLab MR and summarize blockers",
+      "Check the latest GitLab pipeline failures"
+    ],
+    "brandColor": "#FC6D26",
+    "composerIcon": "./assets/gitlab.svg",
+    "logo": "./assets/gitlab.svg",
+    "screenshots": []
+  }
+}

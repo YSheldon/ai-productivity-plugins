@@ -1,0 +1,39 @@
+{
+  "name": "product-release-gate",
+  "version": "0.1.0",
+  "description": "Create verifiable submission and release gates for product material.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "release-gate",
+    "submission",
+    "artifact",
+    "signing",
+    "testing",
+    "release"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Product Release Gate",
+    "shortDescription": "Automate product submission and release gates",
+    "longDescription": "Create immutable submission manifests, run fail-closed submission and release checks, collect test evidence, produce final release material, and retain auditable gate receipts.",
+    "developerName": "Sheldon",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Run the product release gate preflight.",
+      "Create a submission event for these build artifacts.",
+      "Run release checks for the final material."
+    ],
+    "brandColor": "#0F766E",
+    "composerIcon": "./assets/product-release-gate.svg",
+    "logo": "./assets/product-release-gate.svg",
+    "screenshots": []
+  }
+}

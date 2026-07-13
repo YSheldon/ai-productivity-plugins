@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Product Release Gate">
+  <rect width="128" height="128" rx="28" fill="#0F766E"/>
+  <path d="M64 19 103 35v28c0 25-15 40-39 50C40 103 25 88 25 63V35l39-16Z" fill="#CCFBF1"/>
+  <path d="m48 64 10 10 24-27" fill="none" stroke="#0F766E" stroke-linecap="round" stroke-linejoin="round" stroke-width="10"/>
+</svg>

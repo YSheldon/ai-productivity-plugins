@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PLUGIN_ROOT / "src"))
+
+from release_gate_hardened import HardenedReleaseGateController
+
+
+class ReleaseGateFlowTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.artifact = self.root / "product.bin"
+        self.artifact.write_bytes(b"approved-build-v1")
+        self.config_path = self._write_config(require_cloud_scan=False)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def _write_config(self, require_cloud_scan: bool) -> Path:
+        suffix = "cloud" if require_cloud_scan else "local"
+        path = self.root / f"config-{suffix}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "storage_dir": str(self.root / f"events-{suffix}"),
+                    "policy": {
+                        "allowed_extensions": [".bin"],
+                        "require_source_ref": True,
+                        "require_signature": False,
+                        "require_cloud_scan": require_cloud_scan,
+                        "allow_unchanged_artifacts": False,
+                        "auto_approve_risk_levels": ["standard"],
+                    },
+                    "cloud_scan": {"command": []},
+                    "test": {"command": []},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def _controller(self, config_path: Path | None = None) -> HardenedReleaseGateController:
+        return HardenedReleaseGateController(str(config_path or self.config_path))
+
+    def _create(self, controller: HardenedReleaseGateController, event_id: str, risk: str = "standard") -> None:
+        controller.create_submission(
+            event_id=event_id,
+            task_id="TASK-1",
+            artifacts=[
+                {
+                    "logical_name": "product.bin",
+                    "file_path": str(self.artifact),
+                    "source_ref": "commit:abc123",
+                }
+            ],
+            source_ref="commit:abc123",
+            rollback_ref="rollback:stable-v0",
+            risk_level=risk,
+        )
+
+    def _reach_release_gate(self, event_id: str) -> tuple[HardenedReleaseGateController, Path]:
+        controller = self._controller()
+        self._create(controller, event_id)
+        submission = controller.run_submission_gate(event_id)
+        self.assertEqual("PASS", submission["overall"])
+        self.assertEqual("TESTING", submission["status"])
+        test = controller.record_test_result(event_id, "PASS", "test-run:1", "all suites passed")
+        self.assertEqual("RELEASE_PREPARING", test["status"])
+        output_dir = self.root / f"final-{event_id}"
+        final = controller.build_final_release(event_id, str(output_dir))
+        self.assertEqual("RELEASE_GATING", final["status"])
+        return controller, output_dir
+
+    def test_standard_flow_reaches_release_ready_and_writes_report(self) -> None:
+        controller, _ = self._reach_release_gate("event-standard")
+        gate = controller.run_release_gate("event-standard")
+        self.assertEqual("PASS", gate["overall"])
+        self.assertEqual("RELEASE_READY", gate["status"])
+        self.assertTrue(all(item["result"] == "PASS" for item in gate["execution"]["results"]))
+
+        report = controller.generate_report("event-standard")
+        self.assertTrue(Path(report["report_path"]).is_file())
+        self.assertIn("RELEASE_READY", report["report"])
+
+    def test_high_risk_requires_explicit_approval(self) -> None:
+        controller = self._controller()
+        self._create(controller, "event-high", risk="high")
+        controller.run_submission_gate("event-high")
+        test = controller.record_test_result("event-high", "PASS", "test-run:high")
+        self.assertEqual("TEST_APPROVAL_REQUIRED", test["status"])
+
+        approval = controller.record_test_approval("event-high", "APPROVE", "approval:42")
+        self.assertEqual("RELEASE_PREPARING", approval["status"])
+        self.assertEqual("APPROVED", approval["approval"]["status"])
+
+    def test_untracked_final_file_is_blocked_by_r04(self) -> None:
+        controller, output_dir = self._reach_release_gate("event-extra")
+        (output_dir / "unsubmitted.txt").write_text("not submitted", encoding="utf-8")
+        gate = controller.run_release_gate("event-extra")
+        r04 = [item for item in gate["execution"]["results"] if item["rule_id"] == "R-04"]
+        self.assertEqual("SUBMISSION_BLOCKED", gate["status"])
+        self.assertEqual(["FAIL"], [item["result"] for item in r04])
+        self.assertIn("unsubmitted.txt", r04[0]["detail"])
+
+    def test_missing_final_file_is_blocked_by_r03(self) -> None:
+        controller, output_dir = self._reach_release_gate("event-missing")
+        (output_dir / "product.bin").unlink()
+        gate = controller.run_release_gate("event-missing")
+        r03 = [item for item in gate["execution"]["results"] if item["rule_id"] == "R-03"]
+        self.assertEqual("SUBMISSION_BLOCKED", gate["status"])
+        self.assertEqual(["FAIL"], [item["result"] for item in r03])
+
+    def test_sha1_drift_is_blocked_by_r05(self) -> None:
+        controller, output_dir = self._reach_release_gate("event-drift")
+        (output_dir / "product.bin").write_bytes(b"changed-after-test")
+        gate = controller.run_release_gate("event-drift")
+        r05 = [item for item in gate["execution"]["results"] if item["rule_id"] == "R-05"]
+        self.assertEqual("SUBMISSION_BLOCKED", gate["status"])
+        self.assertEqual(["FAIL"], [item["result"] for item in r05])
+
+    def test_required_cloud_scan_without_adapter_fails_closed(self) -> None:
+        cloud_config = self._write_config(require_cloud_scan=True)
+        controller = self._controller(cloud_config)
+        self._create(controller, "event-cloud")
+        gate = controller.run_submission_gate("event-cloud")
+        t06 = [item for item in gate["execution"]["results"] if item["rule_id"] == "T-06"]
+        self.assertEqual("SUBMISSION_BLOCKED", gate["status"])
+        self.assertEqual("BLOCKED", gate["overall"])
+        self.assertEqual(["ERROR"], [item["result"] for item in t06])
+
+
+if __name__ == "__main__":
+    unittest.main()

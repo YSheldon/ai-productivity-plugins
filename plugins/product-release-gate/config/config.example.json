@@ -1,0 +1,41 @@
+{
+  "storage_dir": "%USERPROFILE%\\.codex\\product-release-gate\\events",
+  "policy": {
+    "allowed_extensions": [
+      ".exe",
+      ".dll",
+      ".sys",
+      ".msi",
+      ".zip"
+    ],
+    "require_source_ref": true,
+    "require_signature": true,
+    "require_cloud_scan": true,
+    "allow_unchanged_artifacts": false,
+    "auto_approve_risk_levels": [
+      "standard"
+    ]
+  },
+  "signature": {
+    "expected_subject_contains": ""
+  },
+  "cloud_scan": {
+    "command": [
+      "C:\\path\\to\\cloud-scan-adapter.exe",
+      "--sha1",
+      "{sha1}",
+      "--json"
+    ],
+    "clean_verdict": "CLEAN",
+    "timeout_seconds": 90
+  },
+  "test": {
+    "command": [
+      "C:\\path\\to\\test-orchestrator.exe",
+      "--manifest",
+      "{manifest_s_path}",
+      "--json"
+    ],
+    "timeout_seconds": 3600
+  }
+}

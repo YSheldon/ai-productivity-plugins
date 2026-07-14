@@ -1,0 +1,7 @@
+interface:
+  display_name: "研发飞轮"
+  short_description: "以可视化决策门禁将新工作验证为可复用生产能力并完成经验回灌"
+  brand_color: "#0F766E"
+  default_prompt: "使用 $rd-flywheel 将这个新需求作为真实实践，通过可视化决策门禁验证到生产并回灌经验。"
+policy:
+  allow_implicit_invocation: true

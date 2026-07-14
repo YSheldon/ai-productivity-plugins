@@ -1,0 +1,22 @@
+{
+  "name": "rd-flywheel",
+  "version": "0.1.0",
+  "description": "Turn new engineering work into production-proven reusable capability.",
+  "author": { "name": "Sheldon" },
+  "license": "MIT",
+  "keywords": ["rd-flywheel", "engineering", "new-project", "production", "evidence", "continuous-improvement"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "研发飞轮",
+    "shortDescription": "将新工作验证为可复用生产能力",
+    "longDescription": "Use real first practices and visual decision gates to take new requirements, projects, and engineering tasks through production evidence, capability-gap construction, rollback validation, and experience harvest.",
+    "developerName": "Sheldon",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": ["把这个新需求作为研发飞轮首个实践", "用可视化门禁确认这个新项目的设计", "补齐缺失能力并恢复原研发任务"],
+    "brandColor": "#0F766E",
+    "composerIcon": "./assets/rd-flywheel.svg",
+    "logo": "./assets/rd-flywheel.svg",
+    "screenshots": []
+  }
+}

@@ -10,6 +10,7 @@ This repository is a local Codex plugin marketplace maintained by Sheldon. The m
 - `lark-cli`: a Lark/Feishu CLI plugin packaged and maintained by Sheldon. It bundles the existing `lark-*` skills and uses the locally installed `lark-cli` to work with docs, wikis, calendars, messages, Base tables, sheets, and related workflows.
 - `gitlab`: a GitLab REST API plugin for Codex. It supports project discovery, merge request and issue inspection, discussions, CI pipeline lookup, comments, approvals, merge actions, repository file reads, and a raw API escape hatch for unsupported GitLab REST endpoints.
 - `product-release-gate`: a fail-closed product material gate for immutable submission manifests, submission checks, test evidence and approval, final-material generation, release checks, and auditable reports.
+- `rd-flywheel`: an evidence-first R&D workflow skill for turning new requirements, projects, and tasks into real production-proven capability, with versioned visual decision gates and post-production experience harvest.
 - `ssh`: an OpenSSH plugin for Codex. It supports strict-key connection tests, explicit remote commands and stdin scripts, SCP transfers, SSH-agent lifecycle operations, and public-key fingerprint checks.
 - `wecom-codex-usage`: a WeCom / Enterprise WeChat plugin packaged and maintained by Sheldon. It connects to a self-built WeCom internal application for message delivery and summarizes local Codex usage signals from the current machine's Codex config and logs.
 
@@ -68,6 +69,15 @@ submission -> submission gate -> test evidence -> approval
 ```
 
 The cloud-scan and automated-test commands are local adapter contracts and must return JSON. Missing adapters, invalid signatures, non-clean scan results, failed tests, missing files, extra files, or SHA1 drift block the event. `RELEASE_READY` proves gate completion only; deployment credentials and production deployment remain outside the plugin.
+
+After installing the R&D Flywheel plugin, invoke it for new requirements, projects, automations, and engineering tasks that must become reusable production capability:
+
+```text
+把这个新需求作为研发飞轮首个实践
+用可视化门禁确认这个新项目的设计
+```
+
+The skill uses local Visual Companion click events as versioned design-decision evidence. Those clicks never replace Feishu approval, protected-branch policy, release authorization, or deterministic production gates.
 
 After installing the SSH plugin, configure either `SSH_HOST` and `SSH_USER` or a JSON profile based on `plugins/ssh/config/config.example.json`:
 

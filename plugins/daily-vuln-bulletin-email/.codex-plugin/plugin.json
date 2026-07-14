@@ -1,0 +1,40 @@
+{
+  "name": "daily-vuln-bulletin-email",
+  "version": "0.1.0",
+  "description": "Generate and deliver a verified daily vulnerability bulletin with live Feishu subscribers and audited domestic-mail MIME delivery.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "vulnerability",
+    "cve",
+    "security-bulletin",
+    "feishu",
+    "smtp",
+    "imap",
+    "mime",
+    "privacy"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "每日漏洞播报",
+    "shortDescription": "生成并审计每日漏洞播报邮件",
+    "longDescription": "Package the verified daily vulnerability bulletin workflow: authoritative engineering sync, live Feishu subscribers, severity-safe text and HTML content, exact RFC Subject and MIME checks, recipient-header privacy checks, domestic SMTP delivery, and exact IMAP Message-ID readback. The plugin reuses existing lark-cli and IMAP/SMTP capabilities instead of shipping a second mail or Feishu API implementation.",
+    "developerName": "Sheldon",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "生成并发送今天的每日漏洞播报",
+      "审计每日漏洞播报邮件的 Subject、MIME 和收件人隐私",
+      "检查最近一次漏洞播报的 IMAP 原始邮件回读结果"
+    ],
+    "brandColor": "#B42318",
+    "composerIcon": "./assets/daily-vuln-bulletin.svg",
+    "logo": "./assets/daily-vuln-bulletin.svg",
+    "screenshots": []
+  }
+}

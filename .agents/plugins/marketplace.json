@@ -87,6 +87,18 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Developer Tools"
+    },
+    {
+      "name": "daily-vuln-bulletin-email",
+      "source": {
+        "source": "local",
+        "path": "./plugins/daily-vuln-bulletin-email"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
     }
   ]
 }

@@ -13,10 +13,11 @@ This repository is a local Codex plugin marketplace maintained by Sheldon. The m
 - `rd-flywheel`: an evidence-first R&D workflow skill for turning new requirements, projects, and tasks into real production-proven capability, with versioned visual decision gates and post-production experience harvest.
 - `ssh`: an OpenSSH plugin for Codex. It supports strict-key connection tests, explicit remote commands and stdin scripts, SCP transfers, SSH-agent lifecycle operations, and public-key fingerprint checks.
 - `wecom-codex-usage`: a WeCom / Enterprise WeChat plugin packaged and maintained by Sheldon. It connects to a self-built WeCom internal application for message delivery and summarizes local Codex usage signals from the current machine's Codex config and logs.
+- `daily-vuln-bulletin-email`: a verified daily vulnerability bulletin workflow. It uses live Feishu subscribers, severity-safe text/HTML content, exact MIME Subject and Message-ID readback, and recipient-header privacy checks while reusing the existing Lark and IMAP/SMTP plugins.
 
 ## Use In Codex
 
-Open this repository in Codex App. Codex reads `.agents/plugins/marketplace.json` and shows the `IMAP/SMTP Mail`, `Lark / Feishu CLI`, `GitLab`, `Product Release Gate`, `SSH`, and `WeCom Codex Usage` plugins under this local marketplace.
+Open this repository in Codex App. Codex reads `.agents/plugins/marketplace.json` and shows the `IMAP/SMTP Mail`, `Lark / Feishu CLI`, `GitLab`, `Product Release Gate`, `SSH`, `WeCom Codex Usage`, and `每日漏洞播报` plugins under this local marketplace.
 
 After installing the IMAP/SMTP Mail plugin, the recommended setup path is the local setup wizard. Ask Codex:
 

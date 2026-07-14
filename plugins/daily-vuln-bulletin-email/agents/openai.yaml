@@ -1,0 +1,3 @@
+display_name: 漏洞日报投递
+short_description: 飞书订阅、国内邮箱发送与 MIME 回读门禁
+default_prompt: 生成每日漏洞播报，使用飞书实时订阅名单发送，并验证原始 Subject、正文 MIME 和收件箱回读。

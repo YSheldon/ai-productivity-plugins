@@ -100,7 +100,10 @@ def default_config() -> dict[str, Any]:
             "allow_unchanged_artifacts": False,
             "auto_approve_risk_levels": ["standard"],
         },
-        "signature": {"expected_subject_contains": ""},
+        "signature": {
+            "expected_thumbprints": [],
+            "expected_subject_contains": "",
+        },
         "cloud_scan": {"command": [], "clean_verdict": "CLEAN", "timeout_seconds": 90},
         "test": {"command": [], "timeout_seconds": 3600},
     }
@@ -160,6 +163,17 @@ class ReleaseGateController:
 
     def preflight(self) -> dict[str, Any]:
         policy = self.config["policy"]
+        signature_config = self.config.get("signature") or {}
+        raw_thumbprints = signature_config.get("expected_thumbprints")
+        thumbprints_valid = (
+            isinstance(raw_thumbprints, list)
+            and bool(raw_thumbprints)
+            and all(
+                isinstance(value, str)
+                and re.fullmatch(r"[0-9A-Fa-f]{40}", re.sub(r"[^0-9A-Fa-f]", "", value))
+                for value in raw_thumbprints
+            )
+        )
         cloud_command = self.config.get("cloud_scan", {}).get("command") or []
         test_command = self.config.get("test", {}).get("command") or []
         checks = [
@@ -174,6 +188,12 @@ class ReleaseGateController:
                 "required": bool(policy.get("require_signature")),
                 "configured": os.name == "nt" if policy.get("require_signature") else True,
                 "detail": "Windows Authenticode verifier" if os.name == "nt" else "Windows is required for Authenticode verification",
+            },
+            {
+                "name": "signature_trust_policy",
+                "required": bool(policy.get("require_signature")),
+                "configured": thumbprints_valid if policy.get("require_signature") else True,
+                "detail": "signature.expected_thumbprints must contain exact 40-hex certificate thumbprints",
             },
             {
                 "name": "cloud_scan_adapter",
@@ -417,12 +437,30 @@ class ReleaseGateController:
             return result(rule_id, "product signature", RESULT_ERROR, "signature verifier returned invalid JSON", artifact["logical_name"])
         status = str(payload.get("status") or "")
         subject = str(payload.get("subject") or "")
-        expected = str(self.config.get("signature", {}).get("expected_subject_contains") or "").strip()
+        thumbprint = re.sub(r"[^0-9A-Fa-f]", "", str(payload.get("thumbprint") or "")).upper()
+        signature_config = self.config.get("signature") or {}
+        raw_thumbprints = signature_config.get("expected_thumbprints")
+        expected_thumbprints = {
+            normalized
+            for value in raw_thumbprints
+            if isinstance(value, str)
+            for normalized in [re.sub(r"[^0-9A-Fa-f]", "", value).upper()]
+            if re.fullmatch(r"[0-9A-F]{40}", normalized)
+        } if isinstance(raw_thumbprints, list) else set()
+        expected = str(signature_config.get("expected_subject_contains") or "").strip()
         if status != "Valid":
             return result(rule_id, "product signature", RESULT_FAIL, f"Authenticode status={status}: {payload.get('status_message')}", artifact["logical_name"])
+        if not expected_thumbprints or thumbprint not in expected_thumbprints:
+            return result(
+                rule_id,
+                "product signature",
+                RESULT_FAIL,
+                "signer certificate thumbprint is not in the exact allowlist",
+                artifact["logical_name"],
+            )
         if expected and expected not in subject:
             return result(rule_id, "product signature", RESULT_FAIL, "signer subject does not match policy", artifact["logical_name"])
-        evidence = subject or str(payload.get("thumbprint") or "")
+        evidence = f"thumbprint:{thumbprint};subject:{subject}"
         return result(rule_id, "product signature", RESULT_PASS, "Authenticode status=Valid", artifact["logical_name"], evidence or None)
 
     def _run_configured_json_command(

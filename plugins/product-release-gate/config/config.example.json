@@ -17,6 +17,9 @@
     ]
   },
   "signature": {
+    "expected_thumbprints": [
+      "REPLACE_WITH_40_HEX_CERTIFICATE_THUMBPRINT"
+    ],
     "expected_subject_contains": ""
   },
   "cloud_scan": {
@@ -37,5 +40,114 @@
       "--json"
     ],
     "timeout_seconds": 3600
+  },
+  "production": {
+    "enabled": false,
+    "authorization": {
+      "key_env": "PRODUCT_RELEASE_GATE_AUTH_KEY",
+      "ttl_seconds": 3600,
+      "verify_command": [
+        "C:\\path\\to\\feishu-approval-adapter.exe",
+        "verify",
+        "--approval-ref",
+        "{approval_ref}",
+        "--event-id",
+        "{event_id}",
+        "--manifest-s-digest",
+        "{manifest_s_digest}",
+        "--manifest-r-digest",
+        "{manifest_r_digest}",
+        "--target-scope",
+        "{target_scope}",
+        "--json"
+      ],
+      "timeout_seconds": 120
+    },
+    "audit": {
+      "key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY"
+    },
+    "deployment": {
+      "stages": [
+        "preproduction",
+        "production_canary",
+        "production_full"
+      ],
+      "targets": {
+        "preproduction": "env:preproduction",
+        "production_canary": "env:production:canary",
+        "production_full": "env:production:full"
+      },
+      "deploy_command": [
+        "C:\\path\\to\\deployment-adapter.exe",
+        "deploy",
+        "--stage",
+        "{stage}",
+        "--target",
+        "{target_ref}",
+        "--manifest-r",
+        "{manifest_r_path}",
+        "--authorization",
+        "{authorization_path}",
+        "--idempotency-key",
+        "{idempotency_key}",
+        "--json"
+      ],
+      "verify_command": [
+        "C:\\path\\to\\deployment-adapter.exe",
+        "verify",
+        "--stage",
+        "{stage}",
+        "--target",
+        "{target_ref}",
+        "--deployment-ref",
+        "{deployment_ref}",
+        "--expected-digest",
+        "{manifest_r_digest}",
+        "--json"
+      ],
+      "rollback_command": [
+        "C:\\path\\to\\deployment-adapter.exe",
+        "rollback",
+        "--stage",
+        "{stage}",
+        "--target",
+        "{target_ref}",
+        "--deployment-ref",
+        "{deployment_ref}",
+        "--rollback-ref",
+        "{rollback_ref}",
+        "--json"
+      ],
+      "rollback_verify_command": [
+        "C:\\path\\to\\deployment-adapter.exe",
+        "verify-rollback",
+        "--stage",
+        "{stage}",
+        "--target",
+        "{target_ref}",
+        "--deployment-ref",
+        "{deployment_ref}",
+        "--rollback-ref",
+        "{rollback_ref}",
+        "--restored-ref",
+        "{restored_ref}",
+        "--rollback-receipt-ref",
+        "{rollback_receipt_ref}",
+        "--json"
+      ],
+      "timeout_seconds": 900
+    },
+    "readback": {
+      "command": [
+        "C:\\path\\to\\deployment-adapter.exe",
+        "readback",
+        "--target",
+        "{target_ref}",
+        "--expected-digest",
+        "{manifest_r_digest}",
+        "--json"
+      ],
+      "timeout_seconds": 180
+    }
   }
 }

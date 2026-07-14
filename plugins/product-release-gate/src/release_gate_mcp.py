@@ -6,20 +6,25 @@ import traceback
 from typing import Any, Callable
 
 from release_gate_core import GateError
-from release_gate_hardened import HardenedReleaseGateController
+from release_gate_production import ProductionReleaseController
 
 
 SERVER_NAME = "product-release-gate"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
+_CONTROLLER = ProductionReleaseController()
 
 
 def eprint(*args: Any) -> None:
     print(*args, file=sys.stderr)
 
 
-def controller(args: dict[str, Any]) -> HardenedReleaseGateController:
-    return HardenedReleaseGateController(args.get("config_path"))
+def controller(args: dict[str, Any]) -> ProductionReleaseController:
+    if "config_path" in args:
+        raise GateError(
+            "config_path cannot be supplied per call; set PRODUCT_RELEASE_GATE_CONFIG before server startup"
+        )
+    return _CONTROLLER
 
 
 def text_result(data: Any) -> dict[str, Any]:
@@ -97,12 +102,50 @@ def generate_report(args: dict[str, Any]) -> dict[str, Any]:
     return controller(args).generate_report(args["event_id"])
 
 
-CONFIG_PROPERTY = {
-    "config_path": {
-        "type": "string",
-        "description": "Optional JSON configuration path. Defaults to PRODUCT_RELEASE_GATE_CONFIG.",
-    }
-}
+def production_preflight(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).production_preflight()
+
+
+def request_release_authorization(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).request_release_authorization(
+        args["event_id"],
+        args["requested_by"],
+        args["target_scope"],
+    )
+
+
+def record_release_authorization(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).record_release_authorization(
+        args["event_id"],
+        args["decision"],
+        args["approval_ref"],
+        args["approved_by"],
+        args["manifest_s_digest"],
+        args["manifest_r_digest"],
+    )
+
+
+def ensure_deployment_capabilities(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).ensure_deployment_capabilities(args["event_id"])
+
+
+def run_deployment_stage(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).run_deployment_stage(args["event_id"], args["stage"])
+
+
+def run_production_readback(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).run_production_readback(args["event_id"])
+
+
+def generate_production_report(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).generate_production_report(args["event_id"])
+
+
+def verify_control_event_chain(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).verify_control_event_chain(args["event_id"])
+
+
+CONFIG_PROPERTY: dict[str, Any] = {}
 
 
 def event_schema() -> dict[str, Any]:
@@ -247,6 +290,92 @@ TOOLS: dict[str, dict[str, Any]] = {
         "description": "Generate the durable Markdown gate report and return its local path.",
         "inputSchema": event_schema(),
         "handler": generate_report,
+    },
+    "release_gate_production_preflight": {
+        "description": "Check production authorization, phased deployment, rollback, and readback adapters before requesting release authority.",
+        "inputSchema": {
+            "type": "object",
+            "properties": CONFIG_PROPERTY,
+            "additionalProperties": False,
+        },
+        "handler": production_preflight,
+    },
+    "release_gate_request_release_authorization": {
+        "description": "Freeze a production authorization request bound to the current Manifest-S and Manifest-R digests.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "requested_by": {"type": "string"},
+                "target_scope": {"type": "string"},
+                **CONFIG_PROPERTY,
+            },
+            "required": ["event_id", "requested_by", "target_scope"],
+            "additionalProperties": False,
+        },
+        "handler": request_release_authorization,
+    },
+    "release_gate_record_release_authorization": {
+        "description": "Record an external approval bound to both manifests and issue a scoped, expiring authorization credential.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "decision": {"type": "string", "enum": ["APPROVE", "REJECT"]},
+                "approval_ref": {"type": "string"},
+                "approved_by": {"type": "string"},
+                "manifest_s_digest": {"type": "string"},
+                "manifest_r_digest": {"type": "string"},
+                **CONFIG_PROPERTY,
+            },
+            "required": [
+                "event_id",
+                "decision",
+                "approval_ref",
+                "approved_by",
+                "manifest_s_digest",
+                "manifest_r_digest",
+            ],
+            "additionalProperties": False,
+        },
+        "handler": record_release_authorization,
+    },
+    "release_gate_ensure_deployment_capabilities": {
+        "description": "Fail closed and create a replayable capability request when a required deployment adapter is missing.",
+        "inputSchema": event_schema(),
+        "handler": ensure_deployment_capabilities,
+    },
+    "release_gate_run_deployment_stage": {
+        "description": "Run one ordered deployment stage with digest-bound verification and automatic stage rollback on failure.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "stage": {
+                    "type": "string",
+                    "enum": ["preproduction", "production_canary", "production_full"],
+                },
+                **CONFIG_PROPERTY,
+            },
+            "required": ["event_id", "stage"],
+            "additionalProperties": False,
+        },
+        "handler": run_deployment_stage,
+    },
+    "release_gate_run_production_readback": {
+        "description": "Verify the deployed production target reports the exact authorized Manifest-R digest.",
+        "inputSchema": event_schema(),
+        "handler": run_production_readback,
+    },
+    "release_gate_generate_production_report": {
+        "description": "Generate a production report covering authorization, rollout, rollback, readback, and event-chain evidence.",
+        "inputSchema": event_schema(),
+        "handler": generate_production_report,
+    },
+    "release_gate_verify_control_event_chain": {
+        "description": "Verify the append-only hash chain for production control events.",
+        "inputSchema": event_schema(),
+        "handler": verify_control_event_chain,
     },
 }
 

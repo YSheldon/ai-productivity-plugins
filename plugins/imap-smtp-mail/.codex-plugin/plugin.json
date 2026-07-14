@@ -1,6 +1,6 @@
 {
   "name": "imap-smtp-mail",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Read, search, summarize, and send email through IMAP/SMTP providers.",
   "author": {
     "name": "gzlicanyi; adapted by Sheldon"

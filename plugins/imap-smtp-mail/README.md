@@ -53,6 +53,13 @@ Then edit `~/.imap-smtp-mail/accounts.json`.
 
 Use email client authorization codes or app passwords, not normal web login passwords.
 For many providers, IMAP/SMTP must be enabled in the web mailbox settings first.
+
+For Tencent Exmail, complete both settings before running the setup wizard:
+
+1. Open `设置 > 账户 > 客户端专用密码` and generate a client-specific password.
+2. Open `设置 > 客户端设置` and enable the IMAP/SMTP service.
+3. Enter the client-specific password in the wizard, not the normal web login password.
+
 On Windows, migrate any legacy plaintext account file immediately after editing it:
 
 ```powershell

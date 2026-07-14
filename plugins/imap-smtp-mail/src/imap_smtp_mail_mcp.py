@@ -32,7 +32,7 @@ from typing import Any, Callable
 
 
 SERVER_NAME = "imap-smtp-mail"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.1.1"
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 DEFAULT_CONFIG_PATH = pathlib.Path.home() / ".imap-smtp-mail" / "accounts.json"
 DEFAULT_ATTACHMENT_DIR = pathlib.Path.home() / "Downloads" / "imap-smtp-mail-attachments"
@@ -86,7 +86,11 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "label": "腾讯企业邮箱",
         "imap": {"host": "imap.exmail.qq.com", "port": 993, "secure": True},
         "smtp": {"host": "smtp.exmail.qq.com", "port": 465, "secure": True},
-        "auth_note": "Use the enterprise mailbox account password or configured client password.",
+        "auth_note": (
+            "先在腾讯企业邮箱网页端进入“设置 > 账户 > 客户端专用密码”生成专用密码，"
+            "再进入“设置 > 客户端设置”开启 IMAP/SMTP 服务；配置时填写客户端专用密码，"
+            "不要填写网页登录密码。"
+        ),
     },
     "aliyun-mail": {
         "label": "阿里企业邮箱",
@@ -1032,7 +1036,7 @@ def render_setup_page(token: str, provider: str | None = None, account_name: str
       </label>
       <label>授权码 / 客户端专用密码
         <input name="password" type="password" autocomplete="current-password" placeholder="不是网页登录密码" required>
-        <span class="hint">QQ、网易等邮箱通常要先在网页邮箱设置里开启 IMAP/SMTP，再生成授权码。</span>
+        <span class="hint">QQ、网易等邮箱通常要先在网页邮箱设置里开启 IMAP/SMTP，再生成授权码。腾讯企业邮箱请先进入“设置 &gt; 账户 &gt; 客户端专用密码”生成专用密码，再进入“设置 &gt; 客户端设置”开启 IMAP/SMTP 服务；此处填写客户端专用密码，不要填写网页登录密码。</span>
       </label>
       <section class="custom">
         <strong>自定义服务器，仅 provider 选 custom 时需要</strong>

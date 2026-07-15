@@ -8,6 +8,7 @@ import base64
 import ctypes
 import email
 import email.utils
+import hashlib
 import html
 import http.server
 import imaplib
@@ -32,7 +33,7 @@ from typing import Any, Callable
 
 
 SERVER_NAME = "imap-smtp-mail"
-SERVER_VERSION = "0.1.1"
+SERVER_VERSION = "0.2.0"
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 DEFAULT_CONFIG_PATH = pathlib.Path.home() / ".imap-smtp-mail" / "accounts.json"
 DEFAULT_ATTACHMENT_DIR = pathlib.Path.home() / "Downloads" / "imap-smtp-mail-attachments"
@@ -55,6 +56,9 @@ DRAFT_MAILBOX_CANDIDATES: dict[str, list[str]] = {
 COMMON_DRAFT_MAILBOX_CANDIDATES = ["Drafts", "&g0l6P3ux-", "草稿箱", "草稿"]
 DPAPI_PREFIX = "dpapi-v1:"
 DPAPI_ENTROPY = b"imap-smtp-mail:password:v1"
+CUSTOM_HEADER_PREFIX = "X-RD-"
+MESSAGE_ID_PATTERN = re.compile(r"^<[^<>\r\n]+>$")
+MESSAGE_ID_EXTRACT_PATTERN = re.compile(r"<[^<>\r\n]+>")
 
 
 PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
@@ -570,13 +574,28 @@ def build_search_criteria(query: dict[str, Any]) -> list[str]:
     return criteria
 
 
-def select_mailbox(client: imaplib.IMAP4, mailbox: str) -> int:
+def select_mailbox_info(client: imaplib.IMAP4, mailbox: str) -> tuple[int, str]:
     status, response = client.select(format_mailbox_arg(mailbox), readonly=True)
     require_ok(status, response, f"select mailbox {mailbox}")
+    return extract_selected_count(response), extract_uidvalidity(response)
+
+
+def select_mailbox(client: imaplib.IMAP4, mailbox: str) -> int:
+    count, _uidvalidity = select_mailbox_info(client, mailbox)
+    return count
+
+
+def extract_selected_count(response: list[Any]) -> int:
     try:
         return int(response[0] or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def extract_uidvalidity(response: list[Any]) -> str:
+    text = " ".join(to_text(item) for item in response if item)
+    match = re.search(r"UIDVALIDITY\s+(\d+)", text, flags=re.IGNORECASE)
+    return match.group(1) if match else ""
 
 
 def format_mailbox_arg(mailbox: str) -> str:
@@ -641,6 +660,104 @@ def normalize_message_date(value: str | None) -> str:
             return parsed.isoformat()
     except (TypeError, ValueError):
         pass
+    return value
+
+
+def normalize_message_ids(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for message_id in MESSAGE_ID_EXTRACT_PATTERN.findall(str(value or "")):
+            if message_id in seen:
+                continue
+            seen.add(message_id)
+            normalized.append(message_id)
+    return normalized
+
+
+def normalize_return_path(value: str | None) -> str:
+    if not value:
+        return ""
+    _display_name, address = email.utils.parseaddr(value)
+    if not address:
+        address = str(value).strip().strip("<>")
+    return address.lower()
+
+
+def split_raw_headers(raw_message: bytes) -> bytes:
+    marker = b"\r\n\r\n"
+    if marker in raw_message:
+        return raw_message.split(marker, 1)[0] + marker
+    marker = b"\n\n"
+    if marker in raw_message:
+        return raw_message.split(marker, 1)[0].replace(b"\n", b"\r\n") + b"\r\n\r\n"
+    return raw_message
+
+def message_evidence(message: EmailMessage, raw_headers: bytes) -> dict[str, Any]:
+    message_ids = normalize_message_ids(message.get_all("message-id", []))
+    in_reply_to = normalize_message_ids(message.get_all("in-reply-to", []))
+    references = normalize_message_ids(message.get_all("references", []))
+    return {
+        "message_id": message_ids[0] if message_ids else "",
+        "in_reply_to": in_reply_to[0] if in_reply_to else "",
+        "references": references,
+        "return_path": normalize_return_path(message.get("return-path")),
+        "authentication_results": str(message.get("authentication-results", "")),
+        "received_spf": str(message.get("received-spf", "")),
+        "raw_headers_sha256": hashlib.sha256(raw_headers).hexdigest(),
+    }
+
+
+def validate_single_line_value(value: str, *, field_name: str) -> str:
+    if not value or not value.strip():
+        raise ToolError(f"{field_name} must be non-empty.")
+    if "\r" in value or "\n" in value:
+        raise ToolError(f"{field_name} must be a single-line value.")
+    if len(value) > 2048:
+        raise ToolError(f"{field_name} must be 2048 characters or fewer.")
+    return value.strip()
+
+def validate_message_id(value: str, *, field_name: str) -> str:
+    value = validate_single_line_value(value, field_name=field_name)
+    if not MESSAGE_ID_PATTERN.fullmatch(value):
+        raise ToolError(f"{field_name} must be an exact RFC Message-ID like <id@example.com>.")
+    return value
+
+
+def apply_threading_headers(message: EmailMessage, args: dict[str, Any]) -> None:
+    in_reply_to = args.get("in_reply_to")
+    if in_reply_to:
+        message["In-Reply-To"] = validate_message_id(str(in_reply_to), field_name="in_reply_to")
+
+    references = normalize_message_ids(ensure_list(args.get("references")))
+    if args.get("references") and not references:
+        raise ToolError("references must include at least one RFC Message-ID.")
+    if references:
+        message["References"] = validate_single_line_value(" ".join(references), field_name="references")
+
+
+def apply_custom_headers(message: EmailMessage, headers: Any) -> None:
+    if headers is None:
+        return
+    if not isinstance(headers, dict):
+        raise ToolError("headers must be an object.")
+    for raw_name, raw_value in headers.items():
+        name = str(raw_name)
+        if not name.startswith(CUSTOM_HEADER_PREFIX):
+            raise ToolError(f"Reserved header names are rejected: {name}")
+        value = validate_single_line_value(str(raw_value), field_name=name)
+        message[name] = value
+
+
+def json_safe(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
     return value
 
 
@@ -1437,7 +1554,7 @@ def read_message(args: dict[str, Any]) -> dict[str, Any]:
 
     client = connect_imap(account)
     try:
-        select_mailbox(client, mailbox)
+        _message_count, uidvalidity = select_mailbox_info(client, mailbox)
         raw = fetch_raw_message(client, uid)
     finally:
         try:
@@ -1445,12 +1562,15 @@ def read_message(args: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
 
+    raw_headers = split_raw_headers(raw)
     message = email.message_from_bytes(raw, policy=default)
     plain, html_body = message_to_text(message)
+    evidence = message_evidence(message, raw_headers)
     payload = {
         "account": public_account(account),
         "mailbox": mailbox,
         "uid": uid,
+        "uidvalidity": uidvalidity,
         "subject": str(message.get("subject", "")),
         "from": address_list(message.get_all("from", [])),
         "to": address_list(message.get_all("to", [])),
@@ -1459,6 +1579,7 @@ def read_message(args: dict[str, Any]) -> dict[str, Any]:
         "message_id": str(message.get("message-id", "")),
         "body_text": truncate(plain, max_body_chars),
         "attachments": attachment_summaries(message),
+        "evidence": evidence,
     }
     if args.get("include_html", False):
         payload["body_html"] = truncate(html_body, max_body_chars)
@@ -1538,6 +1659,8 @@ def compose_email_message(account: dict[str, Any], args: dict[str, Any], *, draf
     message["Subject"] = subject
     message["Date"] = email.utils.formatdate(localtime=True)
     message["Message-ID"] = email.utils.make_msgid()
+    apply_threading_headers(message, args)
+    apply_custom_headers(message, args.get("headers"))
     if draft:
         message["X-Unsent"] = "1"
 
@@ -1611,7 +1734,14 @@ def send_email(args: dict[str, Any]) -> dict[str, Any]:
         refused = client.send_message(message, from_addr=account["email"], to_addrs=recipients)
     finally:
         client.quit()
-    return tool_result({"sent": True, "refused": refused, "preview": preview})
+    return tool_result(
+        {
+            "sent": True,
+            "message_id": str(message.get("Message-ID", "")),
+            "refused": json_safe(refused),
+            "preview": preview,
+        }
+    )
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -1735,6 +1865,9 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "text": {"type": "string"},
                 "html": {"type": "string"},
                 "attachments": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+                "in_reply_to": {"type": "string", "description": "Optional RFC Message-ID for safe reply threading."},
+                "references": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Optional RFC Message-ID list for safe reply threading."},
+                "headers": {"type": "object", "description": "Optional custom headers. Only X-RD-* headers are allowed.", "additionalProperties": {"type": "string"}},
                 "draft_mailbox": {"type": "string", "description": "Optional IMAP mailbox name to save the draft into."},
             },
             "additionalProperties": False,
@@ -1756,6 +1889,9 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "text": {"type": "string"},
                 "html": {"type": "string"},
                 "attachments": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+                "in_reply_to": {"type": "string", "description": "Optional RFC Message-ID for safe reply threading."},
+                "references": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Optional RFC Message-ID list for safe reply threading."},
+                "headers": {"type": "object", "description": "Optional custom headers. Only X-RD-* headers are allowed.", "additionalProperties": {"type": "string"}},
                 "draft_mailbox": {"type": "string", "description": "Optional IMAP mailbox name to save the draft into when dry_run is true."},
                 "preview_only": {"type": "boolean", "default": False, "description": "When true with dry_run, return only a chat preview instead of writing a mailbox draft."},
                 "dry_run": {"type": "boolean", "default": True, "description": "When true, save a mailbox draft by default. Set false only to actually send."},

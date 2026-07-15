@@ -1,0 +1,12 @@
+Return-Path: <Approver@Example.COM>
+Authentication-Results: mx.example.net; dkim=pass header.d=example.com; dmarc=pass action=none
+Received-SPF: pass (mx.example.net: domain of Approver@Example.COM designates 192.0.2.1 as permitted sender) client-ip=192.0.2.1; envelope-from=Approver@Example.COM; helo=mail.example.com; spf=pass
+From: Approver Example <approver@example.com>
+To: Requester Example <requester@example.com>
+Subject: Re: Release approval
+Date: Wed, 15 Jul 2026 09:30:00 +0000
+Message-ID: <decision-1@example.com>
+In-Reply-To: approval chain <request-1@example.com>
+References: thread-start <root@example.com> <request-1@example.com> <root@example.com>
+
+Approved.

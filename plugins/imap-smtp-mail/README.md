@@ -7,6 +7,11 @@ This plugin connects Codex to email providers through standard IMAP and SMTP.
 It is provider-neutral: QQ Mail, NetEase 163/126/yeah, Ali Mail, Tencent Exmail, 139 Mail,
 and custom enterprise mailboxes can all be configured with the same account format.
 
+## Version
+
+Current plugin/server release: `0.2.0`.
+Changelog note: `0.2.0` adds authenticated thread evidence on readback, constrained reply-thread headers, and the locked CLI bridge.
+
 ## MVP Scope
 
 - List configured accounts without exposing secrets.

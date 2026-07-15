@@ -92,9 +92,8 @@ def test_approval_verification_receipt_example_contains_required_aggregates() ->
 
 @pytest.mark.parametrize("copy_root", COPY_TARGETS, ids=["release-approval", "release-approval-verifier"])
 @pytest.mark.parametrize("file_name", CANONICAL_FILES)
-def test_plugin_contract_copy_matches_canonical_bytes_when_present(copy_root: Path, file_name: str) -> None:
+def test_plugin_contract_copy_matches_canonical_bytes(copy_root: Path, file_name: str) -> None:
     canonical = CANONICAL_DIR / file_name
     copy_path = copy_root / file_name
-    if not copy_path.exists():
-        pytest.skip(f"copy not present yet: {copy_path.relative_to(ROOT)}")
+    assert copy_path.is_file(), f"missing contract copy: {copy_path.relative_to(ROOT)}"
     assert copy_path.read_bytes() == canonical.read_bytes()

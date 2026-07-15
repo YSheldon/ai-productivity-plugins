@@ -1,0 +1,42 @@
+{
+  "contract": "ApprovalVerificationReceipt/v1",
+  "event_id": "rel-2026-07-15-0001",
+  "round_id": 1,
+  "task": "Task 3",
+  "module": "release-approval",
+  "manifest_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "request_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "required_roles": [
+    "release-manager",
+    "security-reviewer"
+  ],
+  "current_decisions": [
+    {
+      "role": "release-manager",
+      "decision_id": "decision-rel-2026-07-15-0001-release-manager",
+      "decision": "APPROVE",
+      "approver_email": "approver@example.com",
+      "source": "LOCAL_PAGE",
+      "original_message_id": "<release-approval-request-20260715@example.com>",
+      "decided_at": "2026-07-15T18:30:00Z"
+    },
+    {
+      "role": "security-reviewer",
+      "decision_id": "decision-rel-2026-07-15-0001-security-reviewer",
+      "decision": "APPROVE",
+      "approver_email": "security@example.com",
+      "source": "EMAIL_REPLY",
+      "original_message_id": "<security-review-reply-20260715@example.com>",
+      "decided_at": "2026-07-15T18:42:00Z"
+    }
+  ],
+  "source_message_ids": [
+    "<release-approval-request-20260715@example.com>",
+    "<security-review-reply-20260715@example.com>"
+  ],
+  "aggregate_status": "APPROVED",
+  "generated_at": "2026-07-15T18:45:00Z",
+  "evidence_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "receipt_algorithm": "HMAC-SHA256",
+  "receipt_hmac": "base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+}

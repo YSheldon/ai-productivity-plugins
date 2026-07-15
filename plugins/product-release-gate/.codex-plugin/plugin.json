@@ -1,7 +1,7 @@
 {
   "name": "product-release-gate",
-  "version": "0.1.0",
-  "description": "Create verifiable submission and release gates for product material.",
+  "version": "0.2.0",
+  "description": "Create verifiable product-material gates and authorized phased production releases.",
   "author": {
     "name": "Sheldon"
   },
@@ -12,14 +12,16 @@
     "artifact",
     "signing",
     "testing",
-    "release"
+    "release",
+    "deployment",
+    "rollback"
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Product Release Gate",
-    "shortDescription": "Automate product submission and release gates",
-    "longDescription": "Create immutable submission manifests, run fail-closed submission and release checks, collect test evidence, produce final release material, and retain auditable gate receipts.",
+    "shortDescription": "Gate and authorize phased product releases",
+    "longDescription": "Create immutable manifests, execute fail-closed submission and release checks, validate external approvals, issue scoped authorization credentials, deploy through pre-production, canary, and full stages, and retain HMAC-signed evidence with automatic rollback.",
     "developerName": "Sheldon",
     "category": "Developer Tools",
     "capabilities": [
@@ -29,7 +31,8 @@
     "defaultPrompt": [
       "Run the product release gate preflight.",
       "Create a submission event for these build artifacts.",
-      "Run release checks for the final material."
+      "Run release checks for the final material.",
+      "Authorize and execute a phased production release."
     ],
     "brandColor": "#0F766E",
     "composerIcon": "./assets/product-release-gate.svg",

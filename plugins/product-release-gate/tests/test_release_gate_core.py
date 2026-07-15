@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -135,6 +137,62 @@ class ReleaseGateFlowTests(unittest.TestCase):
         self.assertEqual("SUBMISSION_BLOCKED", gate["status"])
         self.assertEqual("BLOCKED", gate["overall"])
         self.assertEqual(["ERROR"], [item["result"] for item in t06])
+
+    def test_required_signature_without_thumbprint_allowlist_fails_preflight(self) -> None:
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        config["policy"]["require_signature"] = True
+        config["signature"] = {"expected_thumbprints": []}
+        path = self.root / "config-signature-missing.json"
+        path.write_text(json.dumps(config), encoding="utf-8")
+
+        preflight = self._controller(path).preflight()
+
+        self.assertFalse(preflight["ready"])
+        self.assertIn("signature_trust_policy", preflight["missing_required_integrations"])
+
+    def test_authenticode_requires_exact_allowed_thumbprint(self) -> None:
+        allowed = "A" * 40
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        config["policy"]["require_signature"] = True
+        config["signature"] = {
+            "expected_thumbprints": [allowed],
+            "expected_subject_contains": "Product Signing",
+        }
+        path = self.root / "config-signature-allowlist.json"
+        path.write_text(json.dumps(config), encoding="utf-8")
+        controller = self._controller(path)
+        artifact = {"logical_name": "product.bin", "file_path": str(self.artifact)}
+
+        def completed(thumbprint: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "status": "Valid",
+                        "status_message": "Signature verified",
+                        "subject": "CN=Product Signing",
+                        "thumbprint": thumbprint,
+                    }
+                ),
+                stderr="",
+            )
+
+        with patch("release_gate_core.os.name", "nt"), patch(
+            "release_gate_core.subprocess.run",
+            return_value=completed("B" * 40),
+        ):
+            rejected = controller._signature_result("T-05", artifact)
+        with patch("release_gate_core.os.name", "nt"), patch(
+            "release_gate_core.subprocess.run",
+            return_value=completed(allowed),
+        ):
+            accepted = controller._signature_result("T-05", artifact)
+
+        self.assertEqual("FAIL", rejected["result"])
+        self.assertIn("thumbprint", rejected["detail"])
+        self.assertEqual("PASS", accepted["result"])
+        self.assertIn(allowed, accepted["evidence_ref"])
 
 
 if __name__ == "__main__":

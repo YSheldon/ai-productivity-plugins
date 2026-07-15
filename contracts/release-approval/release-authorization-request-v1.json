@@ -1,0 +1,23 @@
+{
+  "contract": "ReleaseAuthorizationRequest/v1",
+  "event_id": "rel-2026-07-15-0001",
+  "round_id": 1,
+  "task": "Task 3",
+  "module": "release-approval",
+  "manifest_s_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "manifest_r_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "manifest_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "request_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "role_snapshot_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "required_roles": [
+    "release-manager",
+    "security-reviewer"
+  ],
+  "original_message_id": "<release-approval-request-20260715@example.com>",
+  "references": [
+    "<release-approval-thread-root@example.com>",
+    "<release-approval-request-20260715@example.com>"
+  ],
+  "expires_at": "2026-07-16T00:00:00Z",
+  "idempotency_key": "release-approval-request-rel-2026-07-15-0001-round-1"
+}

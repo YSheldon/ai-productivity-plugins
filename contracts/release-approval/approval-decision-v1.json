@@ -1,0 +1,19 @@
+{
+  "contract": "ApprovalDecision/v1",
+  "decision_id": "decision-rel-2026-07-15-0001-release-manager",
+  "request_event_id": "rel-2026-07-15-0001",
+  "request_round_id": 1,
+  "task": "Task 3",
+  "module": "release-approval",
+  "manifest_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "request_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "role": "release-manager",
+  "approver_email": "approver@example.com",
+  "decision": "APPROVE",
+  "comment": "Approved after reviewing the frozen release manifests.",
+  "source": "LOCAL_PAGE",
+  "original_message_id": "<release-approval-request-20260715@example.com>",
+  "decided_at": "2026-07-15T18:30:00Z",
+  "page_html_sha256": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "idempotency_key": "approval-decision-rel-2026-07-15-0001-release-manager"
+}

@@ -57,6 +57,7 @@ COMMON_DRAFT_MAILBOX_CANDIDATES = ["Drafts", "&g0l6P3ux-", "草稿箱", "草稿"
 DPAPI_PREFIX = "dpapi-v1:"
 DPAPI_ENTROPY = b"imap-smtp-mail:password:v1"
 CUSTOM_HEADER_PREFIX = "X-RD-"
+CUSTOM_HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 MESSAGE_ID_PATTERN = re.compile(r"^<[^<>\r\n]+>$")
 MESSAGE_ID_EXTRACT_PATTERN = re.compile(r"<[^<>\r\n]+>")
 
@@ -724,6 +725,23 @@ def validate_message_id(value: str, *, field_name: str) -> str:
     return value
 
 
+def validate_custom_header_name(value: str) -> str:
+    if not value:
+        raise ToolError("header name must be non-empty.")
+    if "\r" in value or "\n" in value:
+        raise ToolError("header name must be a single-line header name.")
+    if len(value) > 2048:
+        raise ToolError("header name must be 2048 characters or fewer.")
+    if not value.startswith(CUSTOM_HEADER_PREFIX):
+        raise ToolError(f"Reserved header names are rejected: {value}")
+    suffix = value[len(CUSTOM_HEADER_PREFIX):]
+    if not suffix:
+        raise ToolError("header name suffix must be non-empty after X-RD- prefix.")
+    if not CUSTOM_HEADER_NAME_PATTERN.fullmatch(value):
+        raise ToolError("header name must use a valid header token.")
+    return value
+
+
 def apply_threading_headers(message: EmailMessage, args: dict[str, Any]) -> None:
     in_reply_to = args.get("in_reply_to")
     if in_reply_to:
@@ -742,9 +760,7 @@ def apply_custom_headers(message: EmailMessage, headers: Any) -> None:
     if not isinstance(headers, dict):
         raise ToolError("headers must be an object.")
     for raw_name, raw_value in headers.items():
-        name = str(raw_name)
-        if not name.startswith(CUSTOM_HEADER_PREFIX):
-            raise ToolError(f"Reserved header names are rejected: {name}")
+        name = validate_custom_header_name(str(raw_name))
         value = validate_single_line_value(str(raw_value), field_name=name)
         message[name] = value
 

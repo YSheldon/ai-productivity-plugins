@@ -159,6 +159,42 @@ def test_compose_email_message_sets_safe_threading_headers() -> None:
                 "to": ["requester@example.com"],
                 "subject": "Re: Release approval",
                 "text": "Approved.",
+                "headers": {"X-RD-": "evt-123"},
+            },
+            "header name suffix",
+        ),
+        (
+            {
+                "to": ["requester@example.com"],
+                "subject": "Re: Release approval",
+                "text": "Approved.",
+                "headers": {"X-RD-Event-Id\nBcc": "evt-123"},
+            },
+            "single-line header name",
+        ),
+        (
+            {
+                "to": ["requester@example.com"],
+                "subject": "Re: Release approval",
+                "text": "Approved.",
+                "headers": {"X-RD-Event Id": "evt-123"},
+            },
+            "valid header token",
+        ),
+        (
+            {
+                "to": ["requester@example.com"],
+                "subject": "Re: Release approval",
+                "text": "Approved.",
+                "headers": {"X-RD-" + ("A" * 2048): "evt-123"},
+            },
+            "header name must be 2048 characters or fewer",
+        ),
+        (
+            {
+                "to": ["requester@example.com"],
+                "subject": "Re: Release approval",
+                "text": "Approved.",
                 "in_reply_to": "request-1@example.com",
             },
             "Message-ID",

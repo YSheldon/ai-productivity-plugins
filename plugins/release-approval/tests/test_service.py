@@ -3,7 +3,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import sys
+import urllib.parse
+import urllib.request
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +17,7 @@ import pytest
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
+from release_approval_page import DecisionPageBinding, ReleaseApprovalPage
 from release_approval_config import (
     AuditConfig,
     MailAccountConfig,
@@ -42,6 +46,26 @@ class FakeMailGateway:
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+
+class SequencedMailGateway:
+    def __init__(self, results: list[MailSendResult | Exception]) -> None:
+        self.results = list(results)
+        self.sent_payloads: list[dict[str, object]] = []
+
+    def require_thread_reply_capability(self, payload: dict[str, object]) -> None:
+        reply_subject = str(payload.get("reply_subject") or "")
+        if not reply_subject:
+            raise MailCapabilityError("CAPABILITY_BLOCKED: reply threading fields are missing.")
+
+    def send_email(self, payload: dict[str, object]) -> MailSendResult:
+        self.sent_payloads.append(payload)
+        if not self.results:
+            raise AssertionError("No queued mail result.")
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 def _fixed_now() -> datetime:
@@ -142,6 +166,19 @@ def _assert_sha256sums_current(artifact_dir: Path) -> None:
     assert sorted(seen_files) == expected_files
 
 
+def _decode_machine_block(text_body: str) -> dict[str, object]:
+    begin_marker = "-----BEGIN APPROVAL DECISION-----"
+    end_marker = "-----END APPROVAL DECISION-----"
+    encoded_block = text_body.split(begin_marker, 1)[1].split(end_marker, 1)[0].strip()
+    padded = encoded_block + "=" * (-len(encoded_block) % 4)
+    return json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+
+
+def _hidden_fields_from_html(page_html: str) -> dict[str, str]:
+    pattern = re.compile(r'<input type="hidden" name="([^"]+)" value="([^"]*)">')
+    return {match.group(1): match.group(2) for match in pattern.finditer(page_html)}
+
+
 def test_service_builds_exact_threaded_reply_and_writes_audit_artifacts(tmp_path: Path) -> None:
     config = _config(tmp_path / "state")
     store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")
@@ -181,10 +218,7 @@ def test_service_builds_exact_threaded_reply_and_writes_audit_artifacts(tmp_path
 
     text_body = str(payload["text"])
     assert "Ship it." in text_body
-    begin_marker = "-----BEGIN APPROVAL DECISION-----"
-    end_marker = "-----END APPROVAL DECISION-----"
-    encoded_block = text_body.split(begin_marker, 1)[1].split(end_marker, 1)[0].strip()
-    decoded_payload = json.loads(base64.urlsafe_b64decode(encoded_block + "=" * (-len(encoded_block) % 4)).decode("utf-8"))
+    decoded_payload = _decode_machine_block(text_body)
     assert decoded_payload == _expected_decision_payload(
         request,
         decision="APPROVE",
@@ -257,6 +291,199 @@ def test_build_decision_payload_is_stable_for_retry_and_round_scoped(tmp_path: P
         "decided_at",
         "idempotency_key",
     }
+
+
+def test_service_page_round_trip_serves_service_artifacts_and_keeps_page_html_immutable(tmp_path: Path) -> None:
+    config = _config(tmp_path / "state")
+    store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")
+    mail = FakeMailGateway(MailSendResult(sent=True, message_id="<smtp-message@example.com>", refused={}, raw={"sent": True}))
+    service = ReleaseApprovalService(config=config, store=store, mail_gateway=mail, now_fn=_fixed_now)
+    request = _request()
+    request_payload = {"reply_subject": "Re: Release approval"}
+
+    service.record_request(request)
+    page_session = service.create_page_session(request=request, request_payload=request_payload)
+    persisted_html = page_session.page_html_path.read_text(encoding="utf-8")
+
+    page = ReleaseApprovalPage.from_page_session(
+        host="127.0.0.1",
+        artifact_dir=page_session.artifact_dir,
+        binding=DecisionPageBinding(
+            event_id=request.event_id,
+            round_id=request.round_id,
+            role_id=request.installed_role_id,
+            expires_at=request.expires_at,
+            page_html_sha256=page_session.page_html_sha256,
+        ),
+        page_session=page_session,
+        submit_decision=lambda form: service.submit_local_decision(
+            request=request,
+            request_payload=request_payload,
+            page_session=page_session,
+            decision=form["decision"],
+            comment=form["comment"],
+            nonce=form["nonce"],
+            page_html_sha256=form["page_html_sha256"],
+        ),
+        open_browser=lambda _url: None,
+        now_fn=_fixed_now,
+    )
+
+    page.start()
+    try:
+        served_html = urllib.request.urlopen(page.url, timeout=5).read().decode("utf-8")
+        hidden_fields = _hidden_fields_from_html(served_html)
+
+        assert "__NONCE__" not in served_html
+        assert "__PAGE_HTML_SHA256__" not in served_html
+        assert hidden_fields["nonce"] == page_session.nonce
+        assert hidden_fields["page_html_sha256"] == page_session.page_html_sha256
+        assert page.url.endswith(f"/{page_session.url_key}/")
+
+        payload = urllib.parse.urlencode(
+            {
+                **hidden_fields,
+                "decision": "APPROVE",
+                "comment": "Ship it.",
+            }
+        ).encode("utf-8")
+        response = urllib.request.urlopen(page.url, data=payload, timeout=5)
+        assert response.read().decode("utf-8") == "sent"
+    finally:
+        page.close()
+
+    assert page_session.page_html_path.read_text(encoding="utf-8") == persisted_html
+    assert "__NONCE__" in persisted_html
+    assert "__PAGE_HTML_SHA256__" in persisted_html
+    assert _decode_machine_block(str(mail.sent_payloads[0]["text"]))["page_html_sha256"] == page_session.page_html_sha256
+    _assert_sha256sums_current(page_session.artifact_dir)
+
+
+def test_service_retry_reuses_original_decision_identity_after_retry_queued_in_same_process(tmp_path: Path) -> None:
+    config = _config(tmp_path / "state")
+    store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")
+    gateway = SequencedMailGateway(
+        [
+            MailSendResult(
+                sent=True,
+                message_id="<smtp-refused@example.com>",
+                refused={"release-approvers@example.com": [451, "Retry later"]},
+                raw={"sent": True},
+            ),
+            MailSendResult(sent=True, message_id="<smtp-success@example.com>", refused={}, raw={"sent": True}),
+        ]
+    )
+    first_now = datetime(2026, 7, 16, 1, 2, 3, tzinfo=timezone.utc)
+    second_now = datetime(2026, 7, 16, 2, 3, 4, tzinfo=timezone.utc)
+    current_now = {"value": first_now}
+
+    def dynamic_now() -> datetime:
+        return current_now["value"]
+
+    service = ReleaseApprovalService(config=config, store=store, mail_gateway=gateway, now_fn=dynamic_now)
+    request = _request()
+    request_payload = {"reply_subject": "Re: Release approval"}
+
+    service.record_request(request)
+    page_session = service.create_page_session(request=request, request_payload=request_payload)
+    first = service.submit_local_decision(
+        request=request,
+        request_payload=request_payload,
+        page_session=page_session,
+        decision="HOLD",
+        comment="Need one more smoke test.",
+        nonce=page_session.nonce,
+        page_html_sha256=page_session.page_html_sha256,
+    )
+
+    current_now["value"] = second_now
+    second = service.submit_local_decision(
+        request=request,
+        request_payload=request_payload,
+        page_session=page_session,
+        decision="HOLD",
+        comment="Need one more smoke test.",
+        nonce=page_session.nonce,
+        page_html_sha256=page_session.page_html_sha256,
+    )
+
+    assert first.status == "retry_queued"
+    assert second.status == "sent"
+    current = store.get_current_decision(request.event_id, request.round_id, request.installed_role_id)
+    assert current is not None
+    assert current.decided_at == "2026-07-16T01:02:03Z"
+    assert store.connection.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 1
+    sent_payload = _decode_machine_block(str(gateway.sent_payloads[-1]["text"]))
+    assert sent_payload["decision_id"] == current.decision_id
+    assert sent_payload["idempotency_key"] == current.idempotency_key
+    assert sent_payload["decided_at"] == current.decided_at
+    _assert_sha256sums_current(page_session.artifact_dir)
+
+
+def test_service_retry_reuses_original_decision_identity_after_service_restart(tmp_path: Path) -> None:
+    config = _config(tmp_path / "state")
+    request = _request()
+    request_payload = {"reply_subject": "Re: Release approval"}
+    first_store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")
+    first_gateway = FakeMailGateway(
+        MailSendResult(
+            sent=True,
+            message_id="<smtp-refused@example.com>",
+            refused={"release-approvers@example.com": [451, "Retry later"]},
+            raw={"sent": True},
+        )
+    )
+    first_service = ReleaseApprovalService(
+        config=config,
+        store=first_store,
+        mail_gateway=first_gateway,
+        now_fn=lambda: datetime(2026, 7, 16, 1, 2, 3, tzinfo=timezone.utc),
+    )
+
+    first_service.record_request(request)
+    page_session = first_service.create_page_session(request=request, request_payload=request_payload)
+    first = first_service.submit_local_decision(
+        request=request,
+        request_payload=request_payload,
+        page_session=page_session,
+        decision="APPROVE",
+        comment="Ship it.",
+        nonce=page_session.nonce,
+        page_html_sha256=page_session.page_html_sha256,
+    )
+    first_store.close()
+
+    restarted_store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")
+    restarted_gateway = FakeMailGateway(
+        MailSendResult(sent=True, message_id="<smtp-success@example.com>", refused={}, raw={"sent": True})
+    )
+    restarted_service = ReleaseApprovalService(
+        config=config,
+        store=restarted_store,
+        mail_gateway=restarted_gateway,
+        now_fn=lambda: datetime(2026, 7, 16, 3, 4, 5, tzinfo=timezone.utc),
+    )
+    second = restarted_service.submit_local_decision(
+        request=request,
+        request_payload=request_payload,
+        page_session=page_session,
+        decision="APPROVE",
+        comment="Ship it.",
+        nonce=page_session.nonce,
+        page_html_sha256=page_session.page_html_sha256,
+    )
+
+    assert first.status == "retry_queued"
+    assert second.status == "sent"
+    current = restarted_store.get_current_decision(request.event_id, request.round_id, request.installed_role_id)
+    assert current is not None
+    assert current.decided_at == "2026-07-16T01:02:03Z"
+    assert restarted_store.connection.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 1
+    sent_payload = _decode_machine_block(str(restarted_gateway.sent_payloads[0]["text"]))
+    assert sent_payload["decision_id"] == current.decision_id
+    assert sent_payload["idempotency_key"] == current.idempotency_key
+    assert sent_payload["decided_at"] == current.decided_at
+    _assert_sha256sums_current(page_session.artifact_dir)
 
 
 def test_service_queues_retry_when_smtp_refuses_any_recipient(tmp_path: Path) -> None:

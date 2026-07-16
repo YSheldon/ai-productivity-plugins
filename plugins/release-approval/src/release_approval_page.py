@@ -53,6 +53,7 @@ class ReleaseApprovalPage:
         now_fn: Callable[[], datetime] | None = None,
         token_bytes: Callable[[int], bytes] | None = None,
         server_class: type[http.server.ThreadingHTTPServer] = http.server.ThreadingHTTPServer,
+        page_session: object | None = None,
     ) -> None:
         if not self._is_loopback_host(host):
             raise ReleaseApprovalPageError("local approval page must bind loopback only.")
@@ -70,11 +71,25 @@ class ReleaseApprovalPage:
         self._server_thread: threading.Thread | None = None
         self._submission_lock = threading.Lock()
         self._artifact_lock = threading.RLock()
-        self.url_key = self._random_token(32)
-        self.url_key_bytes = self._token_length_bytes(self.url_key)
-        self.nonce = self._random_token(32)
+        self.page_html_path = self.artifact_dir / "page.html"
+        self.page_state_path = self.artifact_dir / "page-state.json"
+        self.browser_events_path = self.artifact_dir / "browser-events.jsonl"
+        self._page_session = page_session
         self._nonce_used = False
-        self._write_initial_artifacts()
+        self._nonce_reserved = False
+        if page_session is None:
+            self.url_key = self._random_token(32)
+            self.url_key_bytes = self._token_length_bytes(self.url_key)
+            self.nonce = self._random_token(32)
+            self._write_initial_artifacts()
+        else:
+            self.url_key = str(getattr(page_session, "url_key"))
+            self.url_key_bytes = self._token_length_bytes(self.url_key)
+            self.nonce = str(getattr(page_session, "nonce"))
+            self.page_html_path = Path(getattr(page_session, "page_html_path"))
+            self.page_state_path = Path(getattr(page_session, "page_state_path"))
+            self.browser_events_path = Path(getattr(page_session, "browser_events_path"))
+            self._load_existing_artifacts()
 
     @property
     def port(self) -> int:
@@ -85,6 +100,34 @@ class ReleaseApprovalPage:
     @property
     def url(self) -> str:
         return f"http://{self.host}:{self.port}/{self.url_key}/"
+
+    @classmethod
+    def from_page_session(
+        cls,
+        *,
+        host: str,
+        artifact_dir: str | Path,
+        binding: DecisionPageBinding,
+        page_session: object,
+        submit_decision: Callable[[dict[str, str]], DecisionPageResult],
+        open_browser: Callable[[str], None],
+        now_fn: Callable[[], datetime] | None = None,
+        token_bytes: Callable[[int], bytes] | None = None,
+        server_class: type[http.server.ThreadingHTTPServer] = http.server.ThreadingHTTPServer,
+    ) -> "ReleaseApprovalPage":
+        return cls(
+            host=host,
+            artifact_dir=artifact_dir,
+            page_title="Release approval",
+            page_body_html="",
+            binding=binding,
+            submit_decision=submit_decision,
+            open_browser=open_browser,
+            now_fn=now_fn,
+            token_bytes=token_bytes,
+            server_class=server_class,
+            page_session=page_session,
+        )
 
     def start(self) -> None:
         handler = self._handler_class()
@@ -105,8 +148,8 @@ class ReleaseApprovalPage:
 
     def _write_initial_artifacts(self) -> None:
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
-        (self.artifact_dir / "page.html").write_text(self._persisted_html(), encoding="utf-8")
-        (self.artifact_dir / "page-state.json").write_text(
+        self.page_html_path.write_text(self._persisted_html(), encoding="utf-8")
+        self.page_state_path.write_text(
             json.dumps(
                 {
                     "event_id": self.binding.event_id,
@@ -123,6 +166,48 @@ class ReleaseApprovalPage:
             encoding="utf-8",
         )
         self._append_browser_event("page_created", {"event_id": self.binding.event_id})
+
+    def _load_existing_artifacts(self) -> None:
+        artifact_dir = self.artifact_dir.resolve(strict=False)
+        session_artifact_dir = Path(getattr(self._page_session, "artifact_dir")).resolve(strict=False)
+        if session_artifact_dir != artifact_dir:
+            raise ReleaseApprovalPageError("page session artifact binding mismatch.")
+        expected_paths = {
+            self.page_html_path.resolve(strict=False): (artifact_dir / "page.html").resolve(strict=False),
+            self.page_state_path.resolve(strict=False): (artifact_dir / "page-state.json").resolve(strict=False),
+            self.browser_events_path.resolve(strict=False): (artifact_dir / "browser-events.jsonl").resolve(strict=False),
+        }
+        for actual, expected in expected_paths.items():
+            if actual != expected:
+                raise ReleaseApprovalPageError("page session artifact binding mismatch.")
+        if not self.page_html_path.is_file() or not self.page_state_path.is_file() or not self.browser_events_path.is_file():
+            raise ReleaseApprovalPageError("page session artifacts are incomplete.")
+
+        persisted_html = self.page_html_path.read_text(encoding="utf-8")
+        expected_html_sha256 = str(getattr(self._page_session, "page_html_sha256"))
+        if self._sha256_prefixed(persisted_html) != expected_html_sha256 or expected_html_sha256 != self.binding.page_html_sha256:
+            raise ReleaseApprovalPageError("page HTML binding mismatch.")
+        if "__NONCE__" not in persisted_html or "__PAGE_HTML_SHA256__" not in persisted_html:
+            raise ReleaseApprovalPageError("page session HTML template is missing required placeholders.")
+
+        state = json.loads(self.page_state_path.read_text(encoding="utf-8"))
+        expected_nonce_sha256 = self._sha256_prefixed(self.nonce)
+        if state.get("event_id") != self.binding.event_id:
+            raise ReleaseApprovalPageError("event binding mismatch.")
+        if state.get("round_id") != self.binding.round_id:
+            raise ReleaseApprovalPageError("round binding mismatch.")
+        if state.get("role_id") != self.binding.role_id:
+            raise ReleaseApprovalPageError("role binding mismatch.")
+        if state.get("expires_at") != self.binding.expires_at:
+            raise ReleaseApprovalPageError("page session state binding mismatch.")
+        if state.get("page_html_sha256") != self.binding.page_html_sha256:
+            raise ReleaseApprovalPageError("page HTML binding mismatch.")
+        if state.get("nonce_sha256") != expected_nonce_sha256 or expected_nonce_sha256 != str(getattr(self._page_session, "nonce_sha256")):
+            raise ReleaseApprovalPageError("nonce mismatch.")
+        created_at = getattr(self._page_session, "created_at", None)
+        if created_at is not None and state.get("created_at") != created_at:
+            raise ReleaseApprovalPageError("page session state binding mismatch.")
+        self._nonce_used = "used_at" in state
 
     def _persisted_html(self) -> str:
         return "\n".join(
@@ -152,7 +237,11 @@ class ReleaseApprovalPage:
         )
 
     def _served_html(self) -> str:
-        return (self.artifact_dir / "page.html").read_text(encoding="utf-8").replace("__NONCE__", self.nonce)
+        return (
+            self.page_html_path.read_text(encoding="utf-8")
+            .replace("__NONCE__", self.nonce)
+            .replace("__PAGE_HTML_SHA256__", self.binding.page_html_sha256)
+        )
 
     def _handler_class(self) -> type[http.server.BaseHTTPRequestHandler]:
         page = self
@@ -233,13 +322,21 @@ class ReleaseApprovalPage:
 
     def _handle_submission(self, form: dict[str, str]) -> DecisionPageResult:
         self._validate_submission(form)
-        self._claim_nonce()
-        self._append_browser_event("page_post", {"decision": form["decision"]})
-        result = self.submit_decision(form)
-        if result.response_text not in {"sent", "retry queued", "rejected"}:
-            raise ReleaseApprovalPageError("page response must be sent, retry queued, or rejected.")
-        self._write_sha256sums()
-        return result
+        self._reserve_nonce()
+        try:
+            self._append_browser_event("page_post", {"decision": form["decision"]})
+            result = self.submit_decision(form)
+            if result.response_text not in {"sent", "retry queued", "rejected"}:
+                raise ReleaseApprovalPageError("page response must be sent, retry queued, or rejected.")
+            if result.status == "sent":
+                self._consume_reserved_nonce()
+            else:
+                self._release_reserved_nonce()
+            self._write_sha256sums()
+            return result
+        except Exception:
+            self._release_reserved_nonce()
+            raise
 
     def _validate_submission(self, form: dict[str, str]) -> None:
         if form["event_id"] != self.binding.event_id:
@@ -257,26 +354,50 @@ class ReleaseApprovalPage:
         if self._parse_timestamp(self.binding.expires_at) <= self.now_fn().astimezone(timezone.utc):
             raise ReleaseApprovalPageError("page is expired.")
 
-    def _claim_nonce(self) -> None:
+    def _reserve_nonce(self) -> None:
         with self._submission_lock:
-            if self._nonce_used:
+            if self._nonce_used or self._nonce_reserved:
                 raise ReleaseApprovalPageError("nonce is single-use.")
-            self._nonce_used = True
             with self._artifact_lock:
-                state = json.loads((self.artifact_dir / "page-state.json").read_text(encoding="utf-8"))
-                state["used_at"] = self._isoformat(self.now_fn())
-                (self.artifact_dir / "page-state.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+                state = json.loads(self.page_state_path.read_text(encoding="utf-8"))
+                if "used_at" in state:
+                    self._nonce_used = True
+                    raise ReleaseApprovalPageError("nonce is single-use.")
+                state["reserved_at"] = self._isoformat(self.now_fn())
+                self.page_state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
                 self._write_sha256sums()
+            self._nonce_reserved = True
+
+    def _consume_reserved_nonce(self) -> None:
+        with self._submission_lock:
+            with self._artifact_lock:
+                state = json.loads(self.page_state_path.read_text(encoding="utf-8"))
+                state.pop("reserved_at", None)
+                state["used_at"] = self._isoformat(self.now_fn())
+                self.page_state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+                self._write_sha256sums()
+            self._nonce_reserved = False
+            self._nonce_used = True
+
+    def _release_reserved_nonce(self) -> None:
+        with self._submission_lock:
+            if not self._nonce_reserved:
+                return
+            with self._artifact_lock:
+                state = json.loads(self.page_state_path.read_text(encoding="utf-8"))
+                if state.pop("reserved_at", None) is not None:
+                    self.page_state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+                    self._write_sha256sums()
+            self._nonce_reserved = False
 
     def _append_browser_event(self, event_type: str, payload: dict[str, object]) -> None:
-        path = self.artifact_dir / "browser-events.jsonl"
         record = {
             "event_type": event_type,
             "recorded_at": self._isoformat(self.now_fn()),
             "payload": payload,
         }
         with self._artifact_lock:
-            with path.open("a", encoding="utf-8", newline="\n") as handle:
+            with self.browser_events_path.open("a", encoding="utf-8", newline="\n") as handle:
                 handle.write(json.dumps(record, separators=(",", ":")) + "\n")
             self._write_sha256sums()
 
@@ -348,13 +469,10 @@ class ReleaseApprovalPage:
         except ValueError:
             return False
 
-    @staticmethod
-    def _random_token(size: int) -> str:
-        return base64.urlsafe_b64encode(secrets.token_bytes(size)).rstrip(b"=").decode("ascii")
+    def _random_token(self, size: int) -> str:
+        return base64.urlsafe_b64encode(self.token_bytes(size)).rstrip(b"=").decode("ascii")
 
     @staticmethod
     def _token_length_bytes(token: str) -> int:
         padded = token + "=" * (-len(token) % 4)
         return len(base64.urlsafe_b64decode(padded.encode("ascii")))
-
-

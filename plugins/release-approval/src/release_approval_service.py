@@ -186,15 +186,11 @@ class ReleaseApprovalService:
         if decided_at is None and cache_key in self._decision_cache:
             return dict(self._decision_cache[cache_key])
         timestamp = decided_at or self._isoformat(self.now_fn())
-        decision_scope = self._decision_scope_payload(
+        decision_id, idempotency_key = self._decision_identity(
             request=request,
             decision=decision,
             comment=comment,
             page_html_sha256=page_html_sha256,
-        )
-        stable_digest = self._decision_stable_digest(decision_scope)
-        decision_id = (
-            f"decision-{request.event_id}-round-{request.round_id}-{request.installed_role_id}-{stable_digest}"
         )
         payload = {
             "schema": "ApprovalDecision/v1",
@@ -210,7 +206,7 @@ class ReleaseApprovalService:
             "original_message_id": request.original_message_id,
             "page_html_sha256": page_html_sha256,
             "decided_at": timestamp,
-            "idempotency_key": f"decision:{request.event_id}:{request.round_id}:{request.installed_role_id}:{stable_digest}",
+            "idempotency_key": idempotency_key,
         }
         self._decision_cache[cache_key] = dict(payload)
         return payload
@@ -237,9 +233,82 @@ class ReleaseApprovalService:
             "page_html_sha256": page_html_sha256,
         }
 
+    def _decision_identity(
+        self,
+        *,
+        request: ReleaseAuthorizationRequest,
+        decision: str,
+        comment: str,
+        page_html_sha256: str,
+    ) -> tuple[str, str]:
+        decision_scope = self._decision_scope_payload(
+            request=request,
+            decision=decision,
+            comment=comment,
+            page_html_sha256=page_html_sha256,
+        )
+        stable_digest = self._decision_stable_digest(decision_scope)
+        return (
+            f"decision-{request.event_id}-round-{request.round_id}-{request.installed_role_id}-{stable_digest}",
+            f"decision:{request.event_id}:{request.round_id}:{request.installed_role_id}:{stable_digest}",
+        )
+
     @staticmethod
     def _decision_stable_digest(payload: Mapping[str, Any]) -> str:
         return hashlib.sha256(canonical_json(dict(payload)).encode("utf-8")).hexdigest()
+
+    def _reusable_retry_decision_payload(
+        self,
+        *,
+        request: ReleaseAuthorizationRequest,
+        decision: str,
+        comment: str,
+        page_html_sha256: str,
+    ) -> dict[str, Any] | None:
+        current = self.store.get_current_decision(request.event_id, request.round_id, request.installed_role_id)
+        if current is None:
+            return None
+        decision_id, idempotency_key = self._decision_identity(
+            request=request,
+            decision=decision,
+            comment=comment,
+            page_html_sha256=page_html_sha256,
+        )
+        if current.idempotency_key != idempotency_key:
+            return None
+        expected_fields = {
+            "decision_id": decision_id,
+            "decision": decision,
+            "approver_email": request.installed_role_email,
+            "comment": comment,
+            "source": "LOCAL_PAGE",
+            "original_message_id": request.original_message_id,
+            "page_html_sha256": page_html_sha256,
+            "request_digest": request.request_digest,
+        }
+        mismatched = [
+            key
+            for key, value in expected_fields.items()
+            if getattr(current, key) != value
+        ]
+        if mismatched:
+            raise ReleaseApprovalServiceError("persisted retry decision state does not match the current request.")
+        return {
+            "schema": "ApprovalDecision/v1",
+            "decision_id": current.decision_id,
+            "event_id": request.event_id,
+            "round_id": request.round_id,
+            "manifest_digest": request.manifest_digest,
+            "role_snapshot_digest": request.role_snapshot_digest,
+            "approver_email": current.approver_email,
+            "decision": current.decision,
+            "comment": current.comment,
+            "source": current.source,
+            "original_message_id": current.original_message_id,
+            "page_html_sha256": current.page_html_sha256,
+            "decided_at": current.decided_at,
+            "idempotency_key": current.idempotency_key,
+        }
 
     def submit_local_decision(
         self,
@@ -253,29 +322,37 @@ class ReleaseApprovalService:
         page_html_sha256: str,
     ) -> SubmissionResult:
         self._validate_page_submission(request=request, page_session=page_session, nonce=nonce, page_html_sha256=page_html_sha256)
-        decided_at = self._isoformat(self.now_fn())
-        decision_payload = self.build_decision_payload(
-            request,
-            decision,
-            comment,
-            page_session.page_html_sha256,
-            decided_at=decided_at,
-        )
-        self.store.record_decision(
-            decision_id=str(decision_payload["decision_id"]),
-            request_event_id=request.event_id,
-            request_round_id=request.round_id,
-            role=request.installed_role_id,
-            approver_email=request.installed_role_email,
+        decision_payload = self._reusable_retry_decision_payload(
+            request=request,
             decision=decision,
             comment=comment,
-            source="LOCAL_PAGE",
-            original_message_id=request.original_message_id,
-            decided_at=decided_at,
             page_html_sha256=page_session.page_html_sha256,
-            request_digest=request.request_digest,
-            idempotency_key=str(decision_payload["idempotency_key"]),
         )
+        if decision_payload is None:
+            decided_at = self._isoformat(self.now_fn())
+            decision_payload = self.build_decision_payload(
+                request,
+                decision,
+                comment,
+                page_session.page_html_sha256,
+                decided_at=decided_at,
+            )
+            self.store.record_decision(
+                decision_id=str(decision_payload["decision_id"]),
+                request_event_id=request.event_id,
+                request_round_id=request.round_id,
+                role=request.installed_role_id,
+                approver_email=request.installed_role_email,
+                decision=decision,
+                comment=comment,
+                source="LOCAL_PAGE",
+                original_message_id=request.original_message_id,
+                decided_at=str(decision_payload["decided_at"]),
+                page_html_sha256=page_session.page_html_sha256,
+                request_digest=request.request_digest,
+                idempotency_key=str(decision_payload["idempotency_key"]),
+            )
+        decided_at = str(decision_payload["decided_at"])
         decision_path = page_session.artifact_dir / "decision.json"
         decision_path.write_text(json.dumps(decision_payload, indent=2) + "\n", encoding="utf-8")
         self._write_sha256sums(page_session.artifact_dir)

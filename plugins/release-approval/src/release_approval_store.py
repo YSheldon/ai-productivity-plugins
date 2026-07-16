@@ -47,6 +47,13 @@ class StoredDecision:
     role: str
     decision: str
     approver_email: str
+    comment: str
+    source: str
+    original_message_id: str
+    decided_at: str
+    page_html_sha256: str
+    request_digest: str
+    idempotency_key: str
     superseded_by: str | None
 
 
@@ -54,7 +61,7 @@ class ReleaseApprovalStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(str(self.path), timeout=5.0)
+        self.connection = sqlite3.connect(str(self.path), timeout=5.0, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         self._initialize_schema()
@@ -467,7 +474,21 @@ class ReleaseApprovalStore:
     def get_decision(self, decision_id: str) -> StoredDecision | None:
         row = self.connection.execute(
             """
-            SELECT decision_id, request_event_id, request_round_id, role, decision, approver_email, superseded_by
+            SELECT
+                decision_id,
+                request_event_id,
+                request_round_id,
+                role,
+                decision,
+                approver_email,
+                comment,
+                source,
+                original_message_id,
+                decided_at,
+                page_html_sha256,
+                request_digest,
+                idempotency_key,
+                superseded_by
             FROM decisions
             WHERE decision_id = ?
             """,
@@ -480,7 +501,21 @@ class ReleaseApprovalStore:
     def get_current_decision(self, event_id: str, round_id: int, role: str) -> StoredDecision | None:
         row = self.connection.execute(
             """
-            SELECT decision_id, request_event_id, request_round_id, role, decision, approver_email, superseded_by
+            SELECT
+                decision_id,
+                request_event_id,
+                request_round_id,
+                role,
+                decision,
+                approver_email,
+                comment,
+                source,
+                original_message_id,
+                decided_at,
+                page_html_sha256,
+                request_digest,
+                idempotency_key,
+                superseded_by
             FROM decisions
             WHERE request_event_id = ? AND request_round_id = ? AND role = ? AND superseded_by IS NULL
             ORDER BY id DESC
@@ -647,6 +682,13 @@ class ReleaseApprovalStore:
             role=row["role"],
             decision=row["decision"],
             approver_email=row["approver_email"],
+            comment=row["comment"],
+            source=row["source"],
+            original_message_id=row["original_message_id"],
+            decided_at=row["decided_at"],
+            page_html_sha256=row["page_html_sha256"],
+            request_digest=row["request_digest"],
+            idempotency_key=row["idempotency_key"],
             superseded_by=row["superseded_by"],
         )
 

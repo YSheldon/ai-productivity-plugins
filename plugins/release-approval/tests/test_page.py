@@ -229,7 +229,7 @@ def test_page_response_text_only_reports_sent_retry_or_rejected(tmp_path: Path) 
         page.close()
 
 
-def test_concurrent_valid_posts_accept_exactly_one_and_consume_nonce_even_on_retry(tmp_path: Path) -> None:
+def test_concurrent_valid_posts_allow_one_callback_at_a_time_and_retry_after_retry_queued(tmp_path: Path) -> None:
     seen_forms: list[dict[str, str]] = []
     binding = DecisionPageBinding(
         event_id="rel-2026-07-16-0001",
@@ -238,13 +238,19 @@ def test_concurrent_valid_posts_accept_exactly_one_and_consume_nonce_even_on_ret
         expires_at="2099-07-16T00:00:00Z",
         page_html_sha256="sha256:" + "4" * 64,
     )
+    result_queue = iter(
+        [
+            DecisionPageResult(status="retry_queued", response_text="retry queued"),
+            DecisionPageResult(status="sent", response_text="sent"),
+        ]
+    )
     page = ReleaseApprovalPage(
         host="127.0.0.1",
         artifact_dir=tmp_path,
         page_title="Release approval",
         page_body_html="<p>approve</p>",
         binding=binding,
-        submit_decision=lambda form: seen_forms.append(dict(form)) or DecisionPageResult(status="retry_queued", response_text="retry queued"),
+        submit_decision=lambda form: seen_forms.append(dict(form)) or next(result_queue),
         open_browser=lambda _url: None,
     )
     original_validate = page._validate_submission
@@ -276,12 +282,15 @@ def test_concurrent_valid_posts_accept_exactly_one_and_consume_nonce_even_on_ret
 
         assert sorted(results) == [("http", 409), ("ok", "retry queued")]
         assert len(seen_forms) == 1
+        state_after_retry = _read_json(tmp_path / "page-state.json")
+        assert "used_at" not in state_after_retry
 
         page._validate_submission = original_validate  # type: ignore[method-assign]
-        second_try = urllib.request.Request(page.url, data=payload, method="POST")
-        with pytest.raises(urllib.error.HTTPError) as rejected:
-            urllib.request.urlopen(second_try, timeout=5).read()
-        assert rejected.value.code == 409
+        second_try = urllib.request.urlopen(page.url, data=payload, timeout=5)
+        assert second_try.read().decode("utf-8") == "sent"
+        assert len(seen_forms) == 2
+        state_after_sent = _read_json(tmp_path / "page-state.json")
+        assert state_after_sent["used_at"]
     finally:
         page.close()
 

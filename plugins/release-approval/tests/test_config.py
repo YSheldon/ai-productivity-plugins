@@ -34,7 +34,7 @@ def _base_config() -> dict[str, object]:
             "end": "18:00",
         },
         "state_dir": "%RELEASE_APPROVAL_STATE_ROOT%\\state",
-        "dependency_lock": "~/.codex/release-approval/dependency-lock.json",
+        "dependency_lock": "%RELEASE_APPROVAL_REPO_ROOT%\\dependency-lock.json",
         "audit": {
             "verify_chain_on_startup": True,
             "retention_days": 3650,
@@ -46,6 +46,7 @@ def test_load_config_expands_paths_applies_defaults_and_freezes_required_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("RELEASE_APPROVAL_STATE_ROOT", str(tmp_path))
+    monkeypatch.setenv("RELEASE_APPROVAL_REPO_ROOT", str(tmp_path))
     payload = _base_config()
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -59,7 +60,7 @@ def test_load_config_expands_paths_applies_defaults_and_freezes_required_fields(
     assert config.mail_account.email == "release-manager@example.com"
     assert config.page.host == "127.0.0.1"
     assert config.state_dir == (tmp_path / "state").resolve()
-    assert config.dependency_lock == (Path.home() / ".codex" / "release-approval" / "dependency-lock.json").resolve()
+    assert config.dependency_lock == (tmp_path / "dependency-lock.json").resolve()
     assert config.working_hours.days == ("Mon", "Tue", "Wed", "Thu", "Fri")
 
     with pytest.raises(Exception):
@@ -169,3 +170,12 @@ def test_rejects_per_call_config_override_and_preserves_exact_runtime_copies() -
 def test_mcp_scaffold_is_empty_until_task6_server_exists() -> None:
     mcp_payload = json.loads((PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8"))
     assert mcp_payload == {"mcpServers": {}}
+
+
+def test_shipped_config_keeps_dependency_lock_at_repo_root_and_readme_warns_not_to_copy() -> None:
+    example_payload = json.loads((PLUGIN_ROOT / "config" / "config.example.json").read_text(encoding="utf-8"))
+    assert example_payload["dependency_lock"] == "%RELEASE_APPROVAL_REPO_ROOT%\\dependency-lock.json"
+
+    readme_text = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "%RELEASE_APPROVAL_REPO_ROOT%\\dependency-lock.json" in readme_text
+    assert "must not be copied elsewhere" in readme_text

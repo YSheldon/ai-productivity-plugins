@@ -11,6 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_PATH = ROOT / "tools" / "release_workflow_bootstrap.py"
+EXPECTED_MARKETPLACE_URL = "https://github.com/YSheldon/ai-productivity-plugins.git"
 
 
 def load_bootstrap_module() -> Any:
@@ -27,7 +28,30 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def build_fake_marketplace(root: Path) -> None:
+def write_worktree_git_config(root: Path, origin_url: str = EXPECTED_MARKETPLACE_URL) -> None:
+    git_dir = root / ".git-data"
+    git_dir.mkdir(parents=True, exist_ok=True)
+    (root / ".git").write_text(f"gitdir: {git_dir.as_posix()}\n", encoding="utf-8")
+    (git_dir / "config").write_text(
+        "\n".join(
+            [
+                "[remote \"origin\"]",
+                f"\turl = {origin_url}",
+                "\tfetch = +refs/heads/main:refs/remotes/origin/main",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def build_fake_marketplace(
+    root: Path,
+    *,
+    origin_url: str = EXPECTED_MARKETPLACE_URL,
+    plugin_overrides: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    write_worktree_git_config(root, origin_url=origin_url)
     write_json(
         root / ".agents" / "plugins" / "marketplace.json",
         {
@@ -59,7 +83,10 @@ def build_fake_marketplace(root: Path) -> None:
         },
     }
 
+    plugin_overrides = plugin_overrides or {}
+
     for name, config in plugins.items():
+        config.update(plugin_overrides.get(name, {}))
         plugin_root = root / "plugins" / name
         manifest = {
             "name": name,
@@ -73,8 +100,8 @@ def build_fake_marketplace(root: Path) -> None:
             (skills_root / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
         if "mcp_path" in config:
             manifest["mcpServers"] = config["mcp_path"]
-            write_json(
-                plugin_root / ".mcp.json",
+            mcp_config = config.get(
+                "mcp_config",
                 {
                     "mcpServers": {
                         name: {
@@ -85,9 +112,15 @@ def build_fake_marketplace(root: Path) -> None:
                     }
                 },
             )
-            script_path = plugin_root / config["mcp_script"].replace("./", "")
-            script_path.parent.mkdir(parents=True, exist_ok=True)
-            script_path.write_text(f"print('{name}')\n", encoding="utf-8")
+            write_json(plugin_root / ".mcp.json", mcp_config)
+            for relative_path in config.get("plugin_files", []):
+                file_path = plugin_root / relative_path
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(f"print('{name}:{relative_path}')\n", encoding="utf-8")
+            if "mcp_script" in config:
+                script_path = plugin_root / config["mcp_script"].replace("./", "")
+                script_path.parent.mkdir(parents=True, exist_ok=True)
+                script_path.write_text(f"print('{name}')\n", encoding="utf-8")
 
         write_json(plugin_root / ".codex-plugin" / "plugin.json", manifest)
 
@@ -110,6 +143,21 @@ def test_rejects_unknown_or_injected_profiles_before_running_commands(tmp_path: 
 
     with pytest.raises(ValueError):
         module.bootstrap_profile("release-approval && injected", repo_root=tmp_path, runner=unexpected_runner)
+
+    assert calls == []
+
+
+def test_rejects_same_marketplace_name_with_wrong_source_before_running_commands(tmp_path: Path) -> None:
+    module = load_bootstrap_module()
+    build_fake_marketplace(tmp_path, origin_url="https://github.com/example/ai-productivity-plugins.git")
+    calls: list[list[str]] = []
+
+    def unexpected_runner(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        raise AssertionError("runner must not be called for rejected marketplace sources")
+
+    with pytest.raises(ValueError, match="Unsupported marketplace source"):
+        module.bootstrap_profile("release-approval", repo_root=tmp_path, runner=unexpected_runner)
 
     assert calls == []
 
@@ -158,7 +206,7 @@ def test_bootstrap_writes_dependency_lock_and_marks_fresh_task_after_install(tmp
 
     lock_path = tmp_path / "dependency-lock.json"
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
-    assert lock["marketplace"]["url"] == "https://github.com/YSheldon/ai-productivity-plugins.git"
+    assert lock["marketplace"]["url"] == EXPECTED_MARKETPLACE_URL
     assert lock["marketplace"]["commit"] == "4a74f13412b784ae0cb101f6eed6f34e73874949"
     assert lock["profile"] == "release-approval-verifier"
     assert [plugin["name"] for plugin in lock["plugins"]] == [
@@ -171,14 +219,109 @@ def test_bootstrap_writes_dependency_lock_and_marks_fresh_task_after_install(tmp
     assert lock["plugins"][1]["version"] == "0.1.0"
     assert lock["plugins"][2]["version"] == "0.1.0"
     assert lock["plugins"][3]["version"] == "0.2.0"
-    assert any(entry["path"].endswith("plugins/lark-cli/skills") for entry in lock["plugins"][2]["entrypoints"])
+    for plugin in lock["plugins"]:
+        assert plugin["plugin_root"].startswith("plugins/")
+        assert plugin["manifest_path"].startswith("plugins/")
+        assert len(plugin["manifest_sha256"]) == 64
+        assert all(not Path(entry["path"]).is_absolute() for entry in plugin["entrypoints"])
+        assert all(len(entry["sha256"]) == 64 for entry in plugin["entrypoints"])
+    assert any(entry["path"] == "plugins/lark-cli/skills" for entry in lock["plugins"][2]["entrypoints"])
     assert any(
-        entry["path"].endswith("plugins/product-release-gate/src/release_gate_mcp.py")
+        entry["path"] == "plugins/product-release-gate/src/release_gate_mcp.py"
         for entry in lock["plugins"][3]["entrypoints"]
     )
-    for plugin in lock["plugins"]:
-        assert len(plugin["manifest_sha256"]) == 64
-        assert all(len(entry["sha256"]) == 64 for entry in plugin["entrypoints"])
+
+
+def test_lock_paths_are_repo_relative_and_equivalent_checkouts_produce_equivalent_lock_payloads(tmp_path: Path) -> None:
+    module = load_bootstrap_module()
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    build_fake_marketplace(checkout_a)
+    build_fake_marketplace(checkout_b)
+
+    def runner(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        if command[:3] == ["git", "rev-parse", "HEAD"]:
+            return completed(command, "1111111111111111111111111111111111111111\n")
+        return completed(command, json.dumps({"pluginId": command[3], "action": "unchanged"}) + "\n")
+
+    result_a = module.bootstrap_profile("release-approval", repo_root=checkout_a, runner=runner)
+    result_b = module.bootstrap_profile("release-approval", repo_root=checkout_b, runner=runner)
+
+    lock_text_a = (checkout_a / "dependency-lock.json").read_text(encoding="utf-8")
+    lock_text_b = (checkout_b / "dependency-lock.json").read_text(encoding="utf-8")
+    lock_payload_a = json.loads(lock_text_a)
+    lock_payload_b = json.loads(lock_text_b)
+
+    assert lock_payload_a == lock_payload_b
+    assert checkout_a.as_posix() not in lock_text_a
+    assert checkout_b.as_posix() not in lock_text_b
+    assert result_a["dependency_lock"] != result_b["dependency_lock"]
+
+
+def test_bootstrap_captures_local_entrypoints_from_mcp_command_and_args(tmp_path: Path) -> None:
+    module = load_bootstrap_module()
+    build_fake_marketplace(
+        tmp_path,
+        plugin_overrides={
+            "product-release-gate": {
+                "mcp_config": {
+                    "mcpServers": {
+                        "python-entry": {
+                            "command": "py",
+                            "args": ["-3", "src/release_gate_mcp.py", "worker.py"],
+                        },
+                        "local-command": {
+                            "command": "bin/run.py",
+                            "args": ["helper.py"],
+                        },
+                    }
+                },
+                "plugin_files": ["py", "worker.py", "helper.py", "bin/run.py"],
+            }
+        },
+    )
+
+    def runner(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        if command[:3] == ["git", "rev-parse", "HEAD"]:
+            return completed(command, "2222222222222222222222222222222222222222\n")
+        return completed(command, json.dumps({"pluginId": command[3], "action": "unchanged"}) + "\n")
+
+    result = module.bootstrap_profile("release-approval-verifier", repo_root=tmp_path, runner=runner)
+    plugin = next(item for item in result["plugins"] if item["name"] == "product-release-gate")
+    entrypoint_paths = {entry["path"] for entry in plugin["entrypoints"]}
+
+    assert "plugins/product-release-gate/src/release_gate_mcp.py" in entrypoint_paths
+    assert "plugins/product-release-gate/worker.py" in entrypoint_paths
+    assert "plugins/product-release-gate/bin/run.py" in entrypoint_paths
+    assert "plugins/product-release-gate/helper.py" in entrypoint_paths
+    assert "plugins/product-release-gate/py" not in entrypoint_paths
+
+
+def test_rejects_entrypoints_that_escape_plugin_root(tmp_path: Path) -> None:
+    module = load_bootstrap_module()
+    build_fake_marketplace(
+        tmp_path,
+        plugin_overrides={
+            "product-release-gate": {
+                "mcp_config": {
+                    "mcpServers": {
+                        "escape": {
+                            "command": "py",
+                            "args": ["-3", "../escape.py"],
+                        }
+                    }
+                }
+            }
+        },
+    )
+
+    def runner(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        if command[:3] == ["git", "rev-parse", "HEAD"]:
+            return completed(command, "3333333333333333333333333333333333333333\n")
+        return completed(command, json.dumps({"pluginId": command[3], "action": "unchanged"}) + "\n")
+
+    with pytest.raises(ValueError, match="Path escapes base directory"):
+        module.bootstrap_profile("release-approval-verifier", repo_root=tmp_path, runner=runner)
 
 
 def test_default_runner_uses_argument_arrays_without_shell(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

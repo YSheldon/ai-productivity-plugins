@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import hashlib
 import json
 import re
@@ -23,6 +24,7 @@ PROFILES: dict[str, tuple[str, ...]] = {
 _MARKETPLACE_NAME = "ai-productivity-plugins"
 _PROFILE_PATTERN = re.compile(r"^[a-z0-9-]+$")
 _LOCK_FILENAME = "dependency-lock.json"
+_EXTERNAL_COMMAND_NAMES = {"py", "python", "python3", "node", "codex"}
 
 Runner = Callable[[list[str], Path | None], subprocess.CompletedProcess[str]]
 
@@ -78,6 +80,52 @@ def _resolve_within(base: Path, relative_path: str) -> Path:
     return candidate
 
 
+def _relative_repo_path(repo_root: Path, path: Path) -> str:
+    return path.resolve().relative_to(repo_root.resolve()).as_posix()
+
+
+def _git_dir(repo_root: Path) -> Path:
+    git_entry = repo_root / ".git"
+    if git_entry.is_dir():
+        return git_entry.resolve()
+    git_text = git_entry.read_text(encoding="utf-8").strip()
+    prefix = "gitdir:"
+    if not git_text.lower().startswith(prefix):
+        raise ValueError(f"Unsupported git metadata shape: {git_entry}")
+    git_dir_text = git_text[len(prefix):].strip()
+    git_dir = Path(git_dir_text)
+    if not git_dir.is_absolute():
+        git_dir = (repo_root / git_dir).resolve()
+    return git_dir
+
+
+def _git_origin_url(repo_root: Path) -> str:
+    config_path = _git_dir(repo_root) / "config"
+    parser = configparser.ConfigParser()
+    parser.read_string(config_path.read_text(encoding="utf-8"))
+    section_name = 'remote "origin"'
+    if not parser.has_section(section_name):
+        raise ValueError("Marketplace source metadata missing remote origin")
+    origin_url = parser.get(section_name, "url", fallback="").strip()
+    if not origin_url:
+        raise ValueError("Marketplace source metadata missing remote origin url")
+    return origin_url
+
+
+def _configured_marketplace_source(repo_root: Path, marketplace: dict[str, Any]) -> str:
+    source = marketplace.get("source")
+    if isinstance(source, dict):
+        for key in ("url", "path"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for key in ("url", "path"):
+        value = marketplace.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return _git_origin_url(repo_root)
+
+
 def _require_profile(profile: str) -> tuple[str, ...]:
     if not _PROFILE_PATTERN.fullmatch(profile):
         raise ValueError(f"Unsupported profile: {profile}")
@@ -87,30 +135,54 @@ def _require_profile(profile: str) -> tuple[str, ...]:
     return plugins
 
 
-def _load_marketplace(repo_root: Path) -> tuple[str, dict[str, Path]]:
+def _load_marketplace(repo_root: Path) -> tuple[str, str, dict[str, Path]]:
     marketplace_path = repo_root / ".agents" / "plugins" / "marketplace.json"
     marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
     name = marketplace.get("name")
     if name != _MARKETPLACE_NAME:
         raise ValueError(f"Unsupported marketplace: {name}")
+    source = _configured_marketplace_source(repo_root, marketplace)
+    if source != MARKETPLACE_URL:
+        raise ValueError(f"Unsupported marketplace source: {source}")
     plugins: dict[str, Path] = {}
     for entry in marketplace.get("plugins", []):
         if not isinstance(entry, dict):
             continue
         plugin_name = entry.get("name")
-        source = entry.get("source")
-        if not isinstance(plugin_name, str) or not isinstance(source, dict):
+        source_entry = entry.get("source")
+        if not isinstance(plugin_name, str) or not isinstance(source_entry, dict):
             continue
-        if source.get("source") != "local":
+        if source_entry.get("source") != "local":
             continue
-        source_path = source.get("path")
+        source_path = source_entry.get("path")
         if not isinstance(source_path, str):
             continue
         plugins[plugin_name] = _resolve_within(repo_root, source_path)
-    return name, plugins
+    return name, source, plugins
 
 
-def _entrypoint_records(plugin_root: Path, manifest: dict[str, Any]) -> list[dict[str, str]]:
+def _command_name(value: str) -> str:
+    path = Path(value)
+    name = path.name.lower()
+    stem = path.stem.lower()
+    return stem if stem in _EXTERNAL_COMMAND_NAMES else name
+
+
+def _local_entrypoint_path(plugin_root: Path, value: Any) -> Path | None:
+    if not isinstance(value, str):
+        return None
+    candidate_text = value.strip()
+    if not candidate_text or candidate_text.startswith("-"):
+        return None
+    if _command_name(candidate_text) in _EXTERNAL_COMMAND_NAMES:
+        return None
+    candidate = _resolve_within(plugin_root, candidate_text)
+    if not candidate.exists():
+        return None
+    return candidate
+
+
+def _entrypoint_records(repo_root: Path, plugin_root: Path, manifest: dict[str, Any]) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
     seen: set[str] = set()
 
@@ -119,7 +191,13 @@ def _entrypoint_records(plugin_root: Path, manifest: dict[str, Any]) -> list[dic
         if normalized in seen:
             return
         seen.add(normalized)
-        records.append({"kind": kind, "path": normalized, "sha256": _sha256_path(path)})
+        records.append(
+            {
+                "kind": kind,
+                "path": _relative_repo_path(repo_root, path),
+                "sha256": _sha256_path(path),
+            }
+        )
 
     skills_path = manifest.get("skills")
     if isinstance(skills_path, str):
@@ -133,13 +211,17 @@ def _entrypoint_records(plugin_root: Path, manifest: dict[str, Any]) -> list[dic
         for server in mcp_config.get("mcpServers", {}).values():
             if not isinstance(server, dict):
                 continue
+            command_path = _local_entrypoint_path(plugin_root, server.get("command"))
+            if command_path is not None:
+                append("mcp_local_command", command_path)
             for argument in server.get("args", []):
-                if isinstance(argument, str) and argument.startswith(("./", ".\\", "../", "..\\")):
-                    append("mcp_local_arg", _resolve_within(plugin_root, argument))
+                argument_path = _local_entrypoint_path(plugin_root, argument)
+                if argument_path is not None:
+                    append("mcp_local_arg", argument_path)
     return records
 
 
-def _plugin_metadata(plugin_name: str, plugin_root: Path) -> dict[str, Any]:
+def _plugin_metadata(repo_root: Path, plugin_name: str, plugin_root: Path) -> dict[str, Any]:
     manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     version = manifest.get("version")
@@ -149,10 +231,10 @@ def _plugin_metadata(plugin_name: str, plugin_root: Path) -> dict[str, Any]:
         "name": plugin_name,
         "version": version,
         "marketplace_plugin_id": f"{plugin_name}@{_MARKETPLACE_NAME}",
-        "plugin_root": plugin_root.resolve().as_posix(),
-        "manifest_path": manifest_path.resolve().as_posix(),
+        "plugin_root": _relative_repo_path(repo_root, plugin_root),
+        "manifest_path": _relative_repo_path(repo_root, manifest_path),
         "manifest_sha256": _sha256_file(manifest_path),
-        "entrypoints": _entrypoint_records(plugin_root, manifest),
+        "entrypoints": _entrypoint_records(repo_root, plugin_root, manifest),
     }
 
 
@@ -204,7 +286,7 @@ def bootstrap_profile(
 ) -> dict[str, Any]:
     plugin_names = _require_profile(profile)
     resolved_repo_root = _repo_root(repo_root)
-    marketplace_name, marketplace_paths = _load_marketplace(resolved_repo_root)
+    marketplace_name, marketplace_source, marketplace_paths = _load_marketplace(resolved_repo_root)
     commit = _git_commit(resolved_repo_root, runner)
 
     fresh_task_required = False
@@ -213,7 +295,7 @@ def bootstrap_profile(
         plugin_root = marketplace_paths.get(plugin_name)
         if plugin_root is None:
             raise ValueError(f"Plugin missing from marketplace: {plugin_name}")
-        plugin_metadata = _plugin_metadata(plugin_name, plugin_root)
+        plugin_metadata = _plugin_metadata(resolved_repo_root, plugin_name, plugin_root)
         install_command = [codex_command, "plugin", "add", plugin_metadata["marketplace_plugin_id"], "--json"]
         payload = _parse_install_payload(runner(install_command, resolved_repo_root))
         plugin_metadata["install_result"] = payload
@@ -224,7 +306,7 @@ def bootstrap_profile(
         "profile": profile,
         "marketplace": {
             "name": marketplace_name,
-            "url": MARKETPLACE_URL,
+            "url": marketplace_source,
             "commit": commit,
         },
         "plugins": plugins,

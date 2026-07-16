@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 import sys
@@ -46,10 +47,35 @@ def _raw_http_request(port: int, raw_request: bytes) -> tuple[int, str]:
     return int(status_line.split()[1]), head
 
 
+def _assert_sha256sums_current(artifact_dir: Path) -> None:
+    sums_path = artifact_dir / "SHA256SUMS"
+    lines = [line for line in sums_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    expected_files = sorted(path.name for path in artifact_dir.iterdir() if path.is_file() and path.name != "SHA256SUMS")
+    seen_files: list[str] = []
+    for line in lines:
+        digest, star_name = line.split(" *", 1)
+        file_path = artifact_dir / star_name
+        seen_files.append(star_name)
+        assert hashlib.sha256(file_path.read_bytes()).hexdigest() == digest
+    assert sorted(seen_files) == expected_files
+
+
+def _valid_form(binding: DecisionPageBinding, nonce: str) -> dict[str, str]:
+    return {
+        "event_id": binding.event_id,
+        "round_id": str(binding.round_id),
+        "role_id": binding.role_id,
+        "decision": "APPROVE",
+        "comment": "ship it",
+        "nonce": nonce,
+        "page_html_sha256": binding.page_html_sha256,
+    }
+
+
 def test_page_binds_loopback_only_uses_port_zero_and_persists_state_before_browser_open(tmp_path: Path) -> None:
     opened: dict[str, object] = {}
     binding = DecisionPageBinding(
-        event_id="rel-2026-07-15-0001",
+        event_id="rel-2026-07-16-0001",
         round_id=1,
         role_id="release-manager",
         expires_at="2099-07-16T00:00:00Z",
@@ -84,7 +110,7 @@ def test_page_binds_loopback_only_uses_port_zero_and_persists_state_before_brows
         assert page.server.server_address[1] > 0
         assert page.url_key_bytes >= 32
         assert state["nonce_sha256"].startswith("sha256:")
-        assert state["event_id"] == "rel-2026-07-15-0001"
+        assert state["event_id"] == "rel-2026-07-16-0001"
         assert state["round_id"] == 1
         assert state["role_id"] == "release-manager"
         assert state["page_html_sha256"] == "sha256:" + "1" * 64
@@ -95,7 +121,7 @@ def test_page_binds_loopback_only_uses_port_zero_and_persists_state_before_brows
 
 def test_page_rejects_non_loopback_host() -> None:
     binding = DecisionPageBinding(
-        event_id="rel-2026-07-15-0001",
+        event_id="rel-2026-07-16-0001",
         round_id=1,
         role_id="release-manager",
         expires_at="2099-07-16T00:00:00Z",
@@ -117,7 +143,7 @@ def test_page_rejects_non_loopback_host() -> None:
 def test_get_requires_random_url_key_and_post_accepts_only_bound_fields(tmp_path: Path) -> None:
     seen_form: dict[str, str] = {}
     binding = DecisionPageBinding(
-        event_id="rel-2026-07-15-0001",
+        event_id="rel-2026-07-16-0001",
         round_id=1,
         role_id="release-manager",
         expires_at="2099-07-16T00:00:00Z",
@@ -141,15 +167,7 @@ def test_get_requires_random_url_key_and_post_accepts_only_bound_fields(tmp_path
         html = urllib.request.urlopen(page.url, timeout=5).read().decode("utf-8")
         assert "Release approval" in html
 
-        valid_form = {
-            "event_id": binding.event_id,
-            "round_id": str(binding.round_id),
-            "role_id": binding.role_id,
-            "decision": "APPROVE",
-            "comment": "ship it",
-            "nonce": page.nonce,
-            "page_html_sha256": binding.page_html_sha256,
-        }
+        valid_form = _valid_form(binding, page.nonce)
         invalid_payload = urllib.parse.urlencode({**valid_form, "decision": "MAYBE"}).encode("utf-8")
         with pytest.raises(urllib.error.HTTPError) as invalid_decision:
             urllib.request.urlopen(page.url, data=invalid_payload, timeout=5).read()
@@ -175,7 +193,7 @@ def test_get_requires_random_url_key_and_post_accepts_only_bound_fields(tmp_path
 
 def test_page_response_text_only_reports_sent_retry_or_rejected(tmp_path: Path) -> None:
     binding = DecisionPageBinding(
-        event_id="rel-2026-07-15-0001",
+        event_id="rel-2026-07-16-0001",
         round_id=1,
         role_id="release-manager",
         expires_at="2099-07-16T00:00:00Z",
@@ -214,7 +232,7 @@ def test_page_response_text_only_reports_sent_retry_or_rejected(tmp_path: Path) 
 def test_concurrent_valid_posts_accept_exactly_one_and_consume_nonce_even_on_retry(tmp_path: Path) -> None:
     seen_forms: list[dict[str, str]] = []
     binding = DecisionPageBinding(
-        event_id="rel-2026-07-15-0001",
+        event_id="rel-2026-07-16-0001",
         round_id=1,
         role_id="release-manager",
         expires_at="2099-07-16T00:00:00Z",
@@ -239,17 +257,7 @@ def test_concurrent_valid_posts_accept_exactly_one_and_consume_nonce_even_on_ret
     page._validate_submission = wrapped_validate  # type: ignore[method-assign]
     page.start()
     try:
-        payload = urllib.parse.urlencode(
-            {
-                "event_id": binding.event_id,
-                "round_id": str(binding.round_id),
-                "role_id": binding.role_id,
-                "decision": "APPROVE",
-                "comment": "ship it",
-                "nonce": page.nonce,
-                "page_html_sha256": binding.page_html_sha256,
-            }
-        ).encode("utf-8")
+        payload = urllib.parse.urlencode(_valid_form(binding, page.nonce)).encode("utf-8")
 
         results: list[tuple[str, object]] = []
 
@@ -306,7 +314,7 @@ def test_post_rejects_missing_invalid_or_oversized_content_length(
 ) -> None:
     assert hasattr(page_module, "MAX_POST_BODY_BYTES")
     binding = DecisionPageBinding(
-        event_id="rel-2026-07-15-0001",
+        event_id="rel-2026-07-16-0001",
         round_id=1,
         role_id="release-manager",
         expires_at="2099-07-16T00:00:00Z",
@@ -328,3 +336,71 @@ def test_post_rejects_missing_invalid_or_oversized_content_length(
     finally:
         page.close()
 
+
+@pytest.mark.parametrize(
+    "raw_request",
+    [
+        b"POST /TOKEN/ HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: 7\r\n\r\nignored=1",
+        b"POST /TOKEN/ HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 46\r\n\r\nevent_id=x&round_id=1&role_id=x&decision=APPROVE",
+        b"POST /TOKEN/ HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 13\r\n\r\ncomment=%ZZbad",
+        b"POST /TOKEN/ HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 1\r\n\r\n\xff",
+    ],
+)
+def test_post_rejects_malformed_body_without_nonce_side_effects(tmp_path: Path, raw_request: bytes) -> None:
+    callbacks: list[dict[str, str]] = []
+    binding = DecisionPageBinding(
+        event_id="rel-2026-07-16-0001",
+        round_id=1,
+        role_id="release-manager",
+        expires_at="2099-07-16T00:00:00Z",
+        page_html_sha256="sha256:" + "6" * 64,
+    )
+    page = ReleaseApprovalPage(
+        host="127.0.0.1",
+        artifact_dir=tmp_path,
+        page_title="Release approval",
+        page_body_html="<p>approve</p>",
+        binding=binding,
+        submit_decision=lambda form: callbacks.append(dict(form)) or DecisionPageResult(status="sent", response_text="sent"),
+        open_browser=lambda _url: None,
+    )
+    page.start()
+    try:
+        status, _head = _raw_http_request(page.port, raw_request.replace(b"/TOKEN/", f"/{page.url_key}/".encode("ascii")))
+        assert status == 400
+        assert callbacks == []
+        state = _read_json(tmp_path / "page-state.json")
+        assert "used_at" not in state
+
+        payload = urllib.parse.urlencode(_valid_form(binding, page.nonce)).encode("utf-8")
+        response = urllib.request.urlopen(page.url, data=payload, timeout=5)
+        assert response.read().decode("utf-8") == "sent"
+        assert len(callbacks) == 1
+    finally:
+        page.close()
+
+
+def test_sha256sums_stays_current_after_each_browser_event_append(tmp_path: Path) -> None:
+    binding = DecisionPageBinding(
+        event_id="rel-2026-07-16-0001",
+        round_id=1,
+        role_id="release-manager",
+        expires_at="2099-07-16T00:00:00Z",
+        page_html_sha256="sha256:" + "7" * 64,
+    )
+    page = ReleaseApprovalPage(
+        host="127.0.0.1",
+        artifact_dir=tmp_path,
+        page_title="Release approval",
+        page_body_html="<p>approve</p>",
+        binding=binding,
+        submit_decision=lambda _form: DecisionPageResult(status="sent", response_text="sent"),
+        open_browser=lambda _url: None,
+    )
+    page.start()
+    try:
+        _assert_sha256sums_current(tmp_path)
+        page._append_browser_event("manual-check", {"step": 1})
+        _assert_sha256sums_current(tmp_path)
+    finally:
+        page.close()

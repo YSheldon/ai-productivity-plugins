@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import secrets
 from dataclasses import dataclass
@@ -18,6 +19,14 @@ from release_approval_store import ReleaseApprovalStore
 
 _SAFE_PATH_COMPONENT = re.compile(r"^[A-Za-z0-9._-]+$")
 _MESSAGE_ID_PATTERN = re.compile(r"^<[^<>\s@]+@[^<>\s@]+>$")
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 _BEGIN_MARKER = "-----BEGIN APPROVAL DECISION-----"
 _END_MARKER = "-----END APPROVAL DECISION-----"
 
@@ -70,13 +79,15 @@ class ReleaseApprovalService:
         self.store.record_request(request)
 
     def artifact_dir_for_request(self, request: ReleaseAuthorizationRequest) -> Path:
-        return (
-            self.config.state_dir
-            / "audit"
-            / self._safe_path_component(request.event_id)
-            / f"round-{request.round_id}"
-            / f"role-{self._safe_path_component(request.installed_role_id)}"
-        )
+        audit_root = (self.config.state_dir / "audit").resolve(strict=False)
+        event_component = self._safe_path_component(request.event_id)
+        role_component = self._safe_path_component(request.installed_role_id)
+        artifact_dir = (audit_root / event_component / f"round-{request.round_id}" / f"role-{role_component}").resolve(strict=False)
+        try:
+            artifact_dir.relative_to(audit_root)
+        except ValueError as exc:
+            raise ReleaseApprovalServiceError("safe path component required: final artifact path escaped audit root") from exc
+        return artifact_dir
 
     def create_page_session(
         self,
@@ -235,6 +246,7 @@ class ReleaseApprovalService:
         )
         decision_path = page_session.artifact_dir / "decision.json"
         decision_path.write_text(json.dumps(decision_payload, indent=2) + "\n", encoding="utf-8")
+        self._write_sha256sums(page_session.artifact_dir)
         self._append_jsonl(
             page_session.browser_events_path,
             {
@@ -402,15 +414,18 @@ class ReleaseApprovalService:
     def _write_sha256sums(self, artifact_dir: Path) -> None:
         lines: list[str] = []
         for path in sorted(artifact_dir.iterdir()):
-            if path.name == "SHA256SUMS" or not path.is_file():
+            if not path.is_file() or path.name in {"SHA256SUMS", "SHA256SUMS.tmp"}:
                 continue
             lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()} *{path.name}")
-        (artifact_dir / "SHA256SUMS").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        sums_path = artifact_dir / "SHA256SUMS"
+        tmp_path = artifact_dir / "SHA256SUMS.tmp"
+        tmp_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        tmp_path.replace(sums_path)
 
-    @staticmethod
-    def _append_jsonl(path: Path, payload: Mapping[str, Any]) -> None:
+    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
         with path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(dict(payload), separators=(",", ":")) + "\n")
+        self._write_sha256sums(path.parent)
 
     @staticmethod
     def _parse_timestamp(value: str) -> datetime:
@@ -426,8 +441,17 @@ class ReleaseApprovalService:
 
     @staticmethod
     def _safe_path_component(value: str) -> str:
+        if not isinstance(value, str) or not value or value in {".", ".."}:
+            raise ReleaseApprovalServiceError(f"safe path component required: {value}")
         if not _SAFE_PATH_COMPONENT.fullmatch(value):
             raise ReleaseApprovalServiceError(f"safe path component required: {value}")
+        normalized = value.rstrip(" .")
+        if not normalized:
+            raise ReleaseApprovalServiceError(f"safe path component required: {value}")
+        if os.name == "nt":
+            device_root = normalized.split(".", 1)[0].upper()
+            if device_root in _WINDOWS_RESERVED_NAMES:
+                raise ReleaseApprovalServiceError(f"reserved path component is not allowed: {value}")
         return value
 
     @staticmethod

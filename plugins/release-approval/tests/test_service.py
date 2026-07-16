@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -61,7 +62,7 @@ def _config(state_dir: Path) -> ReleaseApprovalConfig:
 def _request() -> ReleaseAuthorizationRequest:
     return ReleaseAuthorizationRequest(
         contract="ReleaseAuthorizationRequest/v1",
-        event_id="rel-2026-07-15-0001",
+        event_id="rel-2026-07-16-0001",
         round_id=1,
         task="Task 5",
         module="release-approval",
@@ -74,10 +75,23 @@ def _request() -> ReleaseAuthorizationRequest:
         original_message_id="<request-1@example.com>",
         references=("<root@example.com>",),
         expires_at="2099-07-16T00:00:00Z",
-        idempotency_key="release-approval-request-rel-2026-07-15-0001-round-1",
+        idempotency_key="release-approval-request-rel-2026-07-16-0001-round-1",
         installed_role_id="release-manager",
         installed_role_email="release-manager@example.com",
     )
+
+
+def _assert_sha256sums_current(artifact_dir: Path) -> None:
+    sums_path = artifact_dir / "SHA256SUMS"
+    lines = [line for line in sums_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    expected_files = sorted(path.name for path in artifact_dir.iterdir() if path.is_file() and path.name != "SHA256SUMS")
+    seen_files: list[str] = []
+    for line in lines:
+        digest, star_name = line.split(" *", 1)
+        file_path = artifact_dir / star_name
+        seen_files.append(star_name)
+        assert hashlib.sha256(file_path.read_bytes()).hexdigest() == digest
+    assert sorted(seen_files) == expected_files
 
 
 def test_service_builds_exact_threaded_reply_and_writes_audit_artifacts(tmp_path: Path) -> None:
@@ -111,7 +125,7 @@ def test_service_builds_exact_threaded_reply_and_writes_audit_artifacts(tmp_path
     assert payload["references"] == ["<root@example.com>", "<request-1@example.com>"]
     assert payload["headers"] == {
         "X-RD-Decision-Schema": "ApprovalDecision/v1",
-        "X-RD-Event-Id": "rel-2026-07-15-0001",
+        "X-RD-Event-Id": "rel-2026-07-16-0001",
         "X-RD-Round-Id": "1",
         "X-RD-Manifest-Digest": request.manifest_digest,
         "X-RD-Role-Snapshot-Digest": request.role_snapshot_digest,
@@ -136,6 +150,7 @@ def test_service_builds_exact_threaded_reply_and_writes_audit_artifacts(tmp_path
     state_text = (artifact_dir / "page-state.json").read_text(encoding="utf-8")
     assert page_session.nonce not in state_text
     assert page_session.url_key not in state_text
+    _assert_sha256sums_current(artifact_dir)
 
 
 def test_service_queues_retry_when_smtp_refuses_any_recipient(tmp_path: Path) -> None:
@@ -170,6 +185,7 @@ def test_service_queues_retry_when_smtp_refuses_any_recipient(tmp_path: Path) ->
     smtp_result = json.loads((page_session.artifact_dir / "smtp-result.json").read_text(encoding="utf-8"))
     assert smtp_result["status"] == "retry_queued"
     assert smtp_result["refused"] == {"blocked@example.com": [550, "Rejected"]}
+    _assert_sha256sums_current(page_session.artifact_dir)
 
 
 def test_service_preserves_reference_order_deduplicates_and_keeps_original_exactly_once(tmp_path: Path) -> None:
@@ -179,7 +195,7 @@ def test_service_preserves_reference_order_deduplicates_and_keeps_original_exact
     service = ReleaseApprovalService(config=config, store=store, mail_gateway=mail)
     request = ReleaseAuthorizationRequest(
         contract="ReleaseAuthorizationRequest/v1",
-        event_id="rel-2026-07-15-0002",
+        event_id="rel-2026-07-16-0002",
         round_id=1,
         task="Task 5",
         module="release-approval",
@@ -197,7 +213,7 @@ def test_service_preserves_reference_order_deduplicates_and_keeps_original_exact
             "<peer@example.com>",
         ),
         expires_at="2099-07-16T00:00:00Z",
-        idempotency_key="release-approval-request-rel-2026-07-15-0002-round-1",
+        idempotency_key="release-approval-request-rel-2026-07-16-0002-round-1",
         installed_role_id="release-manager",
         installed_role_email="release-manager@example.com",
     )
@@ -219,6 +235,48 @@ def test_service_preserves_reference_order_deduplicates_and_keeps_original_exact
         "<request-2@example.com>",
         "<peer@example.com>",
     ]
+
+
+@pytest.mark.parametrize(
+    ("event_id", "role_id", "message"),
+    [
+        ("..", "release-manager", "safe path"),
+        ("rel-2026-07-16-0003", ".", "safe path"),
+        ("CON", "release-manager", "reserved"),
+    ],
+)
+def test_service_rejects_dot_components_and_reserved_path_forms(
+    tmp_path: Path,
+    event_id: str,
+    role_id: str,
+    message: str,
+) -> None:
+    config = _config(tmp_path / "state")
+    store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")
+    mail = FakeMailGateway(MailSendResult(sent=True, message_id="<smtp-message@example.com>", refused={}, raw={}))
+    service = ReleaseApprovalService(config=config, store=store, mail_gateway=mail)
+    request = ReleaseAuthorizationRequest(
+        contract="ReleaseAuthorizationRequest/v1",
+        event_id=event_id,
+        round_id=1,
+        task="Task 5",
+        module="release-approval",
+        manifest_s_digest="sha256:" + "1" * 64,
+        manifest_r_digest="sha256:" + "2" * 64,
+        manifest_digest="sha256:" + "3" * 64,
+        request_digest="sha256:" + "4" * 64,
+        role_snapshot_digest="sha256:" + "5" * 64,
+        required_roles=("release-manager",),
+        original_message_id="<request-3@example.com>",
+        references=("<root@example.com>",),
+        expires_at="2099-07-16T00:00:00Z",
+        idempotency_key="release-approval-request-rel-2026-07-16-0003-round-1",
+        installed_role_id=role_id,
+        installed_role_email="release-manager@example.com",
+    )
+
+    with pytest.raises(ReleaseApprovalServiceError, match=message):
+        service.artifact_dir_for_request(request)
 
 
 def test_service_fails_closed_for_missing_threading_fields_and_invalid_artifact_path_ids(tmp_path: Path) -> None:

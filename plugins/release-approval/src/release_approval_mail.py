@@ -12,6 +12,9 @@ from typing import Any, Callable, Mapping
 
 _MESSAGE_ID_PATTERN = re.compile(r"^<[^<>\s@]+@[^<>\s@]+>$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_EXPECTED_PLUGIN_NAME = "imap-smtp-mail"
+_EXPECTED_PLUGIN_ROOT = Path("plugins/imap-smtp-mail")
+_EXPECTED_CLI_PATH = _EXPECTED_PLUGIN_ROOT / "src" / "imap_smtp_mail_cli.py"
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -133,12 +136,12 @@ class MailGateway:
             raise MailGatewayError(str(parsed.get("error") or "mail CLI returned ok=false"))
         return parsed
 
+    def _repo_root(self) -> Path:
+        return self.dependency_lock.parent.resolve()
+
     def _locked_cli_path(self) -> Path:
         entrypoint = self._locked_cli_entry()
-        path = (self.dependency_lock.parent / entrypoint["path"]).resolve()
-        if not path.exists():
-            raise MailGatewayError(f"locked mail CLI entrypoint is missing: {path}")
-        return path
+        return self._resolve_repo_relative_path(str(entrypoint["path"]), expected_relative=_EXPECTED_CLI_PATH)
 
     def _locked_cli_sha256(self) -> str:
         entrypoint = self._locked_cli_entry()
@@ -153,18 +156,56 @@ class MailGateway:
         if not isinstance(plugins, list):
             raise MailGatewayError("dependency lock must contain a plugins array.")
         for plugin in plugins:
-            if not isinstance(plugin, Mapping) or plugin.get("name") != "imap-smtp-mail":
+            if not isinstance(plugin, Mapping) or plugin.get("name") != _EXPECTED_PLUGIN_NAME:
                 continue
+            self._validate_plugin_root(plugin)
             entrypoints = plugin.get("entrypoints")
             if not isinstance(entrypoints, list):
-                break
+                raise MailGatewayError("dependency lock must pin the expected imap-smtp-mail CLI entrypoint.")
+            saw_plugin_root_entry = False
             for entrypoint in entrypoints:
                 if not isinstance(entrypoint, Mapping):
                     continue
-                path = str(entrypoint.get("path") or "")
-                if path.endswith("/src/imap_smtp_mail_cli.py") or path.endswith("\\src\\imap_smtp_mail_cli.py"):
+                path_value = entrypoint.get("path")
+                if not isinstance(path_value, str) or not path_value.strip():
+                    continue
+                normalized = self._resolve_repo_relative_path(path_value, expected_relative=None)
+                if normalized == _EXPECTED_CLI_PATH:
+                    resolved = self._resolve_repo_relative_path(path_value, expected_relative=_EXPECTED_CLI_PATH)
+                    if not resolved.exists():
+                        raise MailGatewayError(f"locked mail CLI entrypoint is missing: {resolved}")
                     return entrypoint
-        raise MailGatewayError("dependency lock does not pin the imap-smtp-mail CLI bridge.")
+                if normalized.is_relative_to(_EXPECTED_PLUGIN_ROOT):
+                    saw_plugin_root_entry = True
+            if saw_plugin_root_entry:
+                raise MailGatewayError("dependency lock must pin the expected imap-smtp-mail CLI entrypoint.")
+            raise MailGatewayError("dependency lock must pin the expected imap-smtp-mail CLI entrypoint.")
+        raise MailGatewayError("dependency lock does not pin the expected imap-smtp-mail plugin entry.")
+
+    def _validate_plugin_root(self, plugin: Mapping[str, Any]) -> None:
+        plugin_root = plugin.get("plugin_root")
+        if not isinstance(plugin_root, str):
+            raise MailGatewayError("dependency lock must pin the expected imap-smtp-mail plugin root.")
+        self._resolve_repo_relative_path(plugin_root, expected_relative=_EXPECTED_PLUGIN_ROOT)
+
+    def _resolve_repo_relative_path(self, path_text: str, *, expected_relative: Path | None) -> Path | Path:
+        candidate = Path(path_text)
+        if candidate.is_absolute():
+            raise MailGatewayError(f"dependency lock entrypoint path must not be absolute: {path_text}")
+        repo_root = self._repo_root()
+        resolved = (repo_root / candidate).resolve()
+        try:
+            relative = resolved.relative_to(repo_root)
+        except ValueError as exc:
+            raise MailGatewayError(f"dependency lock entrypoint path escapes the repository root: {path_text}") from exc
+        normalized = Path(relative.as_posix())
+        if expected_relative is None:
+            return normalized
+        if normalized != expected_relative:
+            raise MailGatewayError(
+                f"dependency lock must pin the expected CLI entrypoint path: {expected_relative.as_posix()}"
+            )
+        return resolved
 
     @staticmethod
     def _is_message_id(value: str) -> bool:

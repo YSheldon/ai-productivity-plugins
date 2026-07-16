@@ -17,6 +17,7 @@ from release_approval_store import ReleaseApprovalStore
 
 
 _SAFE_PATH_COMPONENT = re.compile(r"^[A-Za-z0-9._-]+$")
+_MESSAGE_ID_PATTERN = re.compile(r"^<[^<>\s@]+@[^<>\s@]+>$")
 _BEGIN_MARKER = "-----BEGIN APPROVAL DECISION-----"
 _END_MARKER = "-----END APPROVAL DECISION-----"
 
@@ -87,7 +88,7 @@ class ReleaseApprovalService:
             {
                 "reply_subject": request_payload.get("reply_subject"),
                 "original_message_id": request.original_message_id,
-                "references": list(request.references),
+                "references": self._normalized_thread_references(request),
             }
         )
         artifact_dir = self.artifact_dir_for_request(request)
@@ -293,11 +294,12 @@ class ReleaseApprovalService:
         decision_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
         reply_subject = str(request_payload.get("reply_subject") or "").strip()
+        normalized_references = self._normalized_thread_references(request)
         self.mail_gateway.require_thread_reply_capability(
             {
                 "reply_subject": reply_subject,
                 "original_message_id": request.original_message_id,
-                "references": list(request.references),
+                "references": normalized_references,
             }
         )
         return {
@@ -307,7 +309,7 @@ class ReleaseApprovalService:
             "text": self._build_reply_text(decision_payload),
             "dry_run": False,
             "in_reply_to": request.original_message_id,
-            "references": [*list(request.references), request.original_message_id],
+            "references": normalized_references,
             "headers": {
                 "X-RD-Decision-Schema": "ApprovalDecision/v1",
                 "X-RD-Event-Id": request.event_id,
@@ -332,6 +334,18 @@ class ReleaseApprovalService:
                 "",
             ]
         )
+
+    def _normalized_thread_references(self, request: ReleaseAuthorizationRequest) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for message_id in request.references:
+            if not self._is_message_id(message_id) or message_id in seen:
+                continue
+            seen.add(message_id)
+            ordered.append(message_id)
+        if request.original_message_id not in seen:
+            ordered.append(request.original_message_id)
+        return ordered
 
     @staticmethod
     def _smtp_result_payload(*, send_result: MailSendResult, recorded_at: str) -> dict[str, Any]:
@@ -415,6 +429,10 @@ class ReleaseApprovalService:
         if not _SAFE_PATH_COMPONENT.fullmatch(value):
             raise ReleaseApprovalServiceError(f"safe path component required: {value}")
         return value
+
+    @staticmethod
+    def _is_message_id(value: str) -> bool:
+        return bool(_MESSAGE_ID_PATTERN.fullmatch(value))
 
     def _random_token(self, size: int) -> str:
         return base64.urlsafe_b64encode(self.token_bytes(size)).rstrip(b"=").decode("ascii")

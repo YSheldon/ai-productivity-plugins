@@ -15,6 +15,7 @@ from release_approval_mail import (
     MailCapabilityError,
     MailGateway,
     MailGatewayError,
+    MailSendResult,
 )
 
 
@@ -105,7 +106,6 @@ def test_send_email_maps_timeout_nonzero_exit_and_malformed_json_to_hard_failure
         tmp_path,
         "print('unused')\n",
     )
-    gateway = MailGateway(lock_path)
 
     def timeout_runner(**kwargs):  # noqa: ANN001
         raise subprocess.TimeoutExpired(kwargs["args"], kwargs["timeout"])
@@ -180,3 +180,46 @@ def test_capability_checks_fail_closed_when_thread_reply_or_raw_header_readback_
                 },
             }
         )
+
+
+def test_locked_cli_rejects_repo_escape_path_in_dependency_lock(tmp_path: Path) -> None:
+    lock_path, _cli_path = _write_locked_cli(tmp_path, "print('unused')\n")
+    payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    payload["plugins"][0]["entrypoints"][0]["path"] = "../plugins/imap-smtp-mail/src/imap_smtp_mail_cli.py"
+    lock_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    gateway = MailGateway(lock_path)
+
+    with pytest.raises(MailGatewayError, match="escapes"):
+        gateway.send_email({"tool": "send_email", "arguments": {}})
+
+
+def test_locked_cli_rejects_absolute_outside_repo_path_in_dependency_lock(tmp_path: Path) -> None:
+    lock_path, _cli_path = _write_locked_cli(tmp_path, "print('unused')\n")
+    payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    payload["plugins"][0]["entrypoints"][0]["path"] = str((tmp_path.parent / "outside-cli.py").resolve())
+    lock_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    gateway = MailGateway(lock_path)
+
+    with pytest.raises(MailGatewayError, match="absolute"):
+        gateway.send_email({"tool": "send_email", "arguments": {}})
+
+
+def test_locked_cli_rejects_wrong_plugin_identity_and_wrong_entrypoint_path(tmp_path: Path) -> None:
+    lock_path, _cli_path = _write_locked_cli(tmp_path, "print('unused')\n")
+    payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    payload["plugins"][0]["name"] = "different-plugin"
+    lock_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    gateway = MailGateway(lock_path)
+    with pytest.raises(MailGatewayError, match="imap-smtp-mail"):
+        gateway.send_email({"tool": "send_email", "arguments": {}})
+
+    payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    payload["plugins"][0]["name"] = "imap-smtp-mail"
+    payload["plugins"][0]["entrypoints"][0]["path"] = "plugins/imap-smtp-mail/src/not_the_cli.py"
+    lock_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    with pytest.raises(MailGatewayError, match="expected"):
+        gateway.send_email({"tool": "send_email", "arguments": {}})

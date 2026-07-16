@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Callable
 
 
+MAX_POST_BODY_BYTES = 64 * 1024
+
+
 class ReleaseApprovalPageError(RuntimeError):
     """Raised when the local approval page cannot be created safely."""
 
@@ -62,6 +65,7 @@ class ReleaseApprovalPage:
         self.server_class = server_class
         self.server: http.server.ThreadingHTTPServer | None = None
         self._server_thread: threading.Thread | None = None
+        self._submission_lock = threading.Lock()
         self.url_key = self._random_token(32)
         self.url_key_bytes = self._token_length_bytes(self.url_key)
         self.nonce = self._random_token(32)
@@ -168,26 +172,24 @@ class ReleaseApprovalPage:
                 if self.path != f"/{page.url_key}/":
                     self.send_error(404)
                     return
-                length = int(self.headers.get("Content-Length") or "0")
-                raw = self.rfile.read(length).decode("utf-8")
-                form = urllib.parse.parse_qs(raw, strict_parsing=True)
+                try:
+                    length = page._require_content_length(self.headers.get("Content-Length"))
+                except ReleaseApprovalPageError as exc:
+                    status_code = 411 if "required" in str(exc) else 413 if "too large" in str(exc) else 400
+                    page._send_plain_response(self, status_code, "rejected")
+                    page._append_browser_event("page_rejected", {"reason": str(exc)})
+                    return
+                raw = self.rfile.read(length)
+                form = urllib.parse.parse_qs(raw.decode("utf-8"), strict_parsing=True)
                 try:
                     normalized = page._normalize_form(form)
                     result = page._handle_submission(normalized)
                 except ReleaseApprovalPageError as exc:
                     code = 409 if "single-use" in str(exc) else 400
-                    self.send_response(code)
-                    self.send_header("Content-Type", "text/plain; charset=utf-8")
-                    self.end_headers()
-                    self.wfile.write(b"rejected")
+                    page._send_plain_response(self, code, "rejected")
                     page._append_browser_event("page_rejected", {"reason": str(exc)})
                     return
-                body = result.response_text.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                page._send_plain_response(self, 200, result.response_text)
 
             def log_message(self, format: str, *args) -> None:  # noqa: A003
                 return
@@ -215,20 +217,15 @@ class ReleaseApprovalPage:
 
     def _handle_submission(self, form: dict[str, str]) -> DecisionPageResult:
         self._validate_submission(form)
-        self._nonce_used = True
-        state = json.loads((self.artifact_dir / "page-state.json").read_text(encoding="utf-8"))
-        state["used_at"] = self._isoformat(self.now_fn())
-        (self.artifact_dir / "page-state.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        self._claim_nonce()
         self._append_browser_event("page_post", {"decision": form["decision"]})
-        self._write_sha256sums()
         result = self.submit_decision(form)
         if result.response_text not in {"sent", "retry queued", "rejected"}:
             raise ReleaseApprovalPageError("page response must be sent, retry queued, or rejected.")
+        self._write_sha256sums()
         return result
 
     def _validate_submission(self, form: dict[str, str]) -> None:
-        if self._nonce_used:
-            raise ReleaseApprovalPageError("nonce is single-use.")
         if form["event_id"] != self.binding.event_id:
             raise ReleaseApprovalPageError("event binding mismatch.")
         if form["round_id"] != str(self.binding.round_id):
@@ -243,6 +240,15 @@ class ReleaseApprovalPage:
             raise ReleaseApprovalPageError("nonce mismatch.")
         if self._parse_timestamp(self.binding.expires_at) <= self.now_fn().astimezone(timezone.utc):
             raise ReleaseApprovalPageError("page is expired.")
+
+    def _claim_nonce(self) -> None:
+        with self._submission_lock:
+            if self._nonce_used:
+                raise ReleaseApprovalPageError("nonce is single-use.")
+            self._nonce_used = True
+            state = json.loads((self.artifact_dir / "page-state.json").read_text(encoding="utf-8"))
+            state["used_at"] = self._isoformat(self.now_fn())
+            (self.artifact_dir / "page-state.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
     def _append_browser_event(self, event_type: str, payload: dict[str, object]) -> None:
         path = self.artifact_dir / "browser-events.jsonl"
@@ -262,6 +268,29 @@ class ReleaseApprovalPage:
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             lines.append(f"{digest} *{path.name}")
         (self.artifact_dir / "SHA256SUMS").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+    @staticmethod
+    def _require_content_length(raw_value: str | None) -> int:
+        if raw_value is None:
+            raise ReleaseApprovalPageError("Content-Length is required.")
+        try:
+            length = int(raw_value)
+        except ValueError as exc:
+            raise ReleaseApprovalPageError("Content-Length must be a valid positive integer.") from exc
+        if length <= 0:
+            raise ReleaseApprovalPageError("Content-Length must be a valid positive integer.")
+        if length > MAX_POST_BODY_BYTES:
+            raise ReleaseApprovalPageError("Content-Length is too large.")
+        return length
+
+    @staticmethod
+    def _send_plain_response(handler: http.server.BaseHTTPRequestHandler, status: int, body_text: str) -> None:
+        body = body_text.encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "text/plain; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
 
     @staticmethod
     def _sha256_prefixed(value: str) -> str:

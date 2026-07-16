@@ -172,6 +172,55 @@ def test_service_queues_retry_when_smtp_refuses_any_recipient(tmp_path: Path) ->
     assert smtp_result["refused"] == {"blocked@example.com": [550, "Rejected"]}
 
 
+def test_service_preserves_reference_order_deduplicates_and_keeps_original_exactly_once(tmp_path: Path) -> None:
+    config = _config(tmp_path / "state")
+    store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")
+    mail = FakeMailGateway(MailSendResult(sent=True, message_id="<smtp-message@example.com>", refused={}, raw={"sent": True}))
+    service = ReleaseApprovalService(config=config, store=store, mail_gateway=mail)
+    request = ReleaseAuthorizationRequest(
+        contract="ReleaseAuthorizationRequest/v1",
+        event_id="rel-2026-07-15-0002",
+        round_id=1,
+        task="Task 5",
+        module="release-approval",
+        manifest_s_digest="sha256:" + "1" * 64,
+        manifest_r_digest="sha256:" + "2" * 64,
+        manifest_digest="sha256:" + "3" * 64,
+        request_digest="sha256:" + "4" * 64,
+        role_snapshot_digest="sha256:" + "5" * 64,
+        required_roles=("release-manager",),
+        original_message_id="<request-2@example.com>",
+        references=(
+            "<root@example.com>",
+            "<request-2@example.com>",
+            "<root@example.com>",
+            "<peer@example.com>",
+        ),
+        expires_at="2099-07-16T00:00:00Z",
+        idempotency_key="release-approval-request-rel-2026-07-15-0002-round-1",
+        installed_role_id="release-manager",
+        installed_role_email="release-manager@example.com",
+    )
+
+    service.record_request(request)
+    page_session = service.create_page_session(request=request, request_payload={"reply_subject": "Re: Release approval"})
+    service.submit_local_decision(
+        request=request,
+        request_payload={"reply_subject": "Re: Release approval"},
+        page_session=page_session,
+        decision="APPROVE",
+        comment="Ship it.",
+        nonce=page_session.nonce,
+        page_html_sha256=page_session.page_html_sha256,
+    )
+
+    assert mail.sent_payloads[0]["references"] == [
+        "<root@example.com>",
+        "<request-2@example.com>",
+        "<peer@example.com>",
+    ]
+
+
 def test_service_fails_closed_for_missing_threading_fields_and_invalid_artifact_path_ids(tmp_path: Path) -> None:
     config = _config(tmp_path / "state")
     store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")
@@ -184,22 +233,24 @@ def test_service_fails_closed_for_missing_threading_fields_and_invalid_artifact_
         service.create_page_session(request=request, request_payload={"reply_subject": ""})
 
     with pytest.raises(ReleaseApprovalServiceError, match="safe path"):
-        service.artifact_dir_for_request(ReleaseAuthorizationRequest(
-            contract=request.contract,
-            event_id="../escape",
-            round_id=request.round_id,
-            task=request.task,
-            module=request.module,
-            manifest_s_digest=request.manifest_s_digest,
-            manifest_r_digest=request.manifest_r_digest,
-            manifest_digest=request.manifest_digest,
-            request_digest=request.request_digest,
-            role_snapshot_digest=request.role_snapshot_digest,
-            required_roles=request.required_roles,
-            original_message_id=request.original_message_id,
-            references=request.references,
-            expires_at=request.expires_at,
-            idempotency_key=request.idempotency_key,
-            installed_role_id=request.installed_role_id,
-            installed_role_email=request.installed_role_email,
-        ))
+        service.artifact_dir_for_request(
+            ReleaseAuthorizationRequest(
+                contract=request.contract,
+                event_id="../escape",
+                round_id=request.round_id,
+                task=request.task,
+                module=request.module,
+                manifest_s_digest=request.manifest_s_digest,
+                manifest_r_digest=request.manifest_r_digest,
+                manifest_digest=request.manifest_digest,
+                request_digest=request.request_digest,
+                role_snapshot_digest=request.role_snapshot_digest,
+                required_roles=request.required_roles,
+                original_message_id=request.original_message_id,
+                references=request.references,
+                expires_at=request.expires_at,
+                idempotency_key=request.idempotency_key,
+                installed_role_id=request.installed_role_id,
+                installed_role_email=request.installed_role_email,
+            )
+        )

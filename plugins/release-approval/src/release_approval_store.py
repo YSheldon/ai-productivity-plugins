@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +9,16 @@ from typing import Any, Mapping
 from release_approval_protocol import ReleaseAuthorizationRequest, canonical_json
 
 
+SCHEMA_VERSION = 1
 _GENESIS_PREVIOUS_HASH = "0" * 64
+_REQUIRED_TABLES = {
+    "messages",
+    "requests",
+    "decisions",
+    "pages",
+    "smtp_outcomes",
+    "audit_events",
+}
 
 
 class StoreError(RuntimeError):
@@ -54,9 +62,33 @@ class ReleaseApprovalStore:
         self.connection.close()
 
     def _initialize_schema(self) -> None:
+        user_version = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
+        user_objects = self._user_objects()
+
+        if user_version == 0 and not user_objects:
+            self._create_schema()
+            self.connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self.connection.commit()
+            return
+
+        if user_version != SCHEMA_VERSION:
+            if user_version == 0:
+                raise StoreError(
+                    "unsupported legacy schema without version; start with a fresh state database or migrate it explicitly."
+                )
+            raise StoreError(
+                f"unsupported schema version {user_version}; expected {SCHEMA_VERSION}. Start with a fresh state database or migrate it explicitly."
+            )
+
+        missing_tables = _REQUIRED_TABLES.difference(user_objects)
+        if missing_tables:
+            missing = ", ".join(sorted(missing_tables))
+            raise StoreError(f"schema version {SCHEMA_VERSION} is incomplete; missing tables: {missing}.")
+
+    def _create_schema(self) -> None:
         self.connection.executescript(
             """
-            CREATE TABLE IF NOT EXISTS messages (
+            CREATE TABLE messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account TEXT NOT NULL,
                 mailbox TEXT NOT NULL,
@@ -66,7 +98,7 @@ class ReleaseApprovalStore:
                 UNIQUE(account, mailbox, uidvalidity, uid)
             );
 
-            CREATE TABLE IF NOT EXISTS requests (
+            CREATE TABLE requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_id TEXT NOT NULL,
                 round_id INTEGER NOT NULL,
@@ -86,10 +118,10 @@ class ReleaseApprovalStore:
                 idempotency_key TEXT NOT NULL,
                 UNIQUE(event_id, round_id, role)
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS requests_idempotency_key_unique
+            CREATE UNIQUE INDEX requests_idempotency_key_unique
             ON requests(idempotency_key);
 
-            CREATE TABLE IF NOT EXISTS decisions (
+            CREATE TABLE decisions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 decision_id TEXT NOT NULL UNIQUE,
                 request_event_id TEXT NOT NULL,
@@ -109,13 +141,13 @@ class ReleaseApprovalStore:
                     REFERENCES requests(event_id, round_id, role)
                     ON DELETE RESTRICT
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS decisions_idempotency_key_unique
+            CREATE UNIQUE INDEX decisions_idempotency_key_unique
             ON decisions(idempotency_key);
-            CREATE UNIQUE INDEX IF NOT EXISTS decisions_one_current_per_role
+            CREATE UNIQUE INDEX decisions_one_current_per_role
             ON decisions(request_event_id, request_round_id, role)
             WHERE superseded_by IS NULL;
 
-            CREATE TABLE IF NOT EXISTS pages (
+            CREATE TABLE pages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_id TEXT NOT NULL,
                 round_id INTEGER NOT NULL,
@@ -130,7 +162,7 @@ class ReleaseApprovalStore:
                     ON DELETE RESTRICT
             );
 
-            CREATE TABLE IF NOT EXISTS smtp_outcomes (
+            CREATE TABLE smtp_outcomes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_id TEXT NOT NULL,
                 round_id INTEGER NOT NULL,
@@ -144,7 +176,7 @@ class ReleaseApprovalStore:
                     ON DELETE RESTRICT
             );
 
-            CREATE TABLE IF NOT EXISTS audit_events (
+            CREATE TABLE audit_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_type TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
@@ -154,7 +186,16 @@ class ReleaseApprovalStore:
             );
             """
         )
-        self.connection.commit()
+
+    def _user_objects(self) -> set[str]:
+        rows = self.connection.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+            """
+        ).fetchall()
+        return {str(row[0]) for row in rows}
 
     def record_message(
         self,
@@ -178,13 +219,16 @@ class ReleaseApprovalStore:
             raise self._translate_integrity_error(exc) from exc
 
     def record_request(self, request: ReleaseAuthorizationRequest) -> StoredRequest:
-        existing_by_key = self._get_request_row_by_idempotency(request.idempotency_key)
-        if existing_by_key is not None:
-            if self._request_row_matches(existing_by_key, request):
-                return self._row_to_stored_request(existing_by_key)
-            raise StoreError("request idempotency key is already bound to a different payload.")
-
         try:
+            self.connection.execute("BEGIN IMMEDIATE")
+            existing_by_key = self._get_request_row_by_idempotency(request.idempotency_key)
+            if existing_by_key is not None:
+                if self._request_row_matches(existing_by_key, request):
+                    self.connection.commit()
+                    return self._row_to_stored_request(existing_by_key)
+                self.connection.rollback()
+                raise StoreError("request idempotency key is already bound to a different payload.")
+
             self.connection.execute(
                 """
                 INSERT INTO requests (
@@ -226,14 +270,27 @@ class ReleaseApprovalStore:
                     request.idempotency_key,
                 ),
             )
+            stored = self.get_request(request.event_id, request.round_id, request.installed_role_id)
+            if stored is None:
+                raise StoreError("request insert did not produce a readable record.")
             self.connection.commit()
+            return stored
+        except StoreError:
+            if self.connection.in_transaction:
+                self.connection.rollback()
+            raise
         except sqlite3.IntegrityError as exc:
+            if self.connection.in_transaction:
+                self.connection.rollback()
             raise self._translate_integrity_error(exc) from exc
-
-        stored = self.get_request(request.event_id, request.round_id, request.installed_role_id)
-        if stored is None:
-            raise StoreError("request insert did not produce a readable record.")
-        return stored
+        except sqlite3.OperationalError as exc:
+            if self.connection.in_transaction:
+                self.connection.rollback()
+            raise StoreError(f"request transaction failed: {exc}") from exc
+        except Exception:
+            if self.connection.in_transaction:
+                self.connection.rollback()
+            raise
 
     def get_request(self, event_id: str, round_id: int, role: str) -> StoredRequest | None:
         row = self.connection.execute(
@@ -388,15 +445,20 @@ class ReleaseApprovalStore:
             )
             self.connection.commit()
         except StoreError:
+            if self.connection.in_transaction:
+                self.connection.rollback()
             raise
         except sqlite3.IntegrityError as exc:
-            self.connection.rollback()
+            if self.connection.in_transaction:
+                self.connection.rollback()
             raise self._translate_integrity_error(exc) from exc
         except sqlite3.OperationalError as exc:
-            self.connection.rollback()
+            if self.connection.in_transaction:
+                self.connection.rollback()
             raise StoreError(f"decision transaction failed: {exc}") from exc
         except Exception:
-            self.connection.rollback()
+            if self.connection.in_transaction:
+                self.connection.rollback()
             raise
 
         stored = self.get_decision(decision_id)

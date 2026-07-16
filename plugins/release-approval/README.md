@@ -48,3 +48,5 @@ The SQLite store persists:
 - An append-only audit ledger with chained hashes for restart-safe tamper detection.
 
 The audit chain is deterministic and restart-verifiable. Any row tamper or boundary mismatch fails closed.
+
+The local database now carries an explicit `PRAGMA user_version` schema marker. A fresh empty database is initialized to the current schema version, and a current-version restart reuses it in place. A non-empty unversioned or mismatched-version database is treated as unsupported legacy state and startup fails closed; migrate it explicitly or remove it and let the plugin create a fresh state database.

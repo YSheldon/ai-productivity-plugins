@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,7 +13,12 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from release_approval_protocol import ReleaseAuthorizationRequest
-from release_approval_store import AuditTamperError, ReleaseApprovalStore, StoreError
+from release_approval_store import (
+    SCHEMA_VERSION,
+    AuditTamperError,
+    ReleaseApprovalStore,
+    StoreError,
+)
 
 
 def _request() -> ReleaseAuthorizationRequest:
@@ -60,6 +66,33 @@ def _decision_kwargs(request: ReleaseAuthorizationRequest, **overrides: object) 
     return payload
 
 
+def test_fresh_database_sets_current_schema_version_and_current_reopen_works(tmp_path: Path) -> None:
+    database_path = tmp_path / "state.sqlite3"
+
+    store = ReleaseApprovalStore(database_path)
+    version = store.connection.execute("PRAGMA user_version").fetchone()[0]
+    assert version == SCHEMA_VERSION
+    request = _request()
+    stored = store.record_request(request)
+    store.close()
+
+    reopened = ReleaseApprovalStore(database_path)
+    assert reopened.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert reopened.get_request(request.event_id, request.round_id, request.installed_role_id) == stored
+
+
+def test_unsupported_legacy_schema_fails_closed(tmp_path: Path) -> None:
+    database_path = tmp_path / "legacy.sqlite3"
+    legacy = sqlite3.connect(database_path)
+    legacy.execute("CREATE TABLE legacy_entries (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+    legacy.execute("INSERT INTO legacy_entries (value) VALUES ('legacy')")
+    legacy.commit()
+    legacy.close()
+
+    with pytest.raises(StoreError, match="schema"):
+        ReleaseApprovalStore(database_path)
+
+
 def test_message_store_rejects_duplicate_uid_and_duplicate_message_id(tmp_path: Path) -> None:
     store = ReleaseApprovalStore(tmp_path / "state.sqlite3")
     store.record_message(
@@ -101,6 +134,42 @@ def test_request_replay_is_idempotent_and_divergent_reuse_is_rejected(tmp_path: 
     divergent = replace(request, request_digest="sha256:" + "9" * 64)
     with pytest.raises(StoreError, match="idempotency"):
         store.record_request(divergent)
+
+
+def test_request_replay_is_atomic_across_connections(tmp_path: Path) -> None:
+    database_path = tmp_path / "state.sqlite3"
+    request = _request()
+    initializer = ReleaseApprovalStore(database_path)
+    initializer.close()
+    barrier = threading.Barrier(2)
+    results: list[object | None] = [None, None]
+    errors: list[BaseException | None] = [None, None]
+
+    def worker(index: int) -> None:
+        store = ReleaseApprovalStore(database_path)
+        try:
+            barrier.wait(timeout=5)
+            results[index] = store.record_request(request)
+        except BaseException as exc:  # noqa: BLE001
+            errors[index] = exc
+        finally:
+            store.close()
+
+    threads = [threading.Thread(target=worker, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(thread.is_alive() is False for thread in threads)
+    assert errors == [None, None]
+    assert results[0] == results[1]
+
+    checker = ReleaseApprovalStore(database_path)
+    count = checker.connection.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+    assert count == 1
+    assert checker.get_request(request.event_id, request.round_id, request.installed_role_id) == results[0]
+    checker.close()
 
 
 def test_restart_recovery_persists_requests_and_allows_uidvalidity_reset(tmp_path: Path) -> None:

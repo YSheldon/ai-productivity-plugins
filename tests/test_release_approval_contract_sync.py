@@ -50,23 +50,43 @@ def test_release_authorization_request_example_contains_required_bindings() -> N
 def test_approval_decision_example_contains_required_bindings() -> None:
     contract = load_contract("approval-decision-v1.json")
 
-    assert contract["contract"] == "ApprovalDecision/v1"
-    assert contract["request_event_id"]
-    assert contract["request_round_id"] > 0
-    assert contract["task"]
-    assert contract["module"]
+    assert list(contract.keys()) == [
+        "schema",
+        "decision_id",
+        "event_id",
+        "round_id",
+        "manifest_digest",
+        "role_snapshot_digest",
+        "approver_email",
+        "decision",
+        "comment",
+        "source",
+        "original_message_id",
+        "page_html_sha256",
+        "decided_at",
+        "idempotency_key",
+    ]
+    assert contract["schema"] == "ApprovalDecision/v1"
+    assert contract["event_id"]
+    assert contract["round_id"] > 0
     assert contract["manifest_digest"].startswith("sha256:")
-    assert contract["request_digest"].startswith("sha256:")
+    assert contract["role_snapshot_digest"].startswith("sha256:")
     assert contract["decision_id"]
     assert contract["approver_email"]
     assert contract["decision"] in {"APPROVE", "HOLD", "REJECT"}
     assert contract["comment"]
-    assert contract["source"] in {"LOCAL_PAGE", "EMAIL_REPLY"}
+    assert contract["source"] == "LOCAL_PAGE"
     assert contract["original_message_id"].startswith("<")
+    assert contract["page_html_sha256"].startswith("sha256:")
     assert contract["decided_at"].endswith("Z")
     assert contract["idempotency_key"]
-    if contract["source"] == "LOCAL_PAGE":
-        assert contract["page_html_sha256"].startswith("sha256:")
+    assert "contract" not in contract
+    assert "request_event_id" not in contract
+    assert "request_round_id" not in contract
+    assert "role" not in contract
+    assert "task" not in contract
+    assert "module" not in contract
+    assert "request_digest" not in contract
 
 
 def test_approval_verification_receipt_example_contains_required_aggregates() -> None:

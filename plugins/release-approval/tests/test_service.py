@@ -4,6 +4,8 @@ import base64
 import hashlib
 import json
 import sys
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -20,7 +22,7 @@ from release_approval_config import (
     WorkingHoursConfig,
 )
 from release_approval_mail import MailCapabilityError, MailSendResult
-from release_approval_protocol import ReleaseAuthorizationRequest, canonical_json
+from release_approval_protocol import ReleaseAuthorizationRequest
 from release_approval_service import ReleaseApprovalService, ReleaseApprovalServiceError
 from release_approval_store import ReleaseApprovalStore
 
@@ -40,6 +42,10 @@ class FakeMailGateway:
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+
+def _fixed_now() -> datetime:
+    return datetime(2026, 7, 16, 1, 2, 3, tzinfo=timezone.utc)
 
 
 def _config(state_dir: Path) -> ReleaseApprovalConfig:
@@ -81,6 +87,48 @@ def _request() -> ReleaseAuthorizationRequest:
     )
 
 
+def _expected_decision_payload(
+    request: ReleaseAuthorizationRequest,
+    *,
+    decision: str,
+    comment: str,
+    page_html_sha256: str,
+    decided_at: str,
+) -> dict[str, object]:
+    stable_fields = {
+        "event_id": request.event_id,
+        "round_id": request.round_id,
+        "role_id": request.installed_role_id,
+        "manifest_digest": request.manifest_digest,
+        "role_snapshot_digest": request.role_snapshot_digest,
+        "approver_email": request.installed_role_email,
+        "decision": decision,
+        "comment": comment,
+        "source": "LOCAL_PAGE",
+        "original_message_id": request.original_message_id,
+        "page_html_sha256": page_html_sha256,
+    }
+    stable_digest = hashlib.sha256(
+        json.dumps(stable_fields, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return {
+        "schema": "ApprovalDecision/v1",
+        "decision_id": f"decision-{request.event_id}-round-{request.round_id}-{request.installed_role_id}-{stable_digest}",
+        "event_id": request.event_id,
+        "round_id": request.round_id,
+        "manifest_digest": request.manifest_digest,
+        "role_snapshot_digest": request.role_snapshot_digest,
+        "approver_email": request.installed_role_email,
+        "decision": decision,
+        "comment": comment,
+        "source": "LOCAL_PAGE",
+        "original_message_id": request.original_message_id,
+        "page_html_sha256": page_html_sha256,
+        "decided_at": decided_at,
+        "idempotency_key": f"decision:{request.event_id}:{request.round_id}:{request.installed_role_id}:{stable_digest}",
+    }
+
+
 def _assert_sha256sums_current(artifact_dir: Path) -> None:
     sums_path = artifact_dir / "SHA256SUMS"
     lines = [line for line in sums_path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -98,7 +146,7 @@ def test_service_builds_exact_threaded_reply_and_writes_audit_artifacts(tmp_path
     config = _config(tmp_path / "state")
     store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")
     mail = FakeMailGateway(MailSendResult(sent=True, message_id="<smtp-message@example.com>", refused={}, raw={"sent": True}))
-    service = ReleaseApprovalService(config=config, store=store, mail_gateway=mail)
+    service = ReleaseApprovalService(config=config, store=store, mail_gateway=mail, now_fn=_fixed_now)
     request = _request()
     request_payload = {"reply_subject": "Re: Release approval"}
 
@@ -137,7 +185,13 @@ def test_service_builds_exact_threaded_reply_and_writes_audit_artifacts(tmp_path
     end_marker = "-----END APPROVAL DECISION-----"
     encoded_block = text_body.split(begin_marker, 1)[1].split(end_marker, 1)[0].strip()
     decoded_payload = json.loads(base64.urlsafe_b64decode(encoded_block + "=" * (-len(encoded_block) % 4)).decode("utf-8"))
-    assert canonical_json(decoded_payload) == canonical_json(service.build_decision_payload(request, "APPROVE", "Ship it.", page_session.page_html_sha256))
+    assert decoded_payload == _expected_decision_payload(
+        request,
+        decision="APPROVE",
+        comment="Ship it.",
+        page_html_sha256=page_session.page_html_sha256,
+        decided_at="2026-07-16T01:02:03Z",
+    )
 
     artifact_dir = config.state_dir / "audit" / request.event_id / "round-1" / "role-release-manager"
     assert (artifact_dir / "page.html").exists()
@@ -151,6 +205,58 @@ def test_service_builds_exact_threaded_reply_and_writes_audit_artifacts(tmp_path
     assert page_session.nonce not in state_text
     assert page_session.url_key not in state_text
     _assert_sha256sums_current(artifact_dir)
+
+
+def test_build_decision_payload_is_stable_for_retry_and_round_scoped(tmp_path: Path) -> None:
+    config = _config(tmp_path / "state")
+    store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")
+    mail = FakeMailGateway(MailSendResult(sent=True, message_id="<smtp-message@example.com>", refused={}, raw={"sent": True}))
+    service = ReleaseApprovalService(config=config, store=store, mail_gateway=mail, now_fn=_fixed_now)
+    request_round_1 = _request()
+    request_round_2 = replace(
+        request_round_1,
+        round_id=2,
+        idempotency_key="release-approval-request-rel-2026-07-16-0001-round-2",
+    )
+    page_html_sha256 = "sha256:" + "a" * 64
+
+    first = service.build_decision_payload(request_round_1, "APPROVE", "Ship it.", page_html_sha256)
+    replay = service.build_decision_payload(request_round_1, "APPROVE", "Ship it.", page_html_sha256)
+    second_round = service.build_decision_payload(request_round_2, "APPROVE", "Ship it.", page_html_sha256)
+
+    assert first == replay
+    assert first == _expected_decision_payload(
+        request_round_1,
+        decision="APPROVE",
+        comment="Ship it.",
+        page_html_sha256=page_html_sha256,
+        decided_at="2026-07-16T01:02:03Z",
+    )
+    assert second_round == _expected_decision_payload(
+        request_round_2,
+        decision="APPROVE",
+        comment="Ship it.",
+        page_html_sha256=page_html_sha256,
+        decided_at="2026-07-16T01:02:03Z",
+    )
+    assert first["decision_id"] != second_round["decision_id"]
+    assert first["idempotency_key"] != second_round["idempotency_key"]
+    assert set(first.keys()) == {
+        "schema",
+        "decision_id",
+        "event_id",
+        "round_id",
+        "manifest_digest",
+        "role_snapshot_digest",
+        "approver_email",
+        "decision",
+        "comment",
+        "source",
+        "original_message_id",
+        "page_html_sha256",
+        "decided_at",
+        "idempotency_key",
+    }
 
 
 def test_service_queues_retry_when_smtp_refuses_any_recipient(tmp_path: Path) -> None:

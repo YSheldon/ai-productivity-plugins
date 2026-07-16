@@ -186,28 +186,60 @@ class ReleaseApprovalService:
         if decided_at is None and cache_key in self._decision_cache:
             return dict(self._decision_cache[cache_key])
         timestamp = decided_at or self._isoformat(self.now_fn())
-        decision_id = f"decision-{request.event_id}-{request.installed_role_id}"
+        decision_scope = self._decision_scope_payload(
+            request=request,
+            decision=decision,
+            comment=comment,
+            page_html_sha256=page_html_sha256,
+        )
+        stable_digest = self._decision_stable_digest(decision_scope)
+        decision_id = (
+            f"decision-{request.event_id}-round-{request.round_id}-{request.installed_role_id}-{stable_digest}"
+        )
         payload = {
-            "contract": "ApprovalDecision/v1",
+            "schema": "ApprovalDecision/v1",
             "decision_id": decision_id,
-            "request_event_id": request.event_id,
-            "request_round_id": request.round_id,
-            "task": request.task,
-            "module": request.module,
+            "event_id": request.event_id,
+            "round_id": request.round_id,
             "manifest_digest": request.manifest_digest,
-            "request_digest": request.request_digest,
-            "role": request.installed_role_id,
+            "role_snapshot_digest": request.role_snapshot_digest,
             "approver_email": request.installed_role_email,
             "decision": decision,
             "comment": comment,
             "source": "LOCAL_PAGE",
             "original_message_id": request.original_message_id,
-            "decided_at": timestamp,
             "page_html_sha256": page_html_sha256,
-            "idempotency_key": f"approval-decision-{request.event_id}-{request.installed_role_id}",
+            "decided_at": timestamp,
+            "idempotency_key": f"decision:{request.event_id}:{request.round_id}:{request.installed_role_id}:{stable_digest}",
         }
         self._decision_cache[cache_key] = dict(payload)
         return payload
+
+    def _decision_scope_payload(
+        self,
+        *,
+        request: ReleaseAuthorizationRequest,
+        decision: str,
+        comment: str,
+        page_html_sha256: str,
+    ) -> dict[str, Any]:
+        return {
+            "event_id": request.event_id,
+            "round_id": request.round_id,
+            "role_id": request.installed_role_id,
+            "manifest_digest": request.manifest_digest,
+            "role_snapshot_digest": request.role_snapshot_digest,
+            "approver_email": request.installed_role_email,
+            "decision": decision,
+            "comment": comment,
+            "source": "LOCAL_PAGE",
+            "original_message_id": request.original_message_id,
+            "page_html_sha256": page_html_sha256,
+        }
+
+    @staticmethod
+    def _decision_stable_digest(payload: Mapping[str, Any]) -> str:
+        return hashlib.sha256(canonical_json(dict(payload)).encode("utf-8")).hexdigest()
 
     def submit_local_decision(
         self,

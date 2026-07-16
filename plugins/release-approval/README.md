@@ -14,6 +14,8 @@ $env:RELEASE_APPROVAL_CONFIG = "C:\path\to\release-approval.json"
 
 The runtime configuration is read once at MCP startup. Tool calls must not override `config_path`; restart the process after an approved config change.
 
+Task 4 leaves `.mcp.json` as an explicit empty scaffold. Task 6 will register the real startup-locked MCP server after the server implementation exists; no library module is exposed as a placeholder server in this task.
+
 Required fields:
 
 - `role_id`

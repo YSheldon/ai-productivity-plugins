@@ -120,3 +120,7 @@ def test_rejects_per_call_config_override_and_preserves_exact_runtime_copies() -
         "approval-verification-receipt-v1.json",
     ):
         assert (plugin_contract_root / name).read_bytes() == (contract_root / name).read_bytes()
+
+def test_mcp_scaffold_is_empty_until_task6_server_exists() -> None:
+    mcp_payload = json.loads((PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8"))
+    assert mcp_payload == {"mcpServers": {}}

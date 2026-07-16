@@ -455,12 +455,12 @@ class ReleaseApprovalStore:
         created_at: str,
         previous_hash: str,
     ) -> str:
-        envelope = canonical_json(
-            {
-                "created_at": created_at,
-                "event_type": event_type,
-                "payload": json.loads(payload_json),
-                "previous_hash": previous_hash,
-            }
+        envelope = "\n".join(
+            (
+                created_at,
+                event_type,
+                previous_hash,
+                payload_json,
+            )
         )
         return hashlib.sha256(envelope.encode("utf-8")).hexdigest()

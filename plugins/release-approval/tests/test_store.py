@@ -165,3 +165,24 @@ def test_current_decision_supersession_and_audit_chain_tamper_detection(tmp_path
 
     with pytest.raises(AuditTamperError, match="tamper"):
         store.verify_audit_chain()
+
+def test_audit_chain_detects_formatting_only_payload_text_tamper(tmp_path: Path) -> None:
+    store = ReleaseApprovalStore(tmp_path / "state.sqlite3")
+    store.append_audit_event(
+        "request-recorded",
+        {"event_id": "rel-2026-07-15-0001", "round_id": 1},
+        created_at="2026-07-15T12:10:00Z",
+    )
+    store.verify_audit_chain()
+
+    store.connection.execute(
+        """
+        UPDATE audit_events
+        SET payload_json = '{ "round_id" : 1 , "event_id" : "rel-2026-07-15-0001" }'
+        WHERE id = 1
+        """
+    )
+    store.connection.commit()
+
+    with pytest.raises(AuditTamperError, match="tamper"):
+        store.verify_audit_chain()

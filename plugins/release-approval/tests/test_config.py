@@ -67,6 +67,30 @@ def test_load_config_expands_paths_applies_defaults_and_freezes_required_fields(
         config.role_id = "other-role"  # type: ignore[misc]
 
 
+def test_load_config_rejects_unexpanded_environment_variable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RELEASE_APPROVAL_STATE_ROOT", str(tmp_path))
+    monkeypatch.delenv("RELEASE_APPROVAL_REPO_ROOT", raising=False)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_base_config()), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="unexpanded environment variable"):
+        load_config(config_path)
+
+
+def test_shipped_config_resolves_bootstrap_lock_when_repository_root_is_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = tmp_path / "inspected-repository"
+    user_profile = tmp_path / "user-profile"
+    monkeypatch.setenv("RELEASE_APPROVAL_REPO_ROOT", str(repo_root))
+    monkeypatch.setenv("USERPROFILE", str(user_profile))
+
+    config = load_config(PLUGIN_ROOT / "config" / "config.example.json")
+
+    assert config.dependency_lock == (repo_root / "dependency-lock.json").resolve()
+    assert config.state_dir == (user_profile / ".codex" / "release-approval" / "state").resolve()
+
+
 @pytest.mark.parametrize(
     ("mutator", "message"),
     [
@@ -94,6 +118,7 @@ def test_load_config_rejects_invalid_runtime_configuration(
     message: str,
 ) -> None:
     monkeypatch.setenv("RELEASE_APPROVAL_STATE_ROOT", str(tmp_path))
+    monkeypatch.setenv("RELEASE_APPROVAL_REPO_ROOT", str(tmp_path))
     payload = _base_config()
     mutator(payload)
     path = tmp_path / "invalid.json"
@@ -139,6 +164,7 @@ def test_load_config_rejects_non_strict_audit_and_working_hours_types(
     message: str,
 ) -> None:
     monkeypatch.setenv("RELEASE_APPROVAL_STATE_ROOT", str(tmp_path))
+    monkeypatch.setenv("RELEASE_APPROVAL_REPO_ROOT", str(tmp_path))
     payload = _base_config()
     mutator(payload)
     path = tmp_path / "invalid-types.json"
@@ -179,3 +205,7 @@ def test_shipped_config_keeps_dependency_lock_at_repo_root_and_readme_warns_not_
     readme_text = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
     assert "%RELEASE_APPROVAL_REPO_ROOT%\\dependency-lock.json" in readme_text
     assert "must not be copied elsewhere" in readme_text
+    repo_root_assignment = '$env:RELEASE_APPROVAL_REPO_ROOT = "C:\\absolute\\path\\to\\inspected-repository"'
+    assert repo_root_assignment in readme_text
+    assert readme_text.index(repo_root_assignment) < readme_text.index("config/config.example.json")
+    assert "replace `dependency_lock` with the exact absolute path returned by `bootstrap_dependencies.py`" in readme_text

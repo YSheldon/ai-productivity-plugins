@@ -6,7 +6,13 @@ Task 4 only lands the frozen configuration contract, deterministic request valid
 
 ## Configuration
 
-Copy `config/config.example.json` to a protected path and set:
+Define the inspected repository root before using the example:
+
+```powershell
+$env:RELEASE_APPROVAL_REPO_ROOT = "C:\absolute\path\to\inspected-repository"
+```
+
+Only after setting it, copy `config/config.example.json` to a protected path and set:
 
 ```powershell
 $env:RELEASE_APPROVAL_CONFIG = "C:\path\to\release-approval.json"
@@ -14,7 +20,7 @@ $env:RELEASE_APPROVAL_CONFIG = "C:\path\to\release-approval.json"
 
 The runtime configuration is read once at MCP startup. Tool calls must not override `config_path`; restart the process after an approved config change.
 
-Set `dependency_lock` to `%RELEASE_APPROVAL_REPO_ROOT%\dependency-lock.json`. This is the exact repo-root path written by `bootstrap_dependencies.py` and it must not be copied elsewhere.
+During installation, replace `dependency_lock` with the exact absolute path returned by `bootstrap_dependencies.py`. The example value `%RELEASE_APPROVAL_REPO_ROOT%\dependency-lock.json` preserves the inspected repo-root containment model, and the bootstrap-written lock file must not be copied elsewhere.
 
 Task 4 leaves `.mcp.json` as an explicit empty scaffold. Task 6 will register the real startup-locked MCP server after the server implementation exists; no library module is exposed as a placeholder server in this task.
 

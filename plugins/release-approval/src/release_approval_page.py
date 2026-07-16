@@ -208,6 +208,7 @@ class ReleaseApprovalPage:
         if created_at is not None and state.get("created_at") != created_at:
             raise ReleaseApprovalPageError("page session state binding mismatch.")
         self._nonce_used = "used_at" in state
+        self._nonce_reserved = "reserved_at" in state
 
     def _persisted_html(self) -> str:
         return "\n".join(
@@ -362,6 +363,9 @@ class ReleaseApprovalPage:
                 state = json.loads(self.page_state_path.read_text(encoding="utf-8"))
                 if "used_at" in state:
                     self._nonce_used = True
+                    raise ReleaseApprovalPageError("nonce is single-use.")
+                if "reserved_at" in state:
+                    self._nonce_reserved = True
                     raise ReleaseApprovalPageError("nonce is single-use.")
                 state["reserved_at"] = self._isoformat(self.now_fn())
                 self.page_state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")

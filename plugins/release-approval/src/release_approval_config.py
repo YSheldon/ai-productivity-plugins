@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _TIME_PATTERN = re.compile(r"^\d{2}:\d{2}$")
+_UNEXPANDED_ENVIRONMENT_PATTERN = re.compile(r"%(?:[^%]+)%|\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\})")
 _ALLOWED_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _FORBIDDEN_SECRET_KEYS = {"password", "authorization_code", "authorizationCode", "auth_code"}
 
@@ -99,7 +100,10 @@ def _require_positive_int(value: Any, *, field_name: str) -> int:
 
 
 def _expand_path(value: str) -> Path:
-    return Path(os.path.expandvars(value)).expanduser().resolve(strict=False)
+    expanded = os.path.expandvars(value)
+    if _UNEXPANDED_ENVIRONMENT_PATTERN.search(expanded):
+        raise ConfigError("path contains an unexpanded environment variable.")
+    return Path(expanded).expanduser().resolve(strict=False)
 
 
 def _is_loopback_host(host: str) -> bool:

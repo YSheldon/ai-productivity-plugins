@@ -359,6 +359,71 @@ def test_service_page_round_trip_serves_service_artifacts_and_keeps_page_html_im
     _assert_sha256sums_current(page_session.artifact_dir)
 
 
+def test_page_restart_rejects_persisted_ambiguous_reservation_without_callback(tmp_path: Path) -> None:
+    config = _config(tmp_path / "state")
+    store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")
+    mail = FakeMailGateway(MailSendResult(sent=True, message_id="<smtp-message@example.com>", refused={}, raw={"sent": True}))
+    service = ReleaseApprovalService(config=config, store=store, mail_gateway=mail, now_fn=_fixed_now)
+    request = _request()
+    request_payload = {"reply_subject": "Re: Release approval"}
+
+    service.record_request(request)
+    page_session = service.create_page_session(request=request, request_payload=request_payload)
+    binding = DecisionPageBinding(
+        event_id=request.event_id,
+        round_id=request.round_id,
+        role_id=request.installed_role_id,
+        expires_at=request.expires_at,
+        page_html_sha256=page_session.page_html_sha256,
+    )
+    interrupted_page = ReleaseApprovalPage.from_page_session(
+        host="127.0.0.1",
+        artifact_dir=page_session.artifact_dir,
+        binding=binding,
+        page_session=page_session,
+        submit_decision=lambda _form: pytest.fail("interrupted page must not submit"),
+        open_browser=lambda _url: None,
+        now_fn=_fixed_now,
+    )
+    interrupted_page._reserve_nonce()
+    reserved_at = json.loads(page_session.page_state_path.read_text(encoding="utf-8"))["reserved_at"]
+
+    callbacks: list[dict[str, str]] = []
+    restarted_page = ReleaseApprovalPage.from_page_session(
+        host="127.0.0.1",
+        artifact_dir=page_session.artifact_dir,
+        binding=binding,
+        page_session=page_session,
+        submit_decision=lambda form: callbacks.append(dict(form)) or pytest.fail("ambiguous retry must not submit"),
+        open_browser=lambda _url: None,
+        now_fn=_fixed_now,
+    )
+    restarted_page.start()
+    try:
+        payload = urllib.parse.urlencode(
+            {
+                "event_id": request.event_id,
+                "round_id": str(request.round_id),
+                "role_id": request.installed_role_id,
+                "decision": "APPROVE",
+                "comment": "Ship it.",
+                "nonce": page_session.nonce,
+                "page_html_sha256": page_session.page_html_sha256,
+            }
+        ).encode("utf-8")
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            urllib.request.urlopen(restarted_page.url, data=payload, timeout=5).read()
+        assert rejected.value.code == 409
+    finally:
+        restarted_page.close()
+
+    state = json.loads(page_session.page_state_path.read_text(encoding="utf-8"))
+    assert callbacks == []
+    assert state["reserved_at"] == reserved_at
+    assert "used_at" not in state
+    _assert_sha256sums_current(page_session.artifact_dir)
+
+
 def test_service_retry_reuses_original_decision_identity_after_retry_queued_in_same_process(tmp_path: Path) -> None:
     config = _config(tmp_path / "state")
     store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")

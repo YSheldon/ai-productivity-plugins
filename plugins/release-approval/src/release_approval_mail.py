@@ -78,6 +78,28 @@ class MailGateway:
         if not all(self._is_message_id(str(item)) for item in references):
             raise MailCapabilityError("CAPABILITY_BLOCKED: authenticated readback fields are missing.")
 
+    def list_accounts(self) -> Mapping[str, Any]:
+        completed_payload = self._invoke({"tool": "list_accounts", "arguments": {}})
+        result = completed_payload.get("result")
+        if not isinstance(result, Mapping):
+            raise MailGatewayError("mail CLI result must be a JSON object.")
+        accounts = result.get("accounts")
+        if not isinstance(accounts, list):
+            raise MailGatewayError("mail CLI list_accounts result must contain an accounts array.")
+        return result
+
+    def search_messages(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        completed_payload = self._invoke(
+            payload if "tool" in payload else {"tool": "search_messages", "arguments": dict(payload)}
+        )
+        result = completed_payload.get("result")
+        if not isinstance(result, Mapping):
+            raise MailGatewayError("mail CLI result must be a JSON object.")
+        messages = result.get("messages")
+        if not isinstance(messages, list):
+            raise MailGatewayError("mail CLI search_messages result must contain a messages array.")
+        return result
+
     def send_email(self, payload: Mapping[str, Any]) -> MailSendResult:
         completed_payload = self._invoke(payload if "tool" in payload else {"tool": "send_email", "arguments": dict(payload)})
         result = completed_payload.get("result")

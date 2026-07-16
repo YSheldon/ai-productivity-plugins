@@ -5,7 +5,7 @@
     "profile": "release-manager",
     "email": "release-manager@example.com"
   },
-  "release_group": "release-approvers",
+  "release_group": "release-approvers@example.com",
   "mailbox": "INBOX",
   "page": {
     "host": "127.0.0.1",

@@ -1,8 +1,8 @@
 # Release Approval
 
-This plugin owns the durable local state for one release-approval role identity.
+This plugin owns the role-side release approval loop for one configured approver mailbox.
 
-Task 4 only lands the frozen configuration contract, deterministic request validation, SQLite event store, and append-only audit-chain verification. It does not yet start a page server, launch a browser, send mail, write Feishu state, or perform verifier-side aggregation.
+Task 6 adds the startup-locked MCP server, the fixed-profile setup entrypoint, deterministic `run_once` mail scanning, and the hourly automation install boundary. It still does not implement verifier aggregation or Task 7+ behavior.
 
 ## Configuration
 
@@ -21,8 +21,6 @@ $env:RELEASE_APPROVAL_CONFIG = "C:\path\to\release-approval.json"
 The runtime configuration is read once at MCP startup. Tool calls must not override `config_path`; restart the process after an approved config change.
 
 During installation, replace `dependency_lock` with the exact absolute path returned by `bootstrap_dependencies.py`. The example value `%RELEASE_APPROVAL_REPO_ROOT%\dependency-lock.json` preserves the inspected repo-root containment model, and the bootstrap-written lock file must not be copied elsewhere.
-
-Task 4 leaves `.mcp.json` as an explicit empty scaffold. Task 6 will register the real startup-locked MCP server after the server implementation exists; no library module is exposed as a placeholder server in this task.
 
 Required fields:
 
@@ -44,17 +42,18 @@ Validation is fail-closed:
 - `role_email` and `mail_account.email` must be valid and identical.
 - The config must not contain passwords or authorization-code fields.
 
-## State Core
+## Task 6 Tools
 
-The SQLite store persists:
+- `release_approval_preflight`
+- `release_approval_start_setup`
+- `release_approval_run_once`
+- `release_approval_list_pending`
+- `release_approval_open_page`
+- `release_approval_get_event`
+- `release_approval_verify_audit_chain`
 
-- IMAP message identity keyed by account, mailbox, `UIDVALIDITY`, and UID, with unique `Message-ID`.
-- Role-bound requests keyed by event, round, and role.
-- Decision history with current-decision supersession.
-- Local page metadata with HTML hash and nonce hash.
-- SMTP outcome records.
-- An append-only audit ledger with chained hashes for restart-safe tamper detection.
+`release_approval_start_setup` runs only the fixed allowlisted bootstrap. If dependencies changed, it returns `FRESH_TASK_REQUIRED` and stops before using the new capability in the same task. Otherwise it validates the configured account email, creates exactly one hourly Codex automation, and runs the first scan immediately.
 
-The audit chain is deterministic and restart-verifiable. Any row tamper or boundary mismatch fails closed.
+`release_approval_run_once` reads recent release requests through the locked mail bridge, validates the frozen machine block, uses `UIDVALIDITY`, `UID`, and `Message-ID` idempotency, creates or reuses exactly one page, retries known-unsent decisions, and auto-opens only newly created pages. Missing thread or readback capability remains `CAPABILITY_BLOCKED`; there is no subject-only trust fallback.
 
-The local database now carries an explicit `PRAGMA user_version` schema marker. A fresh empty database is initialized to the current schema version, and a current-version restart reuses it in place. A non-empty unversioned or mismatched-version database is treated as unsupported legacy state and startup fails closed; migrate it explicitly or remove it and let the plugin create a fresh state database.
+The loopback page opens only after durable artifacts exist, and page clicks do not count as aggregate approval.

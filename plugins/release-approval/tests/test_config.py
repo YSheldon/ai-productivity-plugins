@@ -193,9 +193,17 @@ def test_rejects_per_call_config_override_and_preserves_exact_runtime_copies() -
         assert (plugin_contract_root / name).read_bytes() == (contract_root / name).read_bytes()
 
 
-def test_mcp_scaffold_is_empty_until_task6_server_exists() -> None:
+def test_mcp_manifest_points_at_task6_stdio_server() -> None:
     mcp_payload = json.loads((PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8"))
-    assert mcp_payload == {"mcpServers": {}}
+    assert mcp_payload == {
+        "mcpServers": {
+            "release-approval": {
+                "command": "py",
+                "args": ["-3", "./src/release_approval_mcp.py"],
+                "cwd": ".",
+            }
+        }
+    }
 
 
 def test_shipped_config_keeps_dependency_lock_at_repo_root_and_readme_warns_not_to_copy() -> None:

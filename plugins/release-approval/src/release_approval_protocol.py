@@ -9,6 +9,9 @@ from typing import Any, Callable, Mapping, TypeVar
 
 
 _RFC_MESSAGE_ID_PATTERN = re.compile(r"^<[^<>\s@]+@[^<>\s@]+>$")
+_RFC3339_TIMESTAMP_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
 _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REQUEST_CONTRACT = "ReleaseAuthorizationRequest/v1"
 _TPage = TypeVar("_TPage")
@@ -44,11 +47,7 @@ def canonical_json(payload: Any) -> str:
 
 
 def build_request_digest(payload: Mapping[str, Any]) -> str:
-    digest_payload = {
-        key: value
-        for key, value in payload.items()
-        if key != "request_digest"
-    }
+    digest_payload = {key: value for key, value in payload.items() if key != "request_digest"}
     return "sha256:" + hashlib.sha256(canonical_json(digest_payload).encode("utf-8")).hexdigest()
 
 
@@ -73,13 +72,13 @@ def _require_sha256_digest(payload: Mapping[str, Any], key: str) -> str:
 
 
 def _parse_timestamp(value: str, *, field_name: str) -> datetime:
+    if not _RFC3339_TIMESTAMP_PATTERN.fullmatch(value):
+        raise ProtocolError(f"{field_name} must be an RFC 3339 timestamp.")
     normalized = value.replace("Z", "+00:00")
     try:
         parsed = datetime.fromisoformat(normalized)
     except ValueError as exc:
         raise ProtocolError(f"{field_name} must be an RFC 3339 timestamp.") from exc
-    if parsed.tzinfo is None:
-        raise ProtocolError(f"{field_name} must include a timezone.")
     return parsed.astimezone(timezone.utc)
 
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -103,6 +102,51 @@ def test_load_config_rejects_invalid_runtime_configuration(
         load_config(path)
 
 
+@pytest.mark.parametrize(
+    ("mutator", "message"),
+    [
+        (
+            lambda payload: payload["audit"].__setitem__("verify_chain_on_startup", 1),
+            "bool",
+        ),
+        (
+            lambda payload: payload["audit"].__setitem__("verify_chain_on_startup", "true"),
+            "bool",
+        ),
+        (
+            lambda payload: payload["audit"].__setitem__("retention_days", True),
+            "positive integer",
+        ),
+        (
+            lambda payload: payload["audit"].__setitem__("retention_days", "30"),
+            "positive integer",
+        ),
+        (
+            lambda payload: payload["audit"].__setitem__("retention_days", 0),
+            "positive integer",
+        ),
+        (
+            lambda payload: payload["working_hours"].__setitem__("days", ["Mon", 2]),
+            "strings",
+        ),
+    ],
+)
+def test_load_config_rejects_non_strict_audit_and_working_hours_types(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutator,
+    message: str,
+) -> None:
+    monkeypatch.setenv("RELEASE_APPROVAL_STATE_ROOT", str(tmp_path))
+    payload = _base_config()
+    mutator(payload)
+    path = tmp_path / "invalid-types.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(path)
+
+
 def test_rejects_per_call_config_override_and_preserves_exact_runtime_copies() -> None:
     with pytest.raises(ConfigError, match="cannot be supplied per call"):
         reject_per_call_config_override({"config_path": "C:\\evil.json"})
@@ -120,6 +164,7 @@ def test_rejects_per_call_config_override_and_preserves_exact_runtime_copies() -
         "approval-verification-receipt-v1.json",
     ):
         assert (plugin_contract_root / name).read_bytes() == (contract_root / name).read_bytes()
+
 
 def test_mcp_scaffold_is_empty_until_task6_server_exists() -> None:
     mcp_payload = json.loads((PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8"))

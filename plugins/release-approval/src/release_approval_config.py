@@ -86,6 +86,18 @@ def _require_email(value: str, *, field_name: str) -> str:
     return value
 
 
+def _require_exact_bool(value: Any, *, field_name: str) -> bool:
+    if type(value) is not bool:
+        raise ConfigError(f"{field_name} must be a bool.")
+    return value
+
+
+def _require_positive_int(value: Any, *, field_name: str) -> int:
+    if type(value) is not int or value <= 0:
+        raise ConfigError(f"{field_name} must be a positive integer.")
+    return value
+
+
 def _expand_path(value: str) -> Path:
     return Path(os.path.expandvars(value)).expanduser().resolve(strict=False)
 
@@ -150,9 +162,11 @@ def load_config(path: str | Path) -> ReleaseApprovalConfig:
     days_value = working_hours_payload.get("days")
     if not isinstance(days_value, list) or not days_value:
         raise ConfigError("working_hours.days must be a non-empty list.")
-    days = tuple(str(day).strip() for day in days_value if str(day).strip())
-    if len(days) != len(days_value):
-        raise ConfigError("working_hours.days must contain only non-empty strings.")
+    if not all(isinstance(day, str) and day.strip() for day in days_value):
+        raise ConfigError("working_hours.days must contain non-empty strings.")
+    days = tuple(day.strip() for day in days_value)
+
+    audit_payload = _require_mapping(payload, "audit")
 
     return ReleaseApprovalConfig(
         role_id=_require_string(payload, "role_id"),
@@ -174,7 +188,13 @@ def load_config(path: str | Path) -> ReleaseApprovalConfig:
         state_dir=_expand_path(_require_string(payload, "state_dir")),
         dependency_lock=_expand_path(_require_string(payload, "dependency_lock")),
         audit=AuditConfig(
-            verify_chain_on_startup=bool(_require_mapping(payload, "audit").get("verify_chain_on_startup", True)),
-            retention_days=int(_require_mapping(payload, "audit").get("retention_days", 3650)),
+            verify_chain_on_startup=_require_exact_bool(
+                audit_payload.get("verify_chain_on_startup"),
+                field_name="audit.verify_chain_on_startup",
+            ),
+            retention_days=_require_positive_int(
+                audit_payload.get("retention_days"),
+                field_name="audit.retention_days",
+            ),
         ),
     )

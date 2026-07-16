@@ -80,6 +80,29 @@ def test_invalid_requests_raise_protocol_error(mutator, message: str) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "expires_at",
+    [
+        "2026-07-16",
+        "2026-07-16T00:00:00",
+        "2026-07-16 00:00:00Z",
+        "2026-07-16T00:00:00+0000",
+    ],
+)
+def test_rfc3339_requires_canonical_timezone_bearing_timestamps(expires_at: str) -> None:
+    payload = _payload()
+    payload["expires_at"] = expires_at
+    payload["request_digest"] = build_request_digest(payload)
+
+    with pytest.raises(ProtocolError, match="RFC 3339 timestamp"):
+        validate_release_request(
+            payload,
+            installed_role_id="release-manager",
+            installed_role_email="release-manager@example.com",
+            now=datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc),
+        )
+
+
 def test_invalid_request_fails_before_page_creation() -> None:
     payload = _payload()
     payload["request_digest"] = "sha256:" + "0" * 64

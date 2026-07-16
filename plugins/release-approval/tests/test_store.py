@@ -120,6 +120,31 @@ def test_message_store_rejects_duplicate_uid_and_duplicate_message_id(tmp_path: 
             uid=2,
             message_id="<message-1@example.com>",
         )
+def test_connection_recovers_after_duplicate_message_failure(tmp_path: Path) -> None:
+    store = ReleaseApprovalStore(tmp_path / "state.sqlite3")
+    request = _request()
+    store.record_message(
+        account="release-manager@example.com",
+        mailbox="INBOX",
+        uidvalidity=100,
+        uid=1,
+        message_id="<message-1@example.com>",
+    )
+
+    with pytest.raises(StoreError, match="duplicate Message-ID"):
+        store.record_message(
+            account="release-manager@example.com",
+            mailbox="INBOX",
+            uidvalidity=100,
+            uid=2,
+            message_id="<message-1@example.com>",
+        )
+
+    stored_request = store.record_request(request)
+    stored_decision = store.record_decision(**_decision_kwargs(request))
+
+    assert store.get_request(request.event_id, request.round_id, request.installed_role_id) == stored_request
+    assert store.get_decision(stored_decision.decision_id) == stored_decision
 
 
 def test_request_replay_is_idempotent_and_divergent_reuse_is_rejected(tmp_path: Path) -> None:
@@ -297,7 +322,7 @@ def test_current_decision_supersession_is_atomic_across_connections_and_db_enfor
         )
 
 
-def test_orphan_child_records_are_rejected(tmp_path: Path) -> None:
+def test_orphan_child_records_are_rejected_and_connection_recovers(tmp_path: Path) -> None:
     store = ReleaseApprovalStore(tmp_path / "state.sqlite3")
     request = _request()
 
@@ -325,6 +350,30 @@ def test_orphan_child_records_are_rejected(tmp_path: Path) -> None:
             detail="ok",
             recorded_at="2026-07-15T10:05:00Z",
         )
+
+    stored_request = store.record_request(request)
+    stored_decision = store.record_decision(**_decision_kwargs(request))
+    store.record_page(
+        event_id=request.event_id,
+        round_id=request.round_id,
+        role=request.installed_role_id,
+        html_path=tmp_path / "page.html",
+        html_sha256="sha256:" + "6" * 64,
+        nonce_sha256="sha256:" + "7" * 64,
+        created_at="2026-07-15T10:00:00Z",
+    )
+    store.record_smtp_outcome(
+        event_id=request.event_id,
+        round_id=request.round_id,
+        role=request.installed_role_id,
+        smtp_message_id="<smtp@example.com>",
+        outcome="SENT",
+        detail="ok",
+        recorded_at="2026-07-15T10:05:00Z",
+    )
+
+    assert store.get_request(request.event_id, request.round_id, request.installed_role_id) == stored_request
+    assert store.get_decision(stored_decision.decision_id) == stored_decision
 
 
 def test_audit_chain_tamper_detection(tmp_path: Path) -> None:

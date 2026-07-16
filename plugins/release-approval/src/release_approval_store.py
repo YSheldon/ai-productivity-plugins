@@ -4,7 +4,7 @@ import hashlib
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, TypeVar
 
 from release_approval_protocol import ReleaseAuthorizationRequest, canonical_json
 
@@ -19,6 +19,7 @@ _REQUIRED_TABLES = {
     "smtp_outcomes",
     "audit_events",
 }
+_T = TypeVar("_T")
 
 
 class StoreError(RuntimeError):
@@ -66,11 +67,21 @@ class ReleaseApprovalStore:
         user_objects = self._user_objects()
 
         if user_version == 0 and not user_objects:
-            self._create_schema()
-            self.connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            self.connection.commit()
+            def create_schema() -> None:
+                current_version = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
+                current_objects = self._user_objects()
+                if current_version == 0 and not current_objects:
+                    self._create_schema()
+                    self.connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                    return
+                self._ensure_supported_schema(current_version, current_objects)
+
+            self._run_write("schema initialization", create_schema, immediate=True)
             return
 
+        self._ensure_supported_schema(user_version, user_objects)
+
+    def _ensure_supported_schema(self, user_version: int, user_objects: set[str]) -> None:
         if user_version != SCHEMA_VERSION:
             if user_version == 0:
                 raise StoreError(
@@ -197,6 +208,33 @@ class ReleaseApprovalStore:
         ).fetchall()
         return {str(row[0]) for row in rows}
 
+    def _rollback_if_needed(self) -> None:
+        try:
+            if self.connection.in_transaction:
+                self.connection.rollback()
+        except sqlite3.Error:
+            pass
+
+    def _run_write(self, operation_name: str, writer: Callable[[], _T], *, immediate: bool = False) -> _T:
+        begin_sql = "BEGIN IMMEDIATE" if immediate else "BEGIN"
+        try:
+            self.connection.execute(begin_sql)
+            result = writer()
+            self.connection.commit()
+            return result
+        except StoreError:
+            self._rollback_if_needed()
+            raise
+        except sqlite3.IntegrityError as exc:
+            self._rollback_if_needed()
+            raise self._translate_integrity_error(exc) from exc
+        except sqlite3.OperationalError as exc:
+            self._rollback_if_needed()
+            raise StoreError(f"{operation_name} transaction failed: {exc}") from exc
+        except Exception:
+            self._rollback_if_needed()
+            raise
+
     def record_message(
         self,
         *,
@@ -206,7 +244,7 @@ class ReleaseApprovalStore:
         uid: int,
         message_id: str,
     ) -> None:
-        try:
+        def writer() -> None:
             self.connection.execute(
                 """
                 INSERT INTO messages (account, mailbox, uidvalidity, uid, message_id)
@@ -214,19 +252,15 @@ class ReleaseApprovalStore:
                 """,
                 (account, mailbox, uidvalidity, uid, message_id),
             )
-            self.connection.commit()
-        except sqlite3.IntegrityError as exc:
-            raise self._translate_integrity_error(exc) from exc
+
+        self._run_write("message", writer)
 
     def record_request(self, request: ReleaseAuthorizationRequest) -> StoredRequest:
-        try:
-            self.connection.execute("BEGIN IMMEDIATE")
+        def writer() -> StoredRequest:
             existing_by_key = self._get_request_row_by_idempotency(request.idempotency_key)
             if existing_by_key is not None:
                 if self._request_row_matches(existing_by_key, request):
-                    self.connection.commit()
                     return self._row_to_stored_request(existing_by_key)
-                self.connection.rollback()
                 raise StoreError("request idempotency key is already bound to a different payload.")
 
             self.connection.execute(
@@ -273,24 +307,9 @@ class ReleaseApprovalStore:
             stored = self.get_request(request.event_id, request.round_id, request.installed_role_id)
             if stored is None:
                 raise StoreError("request insert did not produce a readable record.")
-            self.connection.commit()
             return stored
-        except StoreError:
-            if self.connection.in_transaction:
-                self.connection.rollback()
-            raise
-        except sqlite3.IntegrityError as exc:
-            if self.connection.in_transaction:
-                self.connection.rollback()
-            raise self._translate_integrity_error(exc) from exc
-        except sqlite3.OperationalError as exc:
-            if self.connection.in_transaction:
-                self.connection.rollback()
-            raise StoreError(f"request transaction failed: {exc}") from exc
-        except Exception:
-            if self.connection.in_transaction:
-                self.connection.rollback()
-            raise
+
+        return self._run_write("request", writer, immediate=True)
 
     def get_request(self, event_id: str, round_id: int, role: str) -> StoredRequest | None:
         row = self.connection.execute(
@@ -316,7 +335,7 @@ class ReleaseApprovalStore:
         nonce_sha256: str,
         created_at: str,
     ) -> None:
-        try:
+        def writer() -> None:
             self.connection.execute(
                 """
                 INSERT INTO pages (
@@ -338,9 +357,8 @@ class ReleaseApprovalStore:
                 """,
                 (event_id, round_id, role, str(Path(html_path)), html_sha256, nonce_sha256, created_at),
             )
-            self.connection.commit()
-        except sqlite3.IntegrityError as exc:
-            raise self._translate_integrity_error(exc) from exc
+
+        self._run_write("page", writer)
 
     def record_decision(
         self,
@@ -374,22 +392,18 @@ class ReleaseApprovalStore:
             "request_digest": request_digest,
             "idempotency_key": idempotency_key,
         }
-        try:
-            self.connection.execute("BEGIN IMMEDIATE")
+
+        def writer() -> StoredDecision:
             existing_by_key = self._get_decision_row_by_idempotency(idempotency_key)
             if existing_by_key is not None:
                 if self._decision_row_matches(existing_by_key, payload):
-                    self.connection.commit()
                     return self._row_to_stored_decision(existing_by_key)
-                self.connection.rollback()
                 raise StoreError("decision idempotency key is already bound to a different payload.")
 
             existing_by_id = self._get_decision_row_by_decision_id(decision_id)
             if existing_by_id is not None:
                 if self._decision_row_matches(existing_by_id, payload):
-                    self.connection.commit()
                     return self._row_to_stored_decision(existing_by_id)
-                self.connection.rollback()
                 raise StoreError("decision_id is already bound to a different payload.")
 
             current = self.connection.execute(
@@ -443,28 +457,12 @@ class ReleaseApprovalStore:
                     idempotency_key,
                 ),
             )
-            self.connection.commit()
-        except StoreError:
-            if self.connection.in_transaction:
-                self.connection.rollback()
-            raise
-        except sqlite3.IntegrityError as exc:
-            if self.connection.in_transaction:
-                self.connection.rollback()
-            raise self._translate_integrity_error(exc) from exc
-        except sqlite3.OperationalError as exc:
-            if self.connection.in_transaction:
-                self.connection.rollback()
-            raise StoreError(f"decision transaction failed: {exc}") from exc
-        except Exception:
-            if self.connection.in_transaction:
-                self.connection.rollback()
-            raise
+            stored = self.get_decision(decision_id)
+            if stored is None:
+                raise StoreError("decision insert did not produce a readable record.")
+            return stored
 
-        stored = self.get_decision(decision_id)
-        if stored is None:
-            raise StoreError("decision insert did not produce a readable record.")
-        return stored
+        return self._run_write("decision", writer, immediate=True)
 
     def get_decision(self, decision_id: str) -> StoredDecision | None:
         row = self.connection.execute(
@@ -505,7 +503,7 @@ class ReleaseApprovalStore:
         detail: str,
         recorded_at: str,
     ) -> None:
-        try:
+        def writer() -> None:
             self.connection.execute(
                 """
                 INSERT INTO smtp_outcomes (
@@ -521,9 +519,8 @@ class ReleaseApprovalStore:
                 """,
                 (event_id, round_id, role, smtp_message_id, outcome, detail, recorded_at),
             )
-            self.connection.commit()
-        except sqlite3.IntegrityError as exc:
-            raise self._translate_integrity_error(exc) from exc
+
+        self._run_write("smtp outcome", writer)
 
     def append_audit_event(
         self,
@@ -532,23 +529,25 @@ class ReleaseApprovalStore:
         *,
         created_at: str,
     ) -> str:
-        previous_hash = self._last_audit_hash()
-        payload_json = canonical_json(payload)
-        event_hash = self._hash_audit_event(
-            event_type=event_type,
-            payload_json=payload_json,
-            created_at=created_at,
-            previous_hash=previous_hash,
-        )
-        self.connection.execute(
-            """
-            INSERT INTO audit_events (event_type, payload_json, created_at, previous_hash, event_hash)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (event_type, payload_json, created_at, previous_hash, event_hash),
-        )
-        self.connection.commit()
-        return event_hash
+        def writer() -> str:
+            previous_hash = self._last_audit_hash()
+            payload_json = canonical_json(payload)
+            event_hash = self._hash_audit_event(
+                event_type=event_type,
+                payload_json=payload_json,
+                created_at=created_at,
+                previous_hash=previous_hash,
+            )
+            self.connection.execute(
+                """
+                INSERT INTO audit_events (event_type, payload_json, created_at, previous_hash, event_hash)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (event_type, payload_json, created_at, previous_hash, event_hash),
+            )
+            return event_hash
+
+        return self._run_write("audit event", writer)
 
     def verify_audit_chain(self) -> None:
         previous_hash = _GENESIS_PREVIOUS_HASH

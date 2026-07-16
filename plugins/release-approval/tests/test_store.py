@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PLUGIN_ROOT / "src"))
+
+from release_approval_protocol import ReleaseAuthorizationRequest
+from release_approval_store import AuditTamperError, ReleaseApprovalStore, StoreError
+
+
+def _request() -> ReleaseAuthorizationRequest:
+    return ReleaseAuthorizationRequest(
+        contract="ReleaseAuthorizationRequest/v1",
+        event_id="rel-2026-07-15-0001",
+        round_id=1,
+        task="Task 4",
+        module="release-approval",
+        manifest_s_digest="sha256:" + "1" * 64,
+        manifest_r_digest="sha256:" + "2" * 64,
+        manifest_digest="sha256:" + "3" * 64,
+        request_digest="sha256:" + "4" * 64,
+        role_snapshot_digest="sha256:" + "5" * 64,
+        required_roles=("release-manager", "security-reviewer"),
+        original_message_id="<release-approval-request@example.com>",
+        references=(
+            "<release-approval-thread-root@example.com>",
+            "<release-approval-request@example.com>",
+        ),
+        expires_at="2026-07-16T00:00:00Z",
+        idempotency_key="release-approval-request-rel-2026-07-15-0001-round-1",
+        installed_role_id="release-manager",
+        installed_role_email="release-manager@example.com",
+    )
+
+
+def test_message_store_rejects_duplicate_uid_and_duplicate_message_id(tmp_path: Path) -> None:
+    store = ReleaseApprovalStore(tmp_path / "state.sqlite3")
+    store.record_message(
+        account="release-manager@example.com",
+        mailbox="INBOX",
+        uidvalidity=100,
+        uid=1,
+        message_id="<message-1@example.com>",
+    )
+
+    with pytest.raises(StoreError, match="duplicate UID"):
+        store.record_message(
+            account="release-manager@example.com",
+            mailbox="INBOX",
+            uidvalidity=100,
+            uid=1,
+            message_id="<message-2@example.com>",
+        )
+
+    with pytest.raises(StoreError, match="duplicate Message-ID"):
+        store.record_message(
+            account="release-manager@example.com",
+            mailbox="INBOX",
+            uidvalidity=100,
+            uid=2,
+            message_id="<message-1@example.com>",
+        )
+
+
+def test_restart_recovery_persists_requests_and_allows_uidvalidity_reset(tmp_path: Path) -> None:
+    database_path = tmp_path / "state.sqlite3"
+    request = _request()
+
+    store = ReleaseApprovalStore(database_path)
+    store.record_message(
+        account="release-manager@example.com",
+        mailbox="INBOX",
+        uidvalidity=100,
+        uid=7,
+        message_id="<message-7@example.com>",
+    )
+    store.record_request(request)
+    store.record_page(
+        event_id=request.event_id,
+        round_id=request.round_id,
+        role=request.installed_role_id,
+        html_path=tmp_path / "page.html",
+        html_sha256="sha256:" + "6" * 64,
+        nonce_sha256="sha256:" + "7" * 64,
+        created_at="2026-07-15T10:00:00Z",
+    )
+    store.close()
+
+    reopened = ReleaseApprovalStore(database_path)
+    recovered = reopened.get_request(request.event_id, request.round_id, request.installed_role_id)
+    assert recovered is not None
+    assert recovered.request_digest == request.request_digest
+    reopened.record_message(
+        account="release-manager@example.com",
+        mailbox="INBOX",
+        uidvalidity=101,
+        uid=7,
+        message_id="<message-8@example.com>",
+    )
+
+
+def test_current_decision_supersession_and_audit_chain_tamper_detection(tmp_path: Path) -> None:
+    store = ReleaseApprovalStore(tmp_path / "state.sqlite3")
+    request = _request()
+    store.record_request(request)
+
+    first = store.record_decision(
+        decision_id="decision-1",
+        request_event_id=request.event_id,
+        request_round_id=request.round_id,
+        role=request.installed_role_id,
+        approver_email=request.installed_role_email,
+        decision="APPROVE",
+        comment="first",
+        source="LOCAL_PAGE",
+        original_message_id=request.original_message_id,
+        decided_at="2026-07-15T11:00:00Z",
+        page_html_sha256="sha256:" + "8" * 64,
+        request_digest=request.request_digest,
+        idempotency_key="decision-1",
+    )
+    second = store.record_decision(
+        decision_id="decision-2",
+        request_event_id=request.event_id,
+        request_round_id=request.round_id,
+        role=request.installed_role_id,
+        approver_email=request.installed_role_email,
+        decision="REJECT",
+        comment="second",
+        source="EMAIL_REPLY",
+        original_message_id="<reply@example.com>",
+        decided_at="2026-07-15T12:00:00Z",
+        page_html_sha256="sha256:" + "9" * 64,
+        request_digest=request.request_digest,
+        idempotency_key="decision-2",
+    )
+
+    current = store.get_current_decision(request.event_id, request.round_id, request.installed_role_id)
+    assert current is not None
+    assert current.decision_id == second.decision_id
+
+    first_row = store.get_decision("decision-1")
+    assert first_row is not None
+    assert first_row.superseded_by == "decision-2"
+
+    store.append_audit_event(
+        "request-recorded",
+        {"event_id": request.event_id, "round_id": request.round_id},
+        created_at="2026-07-15T12:10:00Z",
+    )
+    store.append_audit_event(
+        "decision-recorded",
+        {"decision_id": second.decision_id},
+        created_at="2026-07-15T12:11:00Z",
+    )
+    store.verify_audit_chain()
+
+    store.connection.execute("UPDATE audit_events SET payload_json = '{\"tampered\":true}' WHERE id = 2")
+    store.connection.commit()
+
+    with pytest.raises(AuditTamperError, match="tamper"):
+        store.verify_audit_chain()

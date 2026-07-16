@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "release-approval": {
+      "command": "py",
+      "args": [
+        "-3",
+        "./src/release_approval_protocol.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "name": "release-approval",
+  "version": "0.1.0",
+  "description": "Persist and validate release-approval role state before page, mail, or verifier side effects.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "release-approval",
+    "approval",
+    "sqlite",
+    "audit"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Release Approval",
+    "shortDescription": "Durable role-bound approval state core",
+    "longDescription": "Stores release-approval request, page, decision, SMTP, and audit-chain state for a single role identity. This task intentionally stops at config, protocol, and SQLite state boundaries; page serving, browser launch, mail send, and verifier workflows land later.",
+    "developerName": "Sheldon",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive"
+    ],
+    "defaultPrompt": [
+      "Inspect the release-approval role state core",
+      "Validate a release approval request payload",
+      "Review release-approval audit-chain state"
+    ],
+    "brandColor": "#0E7490",
+    "composerIcon": "./assets/release-approval.svg",
+    "logo": "./assets/release-approval.svg",
+    "screenshots": []
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "role_id": "release-manager",
+  "role_email": "release-manager@example.com",
+  "mail_account": {
+    "profile": "release-manager",
+    "email": "release-manager@example.com"
+  },
+  "release_group": "release-approvers",
+  "mailbox": "INBOX",
+  "page": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "poll_minutes": 60,
+  "timezone": "Asia/Shanghai",
+  "working_hours": {
+    "days": [
+      "Mon",
+      "Tue",
+      "Wed",
+      "Thu",
+      "Fri"
+    ],
+    "start": "09:00",
+    "end": "18:00"
+  },
+  "state_dir": "%USERPROFILE%\\.codex\\release-approval\\state",
+  "dependency_lock": "%USERPROFILE%\\.codex\\release-approval\\dependency-lock.json",
+  "audit": {
+    "verify_chain_on_startup": true,
+    "retention_days": 3650
+  }
+}

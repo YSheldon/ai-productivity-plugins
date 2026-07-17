@@ -1,0 +1,42 @@
+{
+  "name": "submission-gate",
+  "version": "0.1.0",
+  "description": "Headlessly scan signed submission mail, validate one frozen machine block, and execute the authoritative submission gate through the locked product-release-gate core.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "submission-gate",
+    "mail",
+    "release-gate",
+    "automation"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "runtimeEntrypoints": [
+    "src/submission_gate_cli.py",
+    "src/submission_gate_mcp.py"
+  ],
+  "interface": {
+    "displayName": "Submission Gate",
+    "shortDescription": "Four-surface submission-gate runtime",
+    "longDescription": "Use one credential-free configuration and one controller across MCP, Skill, standalone CLI, and unattended OS scheduling. The gate scans `【提测】` mail idempotently, validates the HMAC machine block, and fails closed on missing evidence or missing integrations.",
+    "developerName": "Sheldon",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Run submission gate setup with zero manual JSON editing.",
+      "Scan the gate mailbox once and process new `【提测】` mail.",
+      "Show blocked, passed, and skipped counts.",
+      "Diagnose dependency lock, mailbox access, and authoritative gate readiness."
+    ],
+    "brandColor": "#1D4ED8",
+    "composerIcon": "./assets/submission-gate.svg",
+    "logo": "./assets/submission-gate.svg",
+    "screenshots": []
+  }
+}

@@ -22,6 +22,8 @@ import socketserver
 import ssl
 import subprocess
 import sys
+import tempfile
+import tempfile
 import threading
 import time
 import traceback
@@ -33,7 +35,7 @@ from typing import Any, Callable
 
 
 SERVER_NAME = "imap-smtp-mail"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.3.0"
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 DEFAULT_CONFIG_PATH = pathlib.Path.home() / ".imap-smtp-mail" / "accounts.json"
 DEFAULT_ATTACHMENT_DIR = pathlib.Path.home() / "Downloads" / "imap-smtp-mail-attachments"
@@ -60,6 +62,22 @@ CUSTOM_HEADER_PREFIX = "X-RD-"
 CUSTOM_HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 MESSAGE_ID_PATTERN = re.compile(r"^<[^<>\r\n]+>$")
 MESSAGE_ID_EXTRACT_PATTERN = re.compile(r"<[^<>\r\n]+>")
+MAX_RELEASE_WORKFLOW_HEADER_VALUE_CHARS = 2048
+RELEASE_WORKFLOW_HEADER_FIELDS = (
+    ("X-RD-Contract", "contract"),
+    ("X-RD-Event-Id", "event_id"),
+    ("X-RD-Round-Id", "round_id"),
+    ("X-RD-Task", "task"),
+    ("X-RD-Module", "module"),
+    ("X-RD-Manifest-S-Digest", "manifest_s_digest"),
+    ("X-RD-Manifest-R-Digest", "manifest_r_digest"),
+    ("X-RD-Manifest-Digest", "manifest_digest"),
+    ("X-RD-Request-Digest", "request_digest"),
+    ("X-RD-Submitter-Email", "submitter_email"),
+    ("X-RD-Role-Snapshot-Digest", "role_snapshot_digest"),
+    ("X-RD-Required-Roles", "required_roles"),
+    ("X-RD-Expires-At", "expires_at"),
+)
 
 
 PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
@@ -405,9 +423,28 @@ def harden_windows_config_acl(path: pathlib.Path) -> None:
 
 def write_config_payload(path: pathlib.Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp_path.replace(path)
+    temporary_path: pathlib.Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as temporary:
+            temporary_path = pathlib.Path(temporary.name)
+            temporary.write(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+            )
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
     harden_windows_config_acl(path)
     try:
         os.chmod(path, 0o600)
@@ -707,6 +744,35 @@ def message_evidence(message: EmailMessage, raw_headers: bytes) -> dict[str, Any
         "received_spf": str(message.get("received-spf", "")),
         "raw_headers_sha256": hashlib.sha256(raw_headers).hexdigest(),
     }
+
+
+def validate_release_workflow_header_value(value: Any, *, header_name: str) -> str:
+    text = str(value)
+    if not text or not text.strip():
+        raise ToolError(f"{header_name} must be non-empty.")
+    if len(text) > MAX_RELEASE_WORKFLOW_HEADER_VALUE_CHARS:
+        raise ToolError(
+            f"{header_name} must be {MAX_RELEASE_WORKFLOW_HEADER_VALUE_CHARS} characters or fewer."
+        )
+    if any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in text):
+        raise ToolError(f"{header_name} must not contain CRLF or control characters.")
+    return text.strip()
+
+
+def release_workflow_headers(message: EmailMessage) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for header_name, output_key in RELEASE_WORKFLOW_HEADER_FIELDS:
+        raw_values = message.get_all(header_name, [])
+        if not raw_values:
+            continue
+        values = [
+            validate_release_workflow_header_value(value, header_name=header_name)
+            for value in raw_values
+        ]
+        if any(value != values[0] for value in values[1:]):
+            raise ToolError(f"{header_name} has conflicting duplicate values.")
+        headers[output_key] = values[0]
+    return headers
 
 
 def validate_single_line_value(value: str, *, field_name: str) -> str:
@@ -1582,6 +1648,7 @@ def read_message(args: dict[str, Any]) -> dict[str, Any]:
     message = email.message_from_bytes(raw, policy=default)
     plain, html_body = message_to_text(message)
     evidence = message_evidence(message, raw_headers)
+    workflow_headers = release_workflow_headers(message)
     payload = {
         "account": public_account(account),
         "mailbox": mailbox,
@@ -1596,6 +1663,7 @@ def read_message(args: dict[str, Any]) -> dict[str, Any]:
         "body_text": truncate(plain, max_body_chars),
         "attachments": attachment_summaries(message),
         "evidence": evidence,
+        "release_workflow_headers": workflow_headers,
     }
     if args.get("include_html", False):
         payload["body_html"] = truncate(html_body, max_body_chars)
@@ -1674,7 +1742,10 @@ def compose_email_message(account: dict[str, Any], args: dict[str, Any], *, draf
         message["Bcc"] = ", ".join(bcc_recipients)
     message["Subject"] = subject
     message["Date"] = email.utils.formatdate(localtime=True)
-    message["Message-ID"] = email.utils.make_msgid()
+    if "message_id" in args:
+        message["Message-ID"] = validate_message_id(str(args.get("message_id")), field_name="message_id")
+    else:
+        message["Message-ID"] = email.utils.make_msgid()
     apply_threading_headers(message, args)
     apply_custom_headers(message, args.get("headers"))
     if draft:
@@ -1707,6 +1778,7 @@ def compose_email_message(account: dict[str, Any], args: dict[str, Any], *, draf
         "text": text_body,
         "has_html": bool(html_body),
         "attachments": attached,
+        "message_id": str(message.get("Message-ID", "")),
     }
     return message, preview, recipients
 
@@ -1714,6 +1786,7 @@ def compose_email_message(account: dict[str, Any], args: dict[str, Any], *, draf
 def create_draft(args: dict[str, Any]) -> dict[str, Any]:
     account = resolve_account(args.get("account"))
     message, preview, _ = compose_email_message(account, args, draft=True)
+    message_id = str(message.get("Message-ID", ""))
     client = connect_imap(account)
     try:
         draft = append_draft_message(client, account, message, args.get("draft_mailbox"))
@@ -1722,7 +1795,7 @@ def create_draft(args: dict[str, Any]) -> dict[str, Any]:
             client.logout()
         except Exception:
             pass
-    return tool_result({"sent": False, "draft_saved": True, "draft": draft, "preview": preview})
+    return tool_result({"sent": False, "draft_saved": True, "message_id": message_id, "draft": draft, "preview": preview})
 
 
 def send_email(args: dict[str, Any]) -> dict[str, Any]:
@@ -1730,11 +1803,12 @@ def send_email(args: dict[str, Any]) -> dict[str, Any]:
     dry_run = args.get("dry_run", True) is not False
     preview_only = args.get("preview_only", False) is True
     message, preview, recipients = compose_email_message(account, args, draft=dry_run and not preview_only)
+    message_id = str(message.get("Message-ID", ""))
     preview["dry_run"] = dry_run
 
     if dry_run:
         if preview_only:
-            return tool_result({"sent": False, "draft_saved": False, "preview": preview})
+            return tool_result({"sent": False, "draft_saved": False, "message_id": message_id, "preview": preview})
         client = connect_imap(account)
         try:
             draft = append_draft_message(client, account, message, args.get("draft_mailbox"))
@@ -1743,7 +1817,7 @@ def send_email(args: dict[str, Any]) -> dict[str, Any]:
                 client.logout()
             except Exception:
                 pass
-        return tool_result({"sent": False, "draft_saved": True, "draft": draft, "preview": preview})
+        return tool_result({"sent": False, "draft_saved": True, "message_id": message_id, "draft": draft, "preview": preview})
 
     client = connect_smtp(account)
     try:
@@ -1753,7 +1827,7 @@ def send_email(args: dict[str, Any]) -> dict[str, Any]:
     return tool_result(
         {
             "sent": True,
-            "message_id": str(message.get("Message-ID", "")),
+            "message_id": message_id,
             "refused": json_safe(refused),
             "preview": preview,
         }
@@ -1836,7 +1910,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "handler": search_messages,
     },
     "imap_smtp_mail_read_message": {
-        "description": "Read one message by IMAP UID, including text body and attachment metadata.",
+        "description": "Read one message by IMAP UID, including text, attachment metadata, evidence, and allowlisted release-workflow headers.",
         "inputSchema": {
             "type": "object",
             "required": ["uid"],
@@ -1881,6 +1955,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "text": {"type": "string"},
                 "html": {"type": "string"},
                 "attachments": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+                "message_id": {"type": "string", "description": "Optional caller-supplied RFC Message-ID. Defaults to an auto-generated value."},
                 "in_reply_to": {"type": "string", "description": "Optional RFC Message-ID for safe reply threading."},
                 "references": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Optional RFC Message-ID list for safe reply threading."},
                 "headers": {"type": "object", "description": "Optional custom headers. Only X-RD-* headers are allowed.", "additionalProperties": {"type": "string"}},
@@ -1905,6 +1980,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "text": {"type": "string"},
                 "html": {"type": "string"},
                 "attachments": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+                "message_id": {"type": "string", "description": "Optional caller-supplied RFC Message-ID. Defaults to an auto-generated value."},
                 "in_reply_to": {"type": "string", "description": "Optional RFC Message-ID for safe reply threading."},
                 "references": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Optional RFC Message-ID list for safe reply threading."},
                 "headers": {"type": "object", "description": "Optional custom headers. Only X-RD-* headers are allowed.", "additionalProperties": {"type": "string"}},

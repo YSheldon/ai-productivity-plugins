@@ -10,6 +10,10 @@ This repository is a local Codex plugin marketplace maintained by Sheldon. The m
 - `lark-cli`: a Lark/Feishu CLI plugin packaged and maintained by Sheldon. It bundles the existing `lark-*` skills and uses the locally installed `lark-cli` to work with docs, wikis, calendars, messages, Base tables, sheets, and related workflows.
 - `gitlab`: a GitLab REST API plugin for Codex. It supports project discovery, merge request and issue inspection, discussions, CI pipeline lookup, comments, approvals, merge actions, repository file reads, and a raw API escape hatch for unsupported GitLab REST endpoints.
 - `product-release-gate`: a fail-closed product material gate for immutable submission manifests, submission checks, test evidence and approval, final-material generation, release checks, and auditable reports.
+- `test-submission`: a submitter-side product material role plugin that freezes one explicit module submission, previews the request through the locked shared gate, and sends `【提测】` mail through the locked IMAP/SMTP CLI.
+- `submission-gate`: a service-side role plugin that scans signed `【提测】` mail, executes the authoritative submission gate through the locked shared gate, and sends pass or blocked notices.
+- `pre-release`: a tester-side role plugin that records one final `PASS` or `FAIL`, builds `Manifest-R` through the locked shared gate, and sends `【发布门禁检查】` mail.
+- `release-gate`: a service-side role plugin that scans signed `PRERELEASE_REQUEST` mail, runs release-gate checks through the locked shared gate, and emits `【发布申请】` or blocking notices while stopping at `RELEASE_READY_NOTIFIED`.
 - `rd-flywheel`: an evidence-first R&D workflow skill for turning new requirements, projects, and tasks into real production-proven capability, with versioned visual decision gates and post-production experience harvest.
 - `ssh`: an OpenSSH plugin for Codex. It supports strict-key connection tests, explicit remote commands and stdin scripts, SCP transfers, SSH-agent lifecycle operations, and public-key fingerprint checks.
 - `wecom-codex-usage`: a WeCom / Enterprise WeChat plugin packaged and maintained by Sheldon. It connects to a self-built WeCom internal application for message delivery and summarizes local Codex usage signals from the current machine's Codex config and logs.
@@ -17,7 +21,7 @@ This repository is a local Codex plugin marketplace maintained by Sheldon. The m
 
 ## Use In Codex
 
-Open this repository in Codex App. Codex reads `.agents/plugins/marketplace.json` and shows the `IMAP/SMTP Mail`, `Lark / Feishu CLI`, `GitLab`, `Product Release Gate`, `SSH`, `WeCom Codex Usage`, and `每日漏洞播报` plugins under this local marketplace.
+Open this repository in Codex App. Codex reads `.agents/plugins/marketplace.json` and shows the `IMAP/SMTP Mail`, `Lark / Feishu CLI`, `GitLab`, `Product Release Gate`, `Test Submission`, `Submission Gate`, `Pre Release`, `Release Gate`, `SSH`, `WeCom Codex Usage`, and `每日漏洞播报` plugins under this local marketplace.
 
 After installing the IMAP/SMTP Mail plugin, the recommended setup path is the local setup wizard. Ask Codex:
 
@@ -71,6 +75,13 @@ submission -> submission gate -> test evidence -> approval
 
 The cloud-scan and automated-test commands are local adapter contracts and must return JSON. Missing adapters, invalid signatures, non-clean scan results, failed tests, missing files, extra files, or SHA1 drift block the event. `RELEASE_READY` proves gate completion only; deployment credentials and production deployment remain outside the plugin.
 
+The four product-material role plugins are moving to one build-embedded shared `release_workflow_core` copy per plugin so they no longer depend on a runtime `product-release-gate` bridge, while still keeping submitter, gate, tester, and release-mailbox responsibilities separate:
+
+- `test-submission`: explicit `kernel` / `client` / `server` submission only, no default module, retry-only scheduler, and standalone CLI or MCP without a Codex runtime requirement after setup.
+- `submission-gate`: fail-closed mailbox automation with one credential-free config, no `allowed_senders` list escape hatch, and unattended scheduler support on Windows Task Scheduler, systemd, or cron.
+- `pre-release`: final `test_result` and `output_dir` stay task-level inputs instead of installation defaults, with the same MCP, Skill, CLI, setup, and unattended scheduler surfaces.
+- `release-gate`: validates `PRERELEASE_REQUEST` handoffs, emits `RELEASE_GATE_PASS`, and stops at `RELEASE_READY_NOTIFIED`; it never claims deployment success or production authorization.
+
 After installing the R&D Flywheel plugin, invoke it for new requirements, projects, automations, and engineering tasks that must become reusable production capability:
 
 ```text
@@ -101,7 +112,21 @@ The wizard stores `corp_id`, app `corp_secret`, and `agent_id` in `~/.wecom-code
 
 ## Install From GitHub
 
-Clone or open this repository in Codex App to load the local plugin marketplace.
+Register the repository marketplace, then install each workflow plugin independently:
+
+```powershell
+codex plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins.git
+codex plugin add release-approval@ai-productivity-plugins
+codex plugin add release-approval-verifier@ai-productivity-plugins
+codex plugin add product-release-gate@ai-productivity-plugins
+codex plugin add test-submission@ai-productivity-plugins
+codex plugin add submission-gate@ai-productivity-plugins
+codex plugin add pre-release@ai-productivity-plugins
+codex plugin add release-gate@ai-productivity-plugins
+codex plugin add rd-flywheel@ai-productivity-plugins
+```
+
+Each plugin also provides a standalone CLI and OS scheduler, so Codex is optional after setup.
 
 To publish these plugins in the official public marketplace, follow the official review and submission process. This repository already contains the local marketplace structure.
 

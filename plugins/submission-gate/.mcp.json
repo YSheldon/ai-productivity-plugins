@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "submission-gate": {
+      "command": "py",
+      "args": [
+        "-3",
+        "./src/submission_gate_mcp.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

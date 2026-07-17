@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import sys
@@ -27,8 +28,19 @@ class ProductionReleaseControllerTests(unittest.TestCase):
             """
 import json
 import sys
+import time
 
 action, stage, digest, mode = sys.argv[1:5]
+if mode == "timeout-deploy" and action == "deploy":
+    time.sleep(2)
+if mode == "timeout-verify-canary" and action == "verify" and stage == "production_canary":
+    time.sleep(2)
+if mode == "timeout-rollback" and action == "rollback":
+    time.sleep(2)
+if mode == "timeout-rollback-verify" and action == "rollback_verify":
+    time.sleep(2)
+if mode == "timeout-readback" and action == "readback":
+    time.sleep(2)
 if action == "deploy":
     target = sys.argv[5]
     print(json.dumps({
@@ -42,7 +54,16 @@ elif action == "verify":
     target = sys.argv[5]
     result = (
         "FAIL"
-        if mode in {"fail-verify", "bad-rollback"} and stage == "production_canary"
+        if (
+            mode in {
+                "fail-verify",
+                "bad-rollback",
+                "timeout-rollback",
+                "timeout-rollback-verify",
+            }
+            and stage == "production_canary"
+        )
+        or (mode == "fail-full-verify" and stage == "production_full")
         else "PASS"
     )
     print(json.dumps({
@@ -126,6 +147,44 @@ else:
             os.environ["TEST_RELEASE_AUDIT_KEY"] = self.previous_audit_key
         self.temporary.cleanup()
 
+
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def _write_dependency_lock(
+        self,
+        name: str,
+        commands: dict[str, list[str]],
+    ) -> tuple[Path, str]:
+        lock_path = self.root / f"deployment-lock-{name}.json"
+        payload = {
+            "schema_version": 1,
+            "root": ".",
+            "commands": {
+                command_id: {
+                    "argv_template": argv,
+                    "entrypoints": [
+                        {
+                            "argv_index": 0,
+                            "path": sys.executable,
+                            "sha256": self._sha256(Path(sys.executable)),
+                        },
+                        {
+                            "argv_index": 1,
+                            "path": self.adapter.name,
+                            "sha256": self._sha256(self.adapter),
+                        },
+                    ],
+                }
+                for command_id, argv in commands.items()
+            },
+        }
+        lock_path.write_text(
+            json.dumps(payload, sort_keys=True),
+            encoding="utf-8",
+        )
+        return lock_path, self._sha256(lock_path)
     def _write_config(self, mode: str = "pass", include_deploy: bool = True) -> Path:
         def command(action: str) -> list[str]:
             values = [
@@ -152,6 +211,21 @@ else:
                 )
             return values
 
+        deploy_command = command("deploy")
+        verify_command = command("verify")
+        rollback_command = command("rollback")
+        rollback_verify_command = command("rollback_verify")
+        readback_command = command("readback")
+        lock_path, lock_digest = self._write_dependency_lock(
+            f"{mode}-{include_deploy}",
+            {
+                "deploy": deploy_command,
+                "verify": verify_command,
+                "rollback": rollback_command,
+                "rollback_verify": rollback_verify_command,
+                "readback": readback_command,
+            },
+        )
         deployment = {
             "stages": ["preproduction", "production_canary", "production_full"],
             "targets": {
@@ -159,11 +233,13 @@ else:
                 "production_canary": "env:production:canary",
                 "production_full": "env:production:full",
             },
-            "deploy_command": command("deploy") if include_deploy else [],
-            "verify_command": command("verify"),
-            "rollback_command": command("rollback"),
-            "rollback_verify_command": command("rollback_verify"),
-            "timeout_seconds": 30,
+            "dependency_lock": str(lock_path),
+            "dependency_lock_sha256": lock_digest,
+            "deploy_command": deploy_command if include_deploy else [],
+            "verify_command": verify_command,
+            "rollback_command": rollback_command,
+            "rollback_verify_command": rollback_verify_command,
+            "timeout_seconds": 1 if mode.startswith("timeout-") else 30,
         }
         path = self.root / f"config-{mode}-{include_deploy}.json"
         path.write_text(
@@ -195,13 +271,13 @@ else:
                                 "{manifest_s_digest}",
                                 "{target_scope}",
                             ],
-                            "timeout_seconds": 30,
+                            "timeout_seconds": 1 if mode.startswith("timeout-") else 30,
                         },
                         "audit": {"key_env": "TEST_RELEASE_AUDIT_KEY"},
                         "deployment": deployment,
                         "readback": {
-                            "command": command("readback"),
-                            "timeout_seconds": 30,
+                            "command": readback_command,
+                            "timeout_seconds": 1 if mode.startswith("timeout-") else 30,
                         },
                     },
                 }
@@ -442,6 +518,149 @@ else:
         with self.assertRaises(GateError):
             controller.run_deployment_stage("event-rollback", "production_full")
 
+    def test_deploy_timeout_fails_closed_and_requires_manual_recovery(self) -> None:
+        controller = ProductionReleaseController(
+            str(self._write_config(mode="timeout-deploy"))
+        )
+        self._release_ready(controller, "event-deploy-timeout")
+        self._authorize(controller, "event-deploy-timeout")
+
+        result = controller.run_deployment_stage(
+            "event-deploy-timeout", "preproduction"
+        )
+
+        self.assertEqual("ROLLBACK_FAILED", result["status"])
+        self.assertEqual("deploy", result["failure"]["phase"])
+        self.assertIn("timed out", result["failure"]["error"].lower())
+
+    def test_verify_timeout_rolls_back_and_blocks_full_deployment(self) -> None:
+        controller = ProductionReleaseController(
+            str(self._write_config(mode="timeout-verify-canary"))
+        )
+        self._release_ready(controller, "event-verify-timeout")
+        self._authorize(controller, "event-verify-timeout")
+        controller.run_deployment_stage("event-verify-timeout", "preproduction")
+
+        result = controller.run_deployment_stage(
+            "event-verify-timeout", "production_canary"
+        )
+
+        self.assertEqual("ROLLED_BACK", result["status"])
+        self.assertEqual("verify", result["failure"]["phase"])
+        self.assertIn("timed out", result["failure"]["error"].lower())
+        with self.assertRaises(GateError):
+            controller.run_deployment_stage(
+                "event-verify-timeout", "production_full"
+            )
+
+    def test_rollback_timeout_and_rollback_verify_timeout_are_terminal(self) -> None:
+        for mode in ("timeout-rollback", "timeout-rollback-verify"):
+            with self.subTest(mode=mode):
+                controller = ProductionReleaseController(
+                    str(self._write_config(mode=mode))
+                )
+                event_id = f"event-{mode}"
+                self._release_ready(controller, event_id)
+                self._authorize(controller, event_id)
+                controller.run_deployment_stage(event_id, "preproduction")
+
+                result = controller.run_deployment_stage(
+                    event_id, "production_canary"
+                )
+
+                self.assertEqual("ROLLBACK_FAILED", result["status"])
+                self.assertEqual("FAIL", result["rollback"]["result"])
+
+    def test_full_stage_failure_rolls_back_and_prevents_readback(self) -> None:
+        controller = ProductionReleaseController(
+            str(self._write_config(mode="fail-full-verify"))
+        )
+        self._release_ready(controller, "event-full-failure")
+        self._authorize(controller, "event-full-failure")
+        controller.run_deployment_stage("event-full-failure", "preproduction")
+        controller.run_deployment_stage(
+            "event-full-failure", "production_canary"
+        )
+
+        result = controller.run_deployment_stage(
+            "event-full-failure", "production_full"
+        )
+
+        self.assertEqual("ROLLED_BACK", result["status"])
+        with self.assertRaises(GateError):
+            controller.run_production_readback("event-full-failure")
+
+    def test_production_readback_timeout_rolls_back_full_stage(self) -> None:
+        controller = ProductionReleaseController(
+            str(self._write_config(mode="timeout-readback"))
+        )
+        self._release_ready(controller, "event-readback-timeout")
+        self._authorize(controller, "event-readback-timeout")
+        controller.run_deployment_stage(
+            "event-readback-timeout", "preproduction"
+        )
+        controller.run_deployment_stage(
+            "event-readback-timeout", "production_canary"
+        )
+        controller.run_deployment_stage(
+            "event-readback-timeout", "production_full"
+        )
+
+        result = controller.run_production_readback(
+            "event-readback-timeout"
+        )
+
+        self.assertEqual("ROLLED_BACK", result["status"])
+        self.assertIn("timed out", result["receipt"]["error"].lower())
+
+    def test_expired_authorization_before_readback_rolls_back_full_stage(
+        self,
+    ) -> None:
+        controller = ProductionReleaseController(str(self._write_config()))
+        self._release_ready(controller, "event-readback-expired")
+        self._authorize(controller, "event-readback-expired")
+        controller.run_deployment_stage(
+            "event-readback-expired", "preproduction"
+        )
+        controller.run_deployment_stage(
+            "event-readback-expired", "production_canary"
+        )
+        controller.run_deployment_stage(
+            "event-readback-expired", "production_full"
+        )
+        event = controller._load_event("event-readback-expired")
+        credential_path = Path(
+            event["release_authorization"]["credential_path"]
+        )
+        credential = json.loads(credential_path.read_text(encoding="utf-8"))
+        credential["claims"]["expires_at"] = "2000-01-01T00:00:00Z"
+        credential["signature"] = hmac.new(
+            os.environ["TEST_RELEASE_AUTH_KEY"].encode("utf-8"),
+            canonical_json(credential["claims"]).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        credential_path.write_text(
+            json.dumps(credential),
+            encoding="utf-8",
+        )
+
+        result = controller.run_production_readback(
+            "event-readback-expired"
+        )
+
+        self.assertEqual("ROLLED_BACK", result["status"])
+        self.assertEqual(
+            "production_readback_precondition",
+            result["failure"]["phase"],
+        )
+        self.assertIn("expired", result["failure"]["error"].lower())
+        self.assertEqual(
+            "BLOCKED",
+            controller._load_event("event-readback-expired")[
+                "release_authorization"
+            ]["status"],
+        )
+
     def test_missing_capability_preserves_origin_checkpoint(self) -> None:
         controller = ProductionReleaseController(str(self._write_config(include_deploy=False)))
         self._release_ready(controller, "event-capability")
@@ -545,6 +764,102 @@ else:
         path.write_text("\n".join(records[:-1]) + "\n", encoding="utf-8")
 
         self.assertFalse(controller.verify_control_event_chain("event-ledger-truncate")["valid"])
+
+
+    def test_production_preflight_rejects_invalid_locked_entrypoints(self) -> None:
+        controller = ProductionReleaseController(str(self._write_config()))
+        lock_path = Path(
+            controller.config["production"]["deployment"]["dependency_lock"]
+        )
+
+        path_escape = json.loads(lock_path.read_text(encoding="utf-8"))
+        path_escape["commands"]["deploy"]["entrypoints"][1]["path"] = "../escape.py"
+        lock_path.write_text(json.dumps(path_escape, sort_keys=True), encoding="utf-8")
+        controller.config["production"]["deployment"]["dependency_lock_sha256"] = self._sha256(lock_path)
+        escaped = controller.production_preflight()
+        self.assertFalse(escaped["ready"])
+        self.assertIn("deployment.adapter_lock", escaped["missing_capabilities"])
+
+        controller = ProductionReleaseController(str(self._write_config()))
+        lock_path = Path(
+            controller.config["production"]["deployment"]["dependency_lock"]
+        )
+        missing = json.loads(lock_path.read_text(encoding="utf-8"))
+        missing["commands"]["deploy"]["entrypoints"][1]["path"] = "missing.py"
+        lock_path.write_text(json.dumps(missing, sort_keys=True), encoding="utf-8")
+        controller.config["production"]["deployment"]["dependency_lock_sha256"] = self._sha256(lock_path)
+        missing_preflight = controller.production_preflight()
+        self.assertFalse(missing_preflight["ready"])
+        self.assertIn("deployment.adapter_lock", missing_preflight["missing_capabilities"])
+
+        controller = ProductionReleaseController(str(self._write_config()))
+        lock_path = Path(
+            controller.config["production"]["deployment"]["dependency_lock"]
+        )
+        unknown = json.loads(lock_path.read_text(encoding="utf-8"))
+        unknown["commands"]["deploy"]["entrypoints"].append(
+            {
+                "argv_index": 2,
+                "path": self.adapter.name,
+                "sha256": self._sha256(self.adapter),
+            }
+        )
+        lock_path.write_text(json.dumps(unknown, sort_keys=True), encoding="utf-8")
+        controller.config["production"]["deployment"]["dependency_lock_sha256"] = self._sha256(lock_path)
+        unknown_preflight = controller.production_preflight()
+        self.assertFalse(unknown_preflight["ready"])
+        self.assertIn("deployment.adapter_lock", unknown_preflight["missing_capabilities"])
+
+    def test_lock_drift_after_authorization_blocks_canary_stage(self) -> None:
+        controller = ProductionReleaseController(str(self._write_config()))
+        self._release_ready(controller, "event-lock-drift")
+        self._authorize(controller, "event-lock-drift")
+        controller.run_deployment_stage("event-lock-drift", "preproduction")
+        lock_path = Path(
+            controller.config["production"]["deployment"]["dependency_lock"]
+        )
+        lock_path.write_text(
+            lock_path.read_text(encoding="utf-8") + "\n",
+            encoding="utf-8",
+        )
+
+        result = controller.run_deployment_stage("event-lock-drift", "production_canary")
+
+        self.assertFalse(result["ready"])
+        self.assertEqual("CAPABILITY_BLOCKED", result["status"])
+        self.assertIn("deployment.adapter_lock", result["missing_capabilities"])
+        self.assertTrue(result["capability_request_path"].endswith("capability-request.json"))
+
+    def test_entrypoint_drift_after_authorization_blocks_full_stage(self) -> None:
+        controller = ProductionReleaseController(str(self._write_config()))
+        self._release_ready(controller, "event-entrypoint-full")
+        self._authorize(controller, "event-entrypoint-full")
+        controller.run_deployment_stage("event-entrypoint-full", "preproduction")
+        controller.run_deployment_stage("event-entrypoint-full", "production_canary")
+        self.adapter.write_text("print(\"tampered\")\n", encoding="utf-8")
+
+        result = controller.run_deployment_stage("event-entrypoint-full", "production_full")
+
+        self.assertFalse(result["ready"])
+        self.assertEqual("CAPABILITY_BLOCKED", result["status"])
+        self.assertIn("deployment.adapter_lock", result["missing_capabilities"])
+        self.assertTrue(result["capability_request_path"].endswith("capability-request.json"))
+
+    def test_entrypoint_drift_before_readback_fails_closed(self) -> None:
+        controller = ProductionReleaseController(str(self._write_config()))
+        self._release_ready(controller, "event-entrypoint-readback")
+        self._authorize(controller, "event-entrypoint-readback")
+        controller.run_deployment_stage("event-entrypoint-readback", "preproduction")
+        controller.run_deployment_stage("event-entrypoint-readback", "production_canary")
+        controller.run_deployment_stage("event-entrypoint-readback", "production_full")
+        self.adapter.write_text("print(\"tampered\")\n", encoding="utf-8")
+
+        result = controller.run_production_readback("event-entrypoint-readback")
+
+        self.assertEqual("ROLLBACK_FAILED", result["status"])
+        self.assertEqual("BLOCKED", result["result"])
+        self.assertIn("entrypoint drift", result["receipt"]["error"].lower())
+        self.assertIn("entrypoint drift", (result["rollback"]["adapter_error"] or "").lower())
 
 
 if __name__ == "__main__":

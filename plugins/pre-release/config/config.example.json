@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "mail_account": {
+    "profile": "qa-owner",
+    "email": "qa-owner@example.com"
+  },
+  "submission_group": "submission@example.com",
+  "release_gate_group": "release-gate@example.com",
+  "mailbox": "INBOX",
+  "timezone": "UTC",
+  "poll_minutes": 60,
+  "state_dir": "./state",
+  "dependency_lock": "./dependency-lock.product-release-gate.json",
+  "dependency_lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "shared_hmac_secret_path": "./state/keys/shared-handoff.key",
+  "mail_command": [
+    "py",
+    "-3",
+    "./plugins/imap-smtp-mail/src/imap_smtp_mail_cli.py"
+  ],
+  "product_gate": {
+    "config_path": "./product-release-gate-config.json",
+    "command": [
+      "py",
+      "-3",
+      "./plugins/product-release-gate/src/release_gate_cli.py",
+      "--config",
+      "./product-release-gate-config.json"
+    ]
+  },
+  "policy": {
+    "profile": "pre-release/v1",
+    "enabled_optional_checks": []
+  }
+}

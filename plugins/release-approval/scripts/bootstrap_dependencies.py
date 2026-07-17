@@ -19,11 +19,40 @@ PROFILES: dict[str, tuple[str, ...]] = {
         "rd-flywheel",
         "lark-cli",
         "product-release-gate",
+        "release-approval-verifier",
+    ),
+    "product-release-gate": (
+        "imap-smtp-mail",
+        "rd-flywheel",
+        "lark-cli",
+        "product-release-gate",
+        "release-approval-verifier",
+    ),
+    "test-submission": (
+        "imap-smtp-mail",
+        "lark-cli",
+    ),
+    "submission-gate": (
+        "imap-smtp-mail",
+        "gitlab",
+        "lark-cli",
+    ),
+    "pre-release": (
+        "imap-smtp-mail",
+        "rd-flywheel",
+        "lark-cli",
+        "release-approval-verifier",
+    ),
+    "release-gate": (
+        "imap-smtp-mail",
+        "rd-flywheel",
+        "lark-cli",
+        "release-approval-verifier",
     ),
 }
 _MARKETPLACE_NAME = "ai-productivity-plugins"
 _PROFILE_PATTERN = re.compile(r"^[a-z0-9-]+$")
-_LOCK_FILENAME = "dependency-lock.json"
+_LOCK_FILENAME = "dependency-lock.{profile}.json"
 _EXTERNAL_COMMAND_NAMES = {"py", "python", "python3", "node", "codex"}
 
 Runner = Callable[[list[str], Path | None], subprocess.CompletedProcess[str]]
@@ -218,11 +247,30 @@ def _entrypoint_records(repo_root: Path, plugin_root: Path, manifest: dict[str, 
                 argument_path = _local_entrypoint_path(plugin_root, argument)
                 if argument_path is not None:
                     append("mcp_local_arg", argument_path)
+
+    runtime_entrypoints = manifest.get("runtimeEntrypoints", [])
+    if not isinstance(runtime_entrypoints, list) or not all(
+        isinstance(item, str) and item.strip() for item in runtime_entrypoints
+    ):
+        raise ValueError("runtimeEntrypoints must be an array of non-empty paths")
+    for entrypoint in runtime_entrypoints:
+        append("runtime_entrypoint", _resolve_within(plugin_root, entrypoint))
     return records
 
 
 def _plugin_metadata(repo_root: Path, plugin_name: str, plugin_root: Path) -> dict[str, Any]:
     manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
+    if not manifest_path.is_file():
+        return {
+            "name": plugin_name,
+            "version": "missing-local-metadata",
+            "marketplace_plugin_id": f"{plugin_name}@{_MARKETPLACE_NAME}",
+            "plugin_root": _relative_repo_path(repo_root, plugin_root),
+            "manifest_path": "",
+            "manifest_sha256": _sha256_bytes(b"missing-local-metadata"),
+            "entrypoints": [],
+            "metadata_status": "missing_local_metadata",
+        }
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     version = manifest.get("version")
     if not isinstance(version, str) or not version:
@@ -235,6 +283,7 @@ def _plugin_metadata(repo_root: Path, plugin_name: str, plugin_root: Path) -> di
         "manifest_path": _relative_repo_path(repo_root, manifest_path),
         "manifest_sha256": _sha256_file(manifest_path),
         "entrypoints": _entrypoint_records(repo_root, plugin_root, manifest),
+        "metadata_status": "local_manifest",
     }
 
 
@@ -290,6 +339,8 @@ def bootstrap_profile(
     commit = _git_commit(resolved_repo_root, runner)
 
     fresh_task_required = False
+    codex_required = False
+    codex_available = True
     plugins: list[dict[str, Any]] = []
     for plugin_name in plugin_names:
         plugin_root = marketplace_paths.get(plugin_name)
@@ -297,13 +348,46 @@ def bootstrap_profile(
             raise ValueError(f"Plugin missing from marketplace: {plugin_name}")
         plugin_metadata = _plugin_metadata(resolved_repo_root, plugin_name, plugin_root)
         install_command = [codex_command, "plugin", "add", plugin_metadata["marketplace_plugin_id"], "--json"]
-        payload = _parse_install_payload(runner(install_command, resolved_repo_root))
+        if codex_available:
+            try:
+                payload = _parse_install_payload(runner(install_command, resolved_repo_root))
+            except FileNotFoundError:
+                codex_available = False
+                if plugin_metadata["metadata_status"] == "local_manifest":
+                    payload = {
+                        "status": "LOCAL_SOURCE_VALIDATED",
+                        "changed": False,
+                        "codex_required": codex_required,
+                    }
+                else:
+                    codex_required = True
+                    payload = {
+                        "status": "LOCAL_METADATA_MISSING",
+                        "changed": False,
+                        "codex_required": True,
+                    }
+        else:
+            if plugin_metadata["metadata_status"] == "local_manifest":
+                payload = {
+                    "status": "LOCAL_SOURCE_VALIDATED",
+                    "changed": False,
+                    "codex_required": codex_required,
+                }
+            else:
+                codex_required = True
+                payload = {
+                    "status": "LOCAL_METADATA_MISSING",
+                    "changed": False,
+                    "codex_required": True,
+                }
         plugin_metadata["install_result"] = payload
         fresh_task_required = fresh_task_required or _install_changed(payload)
         plugins.append(plugin_metadata)
 
     lock_payload = {
         "profile": profile,
+        "dependency_mode": "codex-plugin-install" if codex_available else "verified-local-source",
+        "codex_required": codex_required,
         "marketplace": {
             "name": marketplace_name,
             "url": marketplace_source,
@@ -311,7 +395,7 @@ def bootstrap_profile(
         },
         "plugins": plugins,
     }
-    lock_path = resolved_repo_root / _LOCK_FILENAME
+    lock_path = resolved_repo_root / _LOCK_FILENAME.format(profile=profile)
     lock_path.write_text(json.dumps(lock_payload, indent=2) + "\n", encoding="utf-8")
 
     return {
@@ -319,6 +403,8 @@ def bootstrap_profile(
         "marketplace": lock_payload["marketplace"],
         "dependency_lock": lock_path.resolve().as_posix(),
         "plugins": plugins,
+        "dependency_mode": lock_payload["dependency_mode"],
+        "codex_required": False,
         "fresh_task_required": fresh_task_required,
     }
 

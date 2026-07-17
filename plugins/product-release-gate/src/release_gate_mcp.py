@@ -3,14 +3,22 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+from pathlib import Path
 from typing import Any, Callable
 
-from release_gate_core import GateError
+_SOURCE_ROOT = Path(__file__).resolve().parent
+if str(_SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SOURCE_ROOT))
+
+from release_gate_core import GateError, default_config_path
 from release_gate_production import ProductionReleaseController
+from release_gate_runtime import ReleaseGateWorkflowRuntime
+from release_gate_scheduler import ReleaseGateScheduler
+from release_gate_setup import run_setup_operation
 
 
 SERVER_NAME = "product-release-gate"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.3.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 _CONTROLLER = ProductionReleaseController()
 
@@ -40,6 +48,88 @@ def text_result(data: Any) -> dict[str, Any]:
 
 def error_result(message: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": message}], "isError": True}
+
+
+
+def _active_config_path() -> Path:
+    if _CONTROLLER.config_path is not None:
+        return Path(_CONTROLLER.config_path).resolve(strict=False)
+    return default_config_path()
+
+
+def _runtime(args: dict[str, Any]) -> ReleaseGateWorkflowRuntime:
+    active = controller(args)
+    return ReleaseGateWorkflowRuntime(active, _active_config_path())
+
+
+def setup_plugin(args: dict[str, Any]) -> dict[str, Any]:
+    global _CONTROLLER
+    provided: dict[str, Any] = {}
+    if "verify_command" in args:
+        provided["verify_command"] = args["verify_command"]
+    config_path = _active_config_path()
+    result = run_setup_operation(
+        config_path=config_path,
+        non_interactive=bool(args.get("non_interactive", False)),
+        scheduler_mode=str(args.get("scheduler_mode") or "auto"),
+        provided=provided,
+    )
+    _CONTROLLER = ProductionReleaseController(str(config_path))
+    return result
+
+
+def run_once(args: dict[str, Any]) -> dict[str, Any]:
+    return _runtime(args).run_once()
+
+
+def workflow_status(args: dict[str, Any]) -> dict[str, Any]:
+    return _runtime(args).status()
+
+
+def doctor(args: dict[str, Any]) -> dict[str, Any]:
+    return _runtime(args).doctor()
+
+
+def list_events(args: dict[str, Any]) -> dict[str, Any]:
+    return _runtime(args).list_events()
+
+
+def enqueue_handoff(args: dict[str, Any]) -> dict[str, Any]:
+    return _runtime(args).enqueue_handoff(
+        args["event_id"],
+        args["verification_ref"],
+    )
+
+
+def _scheduler(args: dict[str, Any]) -> ReleaseGateScheduler:
+    active = controller(args)
+    runtime = active.config.get("runtime") or {}
+    return ReleaseGateScheduler(
+        config_path=_active_config_path(),
+        state_dir=runtime.get("state_dir") or active.storage_dir.parent / "state",
+        poll_minutes=runtime.get("poll_minutes", 60),
+    )
+
+
+def scheduler_install(args: dict[str, Any]) -> dict[str, Any]:
+    runtime = controller(args).config.get("runtime") or {}
+    return _scheduler(args).install(
+        mode=str(runtime.get("scheduler_mode") or "auto")
+    )
+
+
+def scheduler_status(args: dict[str, Any]) -> dict[str, Any]:
+    runtime = controller(args).config.get("runtime") or {}
+    return _scheduler(args).status(
+        mode=str(runtime.get("scheduler_mode") or "auto")
+    )
+
+
+def scheduler_remove(args: dict[str, Any]) -> dict[str, Any]:
+    runtime = controller(args).config.get("runtime") or {}
+    return _scheduler(args).remove(
+        mode=str(runtime.get("scheduler_mode") or "auto")
+    )
 
 
 def preflight(args: dict[str, Any]) -> dict[str, Any]:
@@ -125,6 +215,37 @@ def record_release_authorization(args: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def finalize_verified_release_authorization(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    return controller(args).finalize_verified_release_authorization(
+        args["event_id"]
+    )
+
+
+
+def unified_approval_preflight(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).unified_approval_preflight()
+
+def request_unified_release_approval(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).request_unified_release_approval(
+        args["event_id"],
+        args["requested_by"],
+        args["target_scope"],
+        args["round_id"],
+        args["required_roles"],
+        args["role_snapshot_digest"],
+        args["expires_at"],
+    )
+
+
+def record_unified_release_approval(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).record_unified_release_approval(
+        args["event_id"],
+        args["verification_ref"],
+    )
+
+
 def ensure_deployment_capabilities(args: dict[str, Any]) -> dict[str, Any]:
     return controller(args).ensure_deployment_capabilities(args["event_id"])
 
@@ -164,6 +285,104 @@ def event_schema() -> dict[str, Any]:
 
 
 TOOLS: dict[str, dict[str, Any]] = {
+
+    "release_gate_setup": {
+        "description": "Create or reuse one managed configuration, install one OS schedule, and run first reconciliation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "non_interactive": {"type": "boolean", "default": False},
+                "scheduler_mode": {
+                    "type": "string",
+                    "enum": ["auto", "windows", "systemd", "cron"],
+                    "default": "auto",
+                },
+                "verify_command": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"type": "string"},
+                },
+            },
+            "additionalProperties": False,
+        },
+        "handler": setup_plugin,
+    },
+    "release_gate_run_once": {
+        "description": "Headlessly reconcile queued verified approval handoffs under an OS-kernel run lock.",
+        "inputSchema": {
+            "type": "object",
+            "properties": CONFIG_PROPERTY,
+            "additionalProperties": False,
+        },
+        "handler": run_once,
+    },
+    "release_gate_status": {
+        "description": "Report queue and event reconciliation status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": CONFIG_PROPERTY,
+            "additionalProperties": False,
+        },
+        "handler": workflow_status,
+    },
+    "release_gate_doctor": {
+        "description": "Validate unified approval configuration and runtime readiness.",
+        "inputSchema": {
+            "type": "object",
+            "properties": CONFIG_PROPERTY,
+            "additionalProperties": False,
+        },
+        "handler": doctor,
+    },
+    "release_gate_list_events": {
+        "description": "List durable release events and current states.",
+        "inputSchema": {
+            "type": "object",
+            "properties": CONFIG_PROPERTY,
+            "additionalProperties": False,
+        },
+        "handler": list_events,
+    },
+    "release_gate_enqueue_handoff": {
+        "description": "Persist an idempotent verifier handoff pointer for unattended reconciliation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "verification_ref": {"type": "string"},
+            },
+            "required": ["event_id", "verification_ref"],
+            "additionalProperties": False,
+        },
+        "handler": enqueue_handoff,
+    },
+    "release_gate_scheduler_install": {
+        "description": "Install the configured OS scheduler with ignore-new and skip-all-missed semantics.",
+        "inputSchema": {
+            "type": "object",
+            "properties": CONFIG_PROPERTY,
+            "additionalProperties": False,
+        },
+        "handler": scheduler_install,
+    },
+    "release_gate_scheduler_status": {
+        "description": "Read back and verify the configured OS scheduler state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": CONFIG_PROPERTY,
+            "additionalProperties": False,
+        },
+        "handler": scheduler_status,
+    },
+    "release_gate_scheduler_remove": {
+        "description": "Remove only the scheduler identity managed by this plugin.",
+        "inputSchema": {
+            "type": "object",
+            "properties": CONFIG_PROPERTY,
+            "additionalProperties": False,
+        },
+        "handler": scheduler_remove,
+    },
     "release_gate_preflight": {
         "description": "Check storage, Authenticode, cloud-scan, and test-orchestrator readiness before starting a release event.",
         "inputSchema": {
@@ -300,7 +519,15 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
         "handler": production_preflight,
     },
-    "release_gate_request_release_authorization": {
+    "release_gate_unified_approval_preflight": {
+        "description": "Check the unified approval verifier, mail delivery, and audit signer capabilities.",
+        "inputSchema": {
+            "type": "object",
+            "properties": CONFIG_PROPERTY,
+            "additionalProperties": False,
+        },
+        "handler": unified_approval_preflight,
+    },    "release_gate_request_release_authorization": {
         "description": "Freeze a production authorization request bound to the current Manifest-S and Manifest-R digests.",
         "inputSchema": {
             "type": "object",
@@ -339,6 +566,67 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": record_release_authorization,
+    },
+
+    "release_gate_finalize_verified_release_authorization": {
+        "description": (
+            "Reverify a unified approval receipt in the independent "
+            "authorization phase and issue the scoped credential."
+        ),
+        "inputSchema": event_schema(),
+        "handler": finalize_verified_release_authorization,
+    },
+    "release_gate_request_unified_release_approval": {
+        "description": "Freeze one multi-role approval round without issuing a production authorization credential.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "requested_by": {"type": "string"},
+                "target_scope": {"type": "string"},
+                "round_id": {"type": "integer", "minimum": 1},
+                "required_roles": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "role_id": {"type": "string"},
+                            "email": {"type": "string"},
+                            "required": {"const": True},
+                        },
+                        "required": ["role_id", "email", "required"],
+                        "additionalProperties": False,
+                    },
+                },
+                "role_snapshot_digest": {"type": "string"},
+                "expires_at": {"type": "string"},
+            },
+            "required": [
+                "event_id",
+                "requested_by",
+                "target_scope",
+                "round_id",
+                "required_roles",
+                "role_snapshot_digest",
+                "expires_at",
+            ],
+            "additionalProperties": False,
+        },
+        "handler": request_unified_release_approval,
+    },
+    "release_gate_record_unified_release_approval": {
+        "description": "Verify an independent aggregate receipt and stop at PRE_RELEASE_REQUESTED.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "verification_ref": {"type": "string"},
+            },
+            "required": ["event_id", "verification_ref"],
+            "additionalProperties": False,
+        },
+        "handler": record_unified_release_approval,
     },
     "release_gate_ensure_deployment_capabilities": {
         "description": "Fail closed and create a replayable capability request when a required deployment adapter is missing.",
@@ -433,7 +721,7 @@ def handle_request(message: dict[str, Any]) -> dict[str, Any] | None:
             handler: Callable[[dict[str, Any]], dict[str, Any]] = TOOLS[tool_name]["handler"]
             return response(request_id, text_result(handler(arguments)))
         return error_response(request_id, -32601, f"Method not found: {method}")
-    except (GateError, KeyError, TypeError, ValueError) as exc:
+    except (GateError, KeyError, TypeError, ValueError, RuntimeError, OSError) as exc:
         return response(request_id, error_result(str(exc)))
     except Exception as exc:
         eprint(traceback.format_exc())

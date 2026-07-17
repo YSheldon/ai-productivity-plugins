@@ -1,0 +1,42 @@
+{
+  "name": "release-approval-verifier",
+  "version": "0.2.0",
+  "description": "Independent multi-role release verifier with MCP, Skill, standalone CLI, signed receipts, and unattended scheduling.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "release-approval",
+    "verifier",
+    "mail",
+    "audit",
+    "governance"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "runtimeEntrypoints": [
+    "./src/verifier_cli.py",
+    "./src/verifier_product_gate_bridge.py"
+  ],
+  "interface": {
+    "displayName": "Release Approval Verifier",
+    "shortDescription": "Independent verifier with four equivalent runtime surfaces",
+    "longDescription": "Freeze release roles from Feishu, validate authenticated replies, send bounded reminders, seal aggregate receipts, and hand off PRE_RELEASE_REQUESTED through MCP, Skill, standalone CLI, or unattended OS scheduling.",
+    "developerName": "Sheldon",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Validate the production verifier configuration and frozen role source.",
+      "Inspect a role snapshot digest and enabled required roles.",
+      "Review why a reply was quarantined instead of affecting verifier state."
+    ],
+    "brandColor": "#0F766E",
+    "composerIcon": "./assets/release-approval-verifier.svg",
+    "logo": "./assets/release-approval-verifier.svg",
+    "screenshots": []
+  }
+}

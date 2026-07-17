@@ -14,6 +14,7 @@ ALLOWED_TOOLS = {
     "test_connection": "imap_smtp_mail_test_connection",
     "search_messages": "imap_smtp_mail_search_messages",
     "read_message": "imap_smtp_mail_read_message",
+    "create_draft": "imap_smtp_mail_create_draft",
     "send_email": "imap_smtp_mail_send_email",
 }
 

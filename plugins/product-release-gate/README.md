@@ -2,6 +2,10 @@
 
 This Codex plugin implements a fail-closed product-material and production-release control plane.
 
+Codex is optional. The same controller is exposed through MCP, Skill, `release_gate_cli.py`, and an unattended OS scheduler. Run `py -3 src/release_gate_cli.py setup`, then use `preflight`, `run-once`, `status`, `doctor`, and `scheduler status`; setup creates the shared configuration without manual JSON editing.
+
+The unified multi-role approval branch stops at `PRE_RELEASE_REQUESTED`; it never mints a production authorization credential. The compatible legacy branch below remains available for the later, independent production authorization and staged deployment workflow.
+
 ```text
 submission -> submission gate -> test -> test approval -> final material
 -> release gate -> RELEASE_READY -> bound release approval -> RELEASE_AUTHORIZED
@@ -21,7 +25,7 @@ $env:PRODUCT_RELEASE_GATE_AUTH_KEY = "<secret from the credential manager>"
 $env:PRODUCT_RELEASE_GATE_AUDIT_KEY = "<different secret from the credential manager>"
 ```
 
-Both keys must be at least 32 bytes and must be different. Configure an exact 40-hex Authenticode certificate thumbprint allowlist; a merely valid signature is not sufficient. Set `production.enabled=true` only after every production adapter is configured. Adapter commands execute as argument arrays without a shell.
+Both keys must be at least 32 bytes and must be different. Configure an exact 40-hex Authenticode certificate thumbprint allowlist; a merely valid signature is not sufficient. Set `production.enabled=true` only after every production adapter is configured. `production.deployment.dependency_lock` and `production.deployment.dependency_lock_sha256` bind the deploy, verify, rollback, rollback-verify, and readback argv templates to one locked adapter manifest. Adapter commands execute as argument arrays without a shell, and the controller re-verifies the lock digest plus every pinned executable/script SHA-256 immediately before each invocation.
 
 The MCP process reads `PRODUCT_RELEASE_GATE_CONFIG` once at startup. Tool calls cannot override `config_path`; restart the server to load an approved configuration change.
 
@@ -56,7 +60,32 @@ Rollback is a two-adapter contract. The rollback adapter must echo the exact `ta
 
 Final production readback must return `result=PASS`, the configured `target_ref`, `readback_ref`, and `observed_manifest_r_digest`. A full-production readback mismatch automatically invokes the bound full-production rollback.
 
-Any missing field, adapter error, digest mismatch, expired credential, stage-order violation, file drift, or non-PASS result blocks advancement. Deployment or verification failure automatically invokes the configured rollback adapter for the current stage.
+The deployment lock must pin every production adapter argv template and every executable/script entrypoint used by those commands. Supported shapes are one pinned executable (`deployment-adapter.exe ...`) or a pinned interpreter plus pinned script (`python.exe deployment_adapter.py ...`). Any lock drift, command drift, missing file, path escape, unknown command shape, or entrypoint digest drift blocks the stage before the adapter is invoked. A minimal lock file looks like:
+
+```json
+{
+  "schema_version": 1,
+  "root": ".",
+  "commands": {
+    "deploy": {
+      "argv_template": [
+        "C:\Python313\python.exe",
+        "C:\deploy\deployment_adapter.py",
+        "deploy",
+        "{stage}",
+        "{manifest_r_digest}",
+        "{target_ref}"
+      ],
+      "entrypoints": [
+        {"argv_index": 0, "path": "C:\Python313\python.exe", "sha256": "..."},
+        {"argv_index": 1, "path": "deployment_adapter.py", "sha256": "..."}
+      ]
+    }
+  }
+}
+```
+
+Any missing field, adapter error, digest mismatch, expired credential, stage-order violation, lock drift, command drift, file drift, or non-PASS result blocks advancement. Deployment or verification failure automatically invokes the configured rollback adapter for the current stage.
 
 ## Security Boundaries
 

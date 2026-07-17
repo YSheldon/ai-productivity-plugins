@@ -1,5 +1,10 @@
 {
   "storage_dir": "%USERPROFILE%\\.codex\\product-release-gate\\events",
+  "runtime": {
+    "state_dir": "%LOCALAPPDATA%\\product-release-gate\\state",
+    "poll_minutes": 60,
+    "scheduler_mode": "auto"
+  },
   "policy": {
     "allowed_extensions": [
       ".exe",
@@ -43,6 +48,11 @@
   },
   "production": {
     "enabled": false,
+    "approval_workflow": {
+      "mode": "legacy_external",
+      "verify_command": [],
+      "timeout_seconds": 120
+    },
     "authorization": {
       "key_env": "PRODUCT_RELEASE_GATE_AUTH_KEY",
       "ttl_seconds": 3600,
@@ -77,6 +87,8 @@
         "production_canary": "env:production:canary",
         "production_full": "env:production:full"
       },
+      "dependency_lock": "C:\\path\\to\\deployment-adapter.lock.json",
+      "dependency_lock_sha256": "REPLACE_WITH_64_HEX_SHA256_OF_DEPLOYMENT_LOCK",
       "deploy_command": [
         "C:\\path\\to\\deployment-adapter.exe",
         "deploy",

@@ -11,7 +11,12 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PLUGIN_ROOT.parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
-from release_approval_config import ConfigError, load_config, reject_per_call_config_override
+from release_approval_config import (
+    ConfigError,
+    default_config_path,
+    load_config,
+    reject_per_call_config_override,
+)
 
 
 def _base_config() -> dict[str, object]:
@@ -21,6 +26,11 @@ def _base_config() -> dict[str, object]:
         "mail_account": {
             "profile": "release-manager",
             "email": "release-manager@example.com",
+        },
+        "request_authentication": {
+            "allowed_sender_emails": ["release-gate@example.com"],
+            "allowed_authserv_ids": ["mx.example.com"],
+            "accepted_paths": ["dmarc", "dkim", "spf"],
         },
         "release_group": "release-approvers",
         "mailbox": "INBOX",
@@ -42,6 +52,22 @@ def _base_config() -> dict[str, object]:
     }
 
 
+
+def test_default_config_path_is_shared_and_environment_overridable(tmp_path: Path) -> None:
+    explicit = tmp_path / "explicit.json"
+    assert default_config_path({"RELEASE_APPROVAL_CONFIG": str(explicit)}) == explicit.resolve()
+
+    local_app_data = tmp_path / "local-app-data"
+    assert default_config_path({"LOCALAPPDATA": str(local_app_data)}, platform="win32") == (
+        local_app_data / "release-approval" / "config.json"
+    ).resolve()
+
+    xdg = tmp_path / "xdg"
+    assert default_config_path({"XDG_CONFIG_HOME": str(xdg)}, platform="linux") == (
+        xdg / "release-approval" / "config.json"
+    ).resolve()
+
+
 def test_load_config_expands_paths_applies_defaults_and_freezes_required_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -58,6 +84,11 @@ def test_load_config_expands_paths_applies_defaults_and_freezes_required_fields(
     assert config.role_id == "release-manager"
     assert config.role_email == "release-manager@example.com"
     assert config.mail_account.email == "release-manager@example.com"
+    assert config.request_authentication.allowed_sender_emails == (
+        "release-gate@example.com",
+    )
+    assert config.request_authentication.allowed_authserv_ids == ("mx.example.com",)
+    assert config.request_authentication.accepted_paths == ("dmarc", "dkim", "spf")
     assert config.page.host == "127.0.0.1"
     assert config.state_dir == (tmp_path / "state").resolve()
     assert config.dependency_lock == (tmp_path / "dependency-lock.json").resolve()
@@ -81,14 +112,14 @@ def test_shipped_config_resolves_bootstrap_lock_when_repository_root_is_configur
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo_root = tmp_path / "inspected-repository"
-    user_profile = tmp_path / "user-profile"
+    local_app_data = tmp_path / "local-app-data"
     monkeypatch.setenv("RELEASE_APPROVAL_REPO_ROOT", str(repo_root))
-    monkeypatch.setenv("USERPROFILE", str(user_profile))
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
 
     config = load_config(PLUGIN_ROOT / "config" / "config.example.json")
 
     assert config.dependency_lock == (repo_root / "dependency-lock.json").resolve()
-    assert config.state_dir == (user_profile / ".codex" / "release-approval" / "state").resolve()
+    assert config.state_dir == (local_app_data / "release-approval" / "state").resolve()
 
 
 @pytest.mark.parametrize(
@@ -102,12 +133,42 @@ def test_shipped_config_resolves_bootstrap_lock_when_repository_root_is_configur
             "must match role_email",
         ),
         (
+            lambda payload: payload["request_authentication"].__setitem__(
+                "allowed_sender_emails", []
+            ),
+            "allowed_sender_emails must be a non-empty list",
+        ),
+        (
+            lambda payload: payload["request_authentication"].__setitem__(
+                "allowed_sender_emails", ["invalid"]
+            ),
+            "valid email",
+        ),
+        (
+            lambda payload: payload["request_authentication"].__setitem__(
+                "accepted_paths", ["trusted_internal"]
+            ),
+            "unsupported paths",
+        ),
+        (
             lambda payload: payload["mail_account"].__setitem__("password", "secret"),
             "must not contain passwords",
         ),
         (
             lambda payload: payload["mail_account"].__setitem__("authorization_code", "secret"),
             "must not contain passwords",
+        ),
+        (
+            lambda payload: payload["mail_account"].__setitem__("Access_Token", "secret"),
+            "must not contain credentials",
+        ),
+        (
+            lambda payload: payload.__setitem__("client_secret", "secret"),
+            "must not contain credentials",
+        ),
+        (
+            lambda payload: payload.__setitem__("Authorization", "Bearer secret"),
+            "must not contain credentials",
         ),
     ],
 )
@@ -206,14 +267,16 @@ def test_mcp_manifest_points_at_task6_stdio_server() -> None:
     }
 
 
-def test_shipped_config_keeps_dependency_lock_at_repo_root_and_readme_warns_not_to_copy() -> None:
+def test_readme_prefers_setup_with_no_manual_json_and_documents_one_config_source() -> None:
     example_payload = json.loads((PLUGIN_ROOT / "config" / "config.example.json").read_text(encoding="utf-8"))
     assert example_payload["dependency_lock"] == "%RELEASE_APPROVAL_REPO_ROOT%\\dependency-lock.json"
 
     readme_text = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
-    assert "%RELEASE_APPROVAL_REPO_ROOT%\\dependency-lock.json" in readme_text
-    assert "must not be copied elsewhere" in readme_text
-    repo_root_assignment = '$env:RELEASE_APPROVAL_REPO_ROOT = "C:\\absolute\\path\\to\\inspected-repository"'
-    assert repo_root_assignment in readme_text
-    assert readme_text.index(repo_root_assignment) < readme_text.index("config/config.example.json")
-    assert "replace `dependency_lock` with the exact absolute path returned by `bootstrap_dependencies.py`" in readme_text
+    assert "release_approval_cli.py setup" in readme_text
+    assert "zero manual JSON" in readme_text
+    assert "four prompts" in readme_text
+    assert "default_config_path" in readme_text
+    assert "MCP" in readme_text
+    assert "standalone CLI" in readme_text
+    assert "OS scheduler" in readme_text
+    assert "Codex is optional" in readme_text

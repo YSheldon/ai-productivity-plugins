@@ -1,0 +1,54 @@
+{
+  "mode": "production",
+  "role_source": {
+    "type": "feishu",
+    "document_url": "https://open.feishu.cn/docx/replace-with-role-doc",
+    "heading": "## 审批角色"
+  },
+  "release_group": "release-approvers@example.com",
+  "mailbox": "INBOX",
+  "verifier_mail_account": {
+    "profile": "release-verifier",
+    "email": "verifier@example.com"
+  },
+  "event_expiry_hours": 24,
+  "poll_minutes": 60,
+  "timezone": "Asia/Shanghai",
+  "working_hours": {
+    "days": [
+      "Mon",
+      "Tue",
+      "Wed",
+      "Thu",
+      "Fri"
+    ],
+    "start": "09:00",
+    "end": "18:00"
+  },
+  "reminder_policy": {
+    "initial_delay_minutes": 60,
+    "repeat_minutes": 240,
+    "maximum": 3
+  },
+  "authentication_policy": {
+    "accepted_paths": [
+      "dmarc",
+      "dkim",
+      "spf"
+    ],
+    "allowed_authserv_ids": [
+      "mx.example.com"
+    ],
+    "trusted_internal_header": "X-Trusted-Relay",
+    "trusted_internal_value": "release-gateway"
+  },
+  "state_dir": "%LOCALAPPDATA%\\release-approval-verifier\\state",
+  "dependency_lock": "%RELEASE_APPROVAL_REPO_ROOT%\\dependency-lock.release-approval-verifier.json",
+  "dependency_lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "audit_document": {
+    "url": "https://open.feishu.cn/wiki/replace-with-audit-doc"
+  },
+  "product_gate": {
+    "config_path": "%LOCALAPPDATA%\\product-release-gate\\config.json"
+  }
+}

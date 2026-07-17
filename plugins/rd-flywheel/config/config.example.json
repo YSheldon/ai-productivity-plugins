@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "governance_inbox": "%LOCALAPPDATA%\\rd-flywheel\\inbox",
+  "state_dir": "%LOCALAPPDATA%\\rd-flywheel\\state",
+  "poll_minutes": 60,
+  "timezone": "Asia/Shanghai",
+  "tool_profiles": [
+    "gitlab",
+    "imap-smtp-mail",
+    "lark-cli",
+    "product-release-gate",
+    "ssh",
+    "wecom-codex-usage"
+  ],
+  "approved_agent_profiles": [],
+  "agent_profile": null,
+  "protected_merge": {
+    "tool_profile": "gitlab",
+    "protected_branch_required": true
+  },
+  "notification": null,
+  "decision_role_source": null,
+  "dependency_lock": "%LOCALAPPDATA%\\rd-flywheel\\state\\dependency-lock.json"
+}

@@ -27,6 +27,8 @@ def test_task6_skill_encodes_setup_and_run_once_contract() -> None:
         "release_approval_preflight",
         "release_approval_start_setup",
         "release_approval_run_once",
+        "release_approval_status",
+        "release_approval_doctor",
         "release_approval_list_pending",
         "release_approval_open_page",
         "release_approval_get_event",
@@ -37,7 +39,16 @@ def test_task6_skill_encodes_setup_and_run_once_contract() -> None:
         "hourly",
         "immediately",
         "dependency lock",
-        "existing page",
+        "fresh one-time",
+        "standalone CLI",
+        "OS scheduler",
+        "headless",
+        "Codex is optional",
+        "zero manual JSON",
+        "four prompts",
+        "RUN_ALREADY_ACTIVE",
+        "skip all missed",
+        "scheduler install|status|remove",
         "Message-ID",
         "UIDVALIDITY",
         "UID",
@@ -48,8 +59,11 @@ def test_task6_skill_encodes_setup_and_run_once_contract() -> None:
 
 def test_task6_plugin_metadata_exposes_skill_and_task6_interface_boundary() -> None:
     manifest = json.loads((PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.1.0"
+    assert manifest["version"] == "0.2.0"
     assert manifest["skills"] == "./skills/"
     assert manifest["mcpServers"] == "./.mcp.json"
-    assert "hourly" in manifest["interface"]["longDescription"].lower()
-    assert "run_once" in " ".join(manifest["interface"]["defaultPrompt"]).lower()
+    long_description = manifest["interface"]["longDescription"].lower()
+    assert "standalone cli" in long_description
+    assert "headless" in long_description
+    assert "os scheduler" in long_description
+    assert "setup" in " ".join(manifest["interface"]["defaultPrompt"]).lower()

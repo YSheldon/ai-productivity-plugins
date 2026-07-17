@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "release-approval-verifier": {
+      "command": "py",
+      "args": [
+        "-3",
+        "./src/release_approval_verifier_mcp.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

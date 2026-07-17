@@ -1,0 +1,11 @@
+{
+  "uid": "9107",
+  "message_id": "<legacy-subject-module-only@example.invalid>",
+  "subject": "[提测][RD20260717-客户端兼容性修复]20260717-14:15:16",
+  "headers": {
+    "From": "submitter@example.invalid",
+    "To": "release-intake@example.invalid",
+    "Message-ID": "<legacy-subject-module-only@example.invalid>"
+  },
+  "body_text": "提测类型：常规\n提测标识：RD20260717\n提测标题：兼容性修复\n标题：兼容性修复\n目录：/releases/build/\nSVN 地址：https://svn.example.invalid/repos/project/build\nrevision：654321\n文件数：2\n修改说明：redacted change summary\n"
+}

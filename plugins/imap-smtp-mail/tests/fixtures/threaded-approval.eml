@@ -1,6 +1,20 @@
 Return-Path: <Approver@Example.COM>
 Authentication-Results: mx.example.net; dkim=pass header.d=example.com; dmarc=pass action=none
 Received-SPF: pass (mx.example.net: domain of Approver@Example.COM designates 192.0.2.1 as permitted sender) client-ip=192.0.2.1; envelope-from=Approver@Example.COM; helo=mail.example.com; spf=pass
+X-RD-Contract: rd.release-approval.v1
+x-rd-event-id: event-20260715-001
+X-RD-Round-Id: round-2
+X-RD-Task: Release task
+X-RD-Module: client
+X-RD-Manifest-S-Digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+X-RD-Manifest-R-Digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+X-RD-Manifest-Digest: sha256:3333333333333333333333333333333333333333333333333333333333333333
+X-RD-Request-Digest: sha256:4444444444444444444444444444444444444444444444444444444444444444
+X-RD-Submitter-Email: submitter@example.com
+X-RD-Role-Snapshot-Digest: sha256:5555555555555555555555555555555555555555555555555555555555555555
+X-RD-Required-Roles: release-manager,security-reviewer
+X-RD-Expires-At: 2026-07-16T09:30:00Z
+X-RD-Private-Token: must-not-leak
 From: Approver Example <approver@example.com>
 To: Requester Example <requester@example.com>
 Subject: Re: Release approval

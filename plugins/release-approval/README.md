@@ -1,59 +1,77 @@
 # Release Approval
 
-This plugin owns the role-side release approval loop for one configured approver mailbox.
+Release Approval runs one approver-side release workflow through one controller, one credential-free config, and one SQLite state store. The same domain operations are exposed through MCP, Skill, standalone CLI, and an unattended OS scheduler. Codex is optional.
 
-Task 6 adds the startup-locked MCP server, the fixed-profile setup entrypoint, deterministic `run_once` mail scanning, and the hourly automation install boundary. It still does not implement verifier aggregation or Task 7+ behavior.
+## Quick Start
 
-## Configuration
-
-Define the inspected repository root before using the example:
+From the plugin directory run:
 
 ```powershell
-$env:RELEASE_APPROVAL_REPO_ROOT = "C:\absolute\path\to\inspected-repository"
+py -3 .\src\release_approval_cli.py setup
 ```
 
-Only after setting it, copy `config/config.example.json` to a protected path and set:
+The setup wizard requires zero manual JSON edits. It discovers the platform scheduler, timezone, and existing mail profiles; a standard setup asks no more than four prompts and a repeated setup asks none. It runs dependency bootstrap, preflight, an immediate headless scan, external scheduler verification, and prints status, doctor, and rollback commands.
 
-```powershell
-$env:RELEASE_APPROVAL_CONFIG = "C:\path\to\release-approval.json"
+All surfaces resolve the same path through `default_config_path`:
+
+- Windows: `%LOCALAPPDATA%\release-approval\config.json`
+- Linux: `$XDG_CONFIG_HOME/release-approval/config.json` or `~/.config/release-approval/config.json`
+- Override: `RELEASE_APPROVAL_CONFIG` or one global CLI `--config <path>`
+
+The config never stores passwords, authorization codes, tokens, or mailbox secrets. Setup also freezes the product-release-gate sender with `--request-sender-email` (or `RELEASE_APPROVAL_REQUEST_SENDER_EMAIL`) and the trusted mail authentication issuer with `--trusted-authserv-ids` (or `RELEASE_APPROVAL_TRUSTED_AUTHSERV_IDS`); the interactive wizard remains within four prompts. An optional `--audit-document-url` (or `RELEASE_APPROVAL_AUDIT_DOCUMENT_URL`) enables Feishu/Lark cloud audit writeback and readback without adding another setup prompt.
+
+## Standalone CLI
+
+```text
+release_approval_cli.py [--config PATH] setup
+release_approval_cli.py [--config PATH] preflight
+release_approval_cli.py [--config PATH] run-once
+release_approval_cli.py [--config PATH] status
+release_approval_cli.py [--config PATH] doctor
+release_approval_cli.py [--config PATH] list-pending
+release_approval_cli.py [--config PATH] open-page --event-id ID --round-id N
+release_approval_cli.py [--config PATH] get-event --event-id ID --round-id N
+release_approval_cli.py [--config PATH] verify-audit
+release_approval_cli.py [--config PATH] scheduler install|status|remove
 ```
 
-The runtime configuration is read once at MCP startup. Tool calls must not override `config_path`; restart the process after an approved config change.
+Commands return one JSON object and stable exit codes. `run-once` is always headless. `open-page` is the only command that starts a loopback page server or opens a browser, and the standalone process remains alive until a decision, expiry, or cancellation.
 
-During installation, replace `dependency_lock` with the exact absolute path returned by `bootstrap_dependencies.py`. The example value `%RELEASE_APPROVAL_REPO_ROOT%\dependency-lock.json` preserves the inspected repo-root containment model, and the bootstrap-written lock file must not be copied elsewhere.
+## MCP
 
-Required fields:
-
-- `role_id`
-- `role_email`
-- `mail_account`
-- `release_group`
-- `mailbox`
-- `page`
-- `working_hours`
-- `state_dir`
-- `dependency_lock`
-- `audit`
-
-Validation is fail-closed:
-
-- `page.host` must stay loopback-only.
-- `poll_minutes` must stay within `5..1440`.
-- `role_email` and `mail_account.email` must be valid and identical.
-- The config must not contain passwords or authorization-code fields.
-
-## Task 6 Tools
+The MCP server uses the same default config and controller:
 
 - `release_approval_preflight`
 - `release_approval_start_setup`
 - `release_approval_run_once`
+- `release_approval_status`
+- `release_approval_doctor`
 - `release_approval_list_pending`
 - `release_approval_open_page`
 - `release_approval_get_event`
 - `release_approval_verify_audit_chain`
 
-`release_approval_start_setup` runs only the fixed allowlisted bootstrap. If dependencies changed, it returns `FRESH_TASK_REQUIRED` and stops before using the new capability in the same task. Otherwise it validates the configured account email, creates exactly one hourly Codex automation, and runs the first scan immediately.
+If an MCP bootstrap upgrades a loaded dependency it returns `FRESH_TASK_REQUIRED`; restart the task before continuing. The standalone setup process can re-preflight its external CLI dependencies directly.
 
-`release_approval_run_once` reads recent release requests through the locked mail bridge, validates the frozen machine block, uses `UIDVALIDITY`, `UID`, and `Message-ID` idempotency, creates or reuses exactly one page, retries known-unsent decisions, and auto-opens only newly created pages. Missing thread or readback capability remains `CAPABILITY_BLOCKED`; there is no subject-only trust fallback.
+## OS Scheduler
 
-The loopback page opens only after durable artifacts exist, and page clicks do not count as aggregate approval.
+Auto mode selects Windows Task Scheduler, a user systemd timer, or cron. Every backend invokes the absolute Python executable and `release_approval_cli.py --config <path> run-once`.
+
+- Missed intervals are skipped rather than caught up.
+- Windows policy is externally read back as `MultipleInstancesPolicy=IgnoreNew` and `StartWhenAvailable=false`.
+- systemd uses `Persistent=false`.
+- Cron has no catch-up behavior.
+- A non-expiring OS-kernel lock returns `RUN_ALREADY_ACTIVE` with zero mail, business, or audit side effects on overlap.
+- Codex Automation is not required and is disabled unless equivalent misfire and overlap semantics can be proven.
+
+## Trust Boundaries
+
+Incoming requests must come from a configured allowlisted sender, present `Authentication-Results` from one configured authserv-id, pass one configured DMARC/DKIM/SPF path with sender/domain alignment, contain authenticated thread/readback evidence, and carry a valid frozen machine block. SPF now requires both `Authentication-Results` and `Received-SPF` to agree. Malformed messages are quarantined per message so they cannot stop later valid requests, and previously audited rejected messages are transport-checkpointed so one poison message cannot keep every later poll blocked. `UIDVALIDITY`, `UID`, and `Message-ID` provide checkpoint idempotency. Missing evidence stays `CAPABILITY_BLOCKED`; subject-only correlation is never trusted.
+
+An explicit page open creates a fresh one-time loopback page session. URL bearer material is never persisted. A page decision is role evidence only; it does not aggregate approvals or authorize deployment.
+
+Mail delivery, page-decision validity, local audit-chain validity, and cloud audit write/readback are separate facts. Optional cloud-audit failure is recorded as `AUDIT_DEGRADED` and never represented as successful cloud readback.
+
+## Advanced Configuration
+
+`config/config.example.json` documents every field for controlled non-interactive deployment. Its `dependency_lock` example remains under the inspected repository root; normal users should let `setup` generate the absolute lock path instead of copying or editing JSON.

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/rd-flywheel/capability-gap-event-v1.json",
+  "title": "CapabilityGapEvent/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "originating_plugin", "originating_event_id", "originating_round_id",
+    "checkpoint_digest", "missing_capability", "required_evidence",
+    "allowed_tool_profiles", "created_at", "idempotency_key"
+  ],
+  "properties": {
+    "schema": {"const": "CapabilityGapEvent/v1"},
+    "originating_plugin": {"type": "string", "minLength": 1, "maxLength": 256},
+    "originating_event_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "originating_round_id": {"type": "integer", "minimum": 1},
+    "checkpoint_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "missing_capability": {"type": "string", "minLength": 1, "maxLength": 256},
+    "required_evidence": {
+      "type": "array",
+      "minItems": 8,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1},
+      "allOf": [{
+        "contains": {"enum": [
+          "tests", "independent_review", "protected_merge", "package_publication",
+          "installation", "first_practice", "rollback", "checkpoint_replay"
+        ]},
+        "minContains": 8
+      }]
+    },
+    "allowed_tool_profiles": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 128}
+    },
+    "created_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "idempotency_key": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

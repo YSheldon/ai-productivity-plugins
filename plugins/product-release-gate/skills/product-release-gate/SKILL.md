@@ -7,6 +7,8 @@ description: Create and execute fail-closed product material gates, bound releas
 
 Use this plugin for submission, testing, final-material production, release authorization, staged deployment, rollback, and durable production reports.
 
+Run `py -3 src/release_gate_cli.py setup` for zero manual JSON editing. A setup rerun reuses the same configuration with zero prompts. MCP, this Skill, the standalone CLI, and the OS scheduler all use the same controller; Codex is optional.
+
 ## Required Workflow
 
 1. Start the MCP server with one protected `PRODUCT_RELEASE_GATE_CONFIG`. Per-call `config_path` overrides are forbidden. Call `release_gate_preflight`; never interpret a missing required integration as PASS.

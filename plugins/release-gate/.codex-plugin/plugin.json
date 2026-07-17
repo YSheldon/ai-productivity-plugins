@@ -1,0 +1,43 @@
+{
+  "name": "release-gate",
+  "version": "0.1.0",
+  "description": "Run the release gate mailbox scan, validate signed PRERELEASE_REQUEST handoffs, invoke the locked product-release-gate kernel, and send RELEASE_GATE_PASS or blocking notices without Codex runtime dependence.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "release-gate",
+    "mail",
+    "scheduler",
+    "product-release-gate",
+    "release-ready"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "runtimeEntrypoints": [
+    "src/release_gate_cli.py",
+    "src/release_gate_mcp.py"
+  ],
+  "interface": {
+    "displayName": "Release Gate",
+    "shortDescription": "Validate PRERELEASE_REQUEST handoffs and announce release readiness",
+    "longDescription": "Use one credential-free configuration across MCP, Skill, standalone CLI, and OS scheduler. Scheduled run_once only processes new gate mail, enforces required checks, and advances successful events to RELEASE_READY_NOTIFIED without granting production authorization.",
+    "developerName": "Sheldon",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Run release-gate setup with zero manual JSON editing.",
+      "Run the headless release gate mailbox scan.",
+      "Show release-gate status and doctor output.",
+      "Diagnose the locked product-release-gate and mail binding."
+    ],
+    "brandColor": "#1D4ED8",
+    "composerIcon": "./assets/release-gate.svg",
+    "logo": "./assets/release-gate.svg",
+    "screenshots": []
+  }
+}

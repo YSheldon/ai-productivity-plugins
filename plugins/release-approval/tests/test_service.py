@@ -22,6 +22,7 @@ from release_approval_config import (
     AuditConfig,
     MailAccountConfig,
     PageConfig,
+    RequestAuthenticationConfig,
     ReleaseApprovalConfig,
     WorkingHoursConfig,
 )
@@ -77,6 +78,11 @@ def _config(state_dir: Path) -> ReleaseApprovalConfig:
         role_id="release-manager",
         role_email="release-manager@example.com",
         mail_account=MailAccountConfig(profile="release-manager", email="release-manager@example.com"),
+        request_authentication=RequestAuthenticationConfig(
+            allowed_sender_emails=("release-gate@example.com",),
+            allowed_authserv_ids=("mx.example.com",),
+            accepted_paths=("dmarc", "dkim", "spf"),
+        ),
         release_group="release-approvers@example.com",
         mailbox="INBOX",
         page=PageConfig(host="127.0.0.1", port=8765),

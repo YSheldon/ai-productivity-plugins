@@ -23,14 +23,14 @@ The plugin is protocol-based, so prefer IMAP search and message reads before mak
 1. Call `imap_smtp_mail_list_accounts` first if the user did not specify which configured account to use.
 2. If no accounts are configured, call `imap_smtp_mail_start_setup` and give the user the returned local URL.
 3. Use `imap_smtp_mail_search_messages` to shortlist messages by sender, subject, date, unread state, or text.
-4. Use `imap_smtp_mail_read_message` for the specific UID before summarizing, replying, or saving attachments.
+4. Use `imap_smtp_mail_read_message` for the specific UID before summarizing, replying, or saving attachments. Release automation must consume only its allowlisted `release_workflow_headers` object, never infer workflow bindings from arbitrary raw headers.
 5. Use `imap_smtp_mail_save_attachments` only when the user asks to download or inspect attachments locally.
 6. For drafts or replies, prefer `imap_smtp_mail_create_draft` so the message appears in the provider's Drafts mailbox for user review.
 7. For sending, call `imap_smtp_mail_send_email` with `dry_run: true` first unless the user explicitly asked to send immediately. With the current tool, `dry_run: true` saves a mailbox draft by default; use `preview_only: true` only when the user wants chat-only preview text.
 
 ## Write Safety
 
-- Never expose configured passwords or authorization codes.
+- Never expose configured passwords, authorization codes, or arbitrary raw message headers. `release_workflow_headers` is a fixed allowlist and malformed values must fail closed.
 - Preserve exact recipients, subjects, dates, and quoted facts from source messages.
 - Treat `dry_run: false` as a real send operation and use it only with explicit user intent.
 - Do not delete, archive, mark read, move, or label messages in this MVP.

@@ -1,0 +1,19 @@
+Return-Path: <security-reviewer@example.com>
+From: Security Reviewer <security-reviewer@example.com>
+To: release-approvers@example.com
+Subject: Re: [Release Approval] Task 7
+Date: Thu, 16 Jul 2026 12:00:00 +0800
+Message-ID: <decision-approve@example.com>
+In-Reply-To: <release-request@example.com>
+References: <thread-root@example.com> <release-request@example.com>
+Authentication-Results: mx.example.com; dkim=pass header.d=example.com; dmarc=pass action=none header.from=example.com
+Received-SPF: pass (mx.example.com: domain of security-reviewer@example.com designates 192.0.2.1 as permitted sender)
+X-RD-Event-Id: evt-2026-07-16
+X-RD-Round-Id: 2
+X-RD-Manifest-Digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+X-RD-Role-Snapshot-Digest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+通过
+
+On Wed, Jul 15, 2026 at 09:00 Release Bot <bot@example.com> wrote:
+> 请审批本次发布。

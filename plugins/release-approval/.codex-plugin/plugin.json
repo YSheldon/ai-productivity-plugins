@@ -1,7 +1,7 @@
 {
   "name": "release-approval",
-  "version": "0.1.0",
-  "description": "Run deterministic role-bound release approval scans, page setup, and hourly automation installation.",
+  "version": "0.2.0",
+  "description": "Operate one role-bound release approval controller through MCP, Skill, standalone CLI, and unattended OS scheduling.",
   "author": {
     "name": "Sheldon"
   },
@@ -17,8 +17,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Release Approval",
-    "shortDescription": "Role-bound release approval automation",
-    "longDescription": "Validate frozen release request machine blocks, create or reuse one durable local approval page, retry unsent role decisions, and install a single hourly run_once automation without per-call config overrides.",
+    "shortDescription": "Four-surface release approval runtime",
+    "longDescription": "Use one credential-free configuration and one controller across MCP, Skill, standalone CLI, and a headless OS scheduler. Explicit open-page creates a fresh one-time loopback approval session; scheduled run_once never opens UI.",
     "developerName": "Sheldon",
     "category": "Developer Tools",
     "capabilities": [
@@ -26,10 +26,10 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Run the release approval preflight.",
-      "Install the hourly release approval automation and execute the first run_once immediately.",
-      "Run release_approval_run_once and list pending approvals.",
-      "Open the existing release approval page for a pending event."
+      "Run release approval setup with zero manual JSON editing.",
+      "Run the headless release approval scan and show status.",
+      "Diagnose the OS scheduler and local audit chain.",
+      "Open a fresh one-time approval page for a pending event."
     ],
     "brandColor": "#0E7490",
     "composerIcon": "./assets/release-approval.svg",

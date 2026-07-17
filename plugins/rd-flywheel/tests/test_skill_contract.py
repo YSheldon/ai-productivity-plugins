@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 
@@ -53,6 +54,28 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("No event means `VISUAL_DECISION_PENDING`", text)
         self.assertIn("must never replace Feishu approval", text)
         self.assertIn("screen_sha256", text)
+
+    def test_skill_routes_through_same_four_surface_runtime(self):
+        text = SKILL.read_text(encoding="utf-8")
+        for token in (
+            "MCP first",
+            "CLI fallback",
+            "rd_flywheel_cli.py",
+            "run-once",
+            "verify-audit",
+            "scheduler install",
+            "same controller",
+            "Codex is optional",
+        ):
+            self.assertIn(token, text)
+
+    def test_plugin_manifest_and_mcp_entrypoint_are_declared(self):
+        manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        mcp = json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["name"], "rd-flywheel")
+        self.assertIn("mcpServers", mcp)
+        args = mcp["mcpServers"]["rd-flywheel"]["args"]
+        self.assertIn("./src/rd_flywheel_mcp.py", args)
 
 
 if __name__ == "__main__":

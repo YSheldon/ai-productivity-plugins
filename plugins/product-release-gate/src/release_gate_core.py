@@ -26,6 +26,25 @@ class GateError(Exception):
     pass
 
 
+def default_config_path(
+    environ: dict[str, str] | None = None,
+    *,
+    platform: str | None = None,
+) -> Path:
+    environment = os.environ if environ is None else environ
+    override = str(environment.get("PRODUCT_RELEASE_GATE_CONFIG") or "").strip()
+    if override:
+        return Path(os.path.expandvars(override)).expanduser().resolve(strict=False)
+    current_platform = platform or os.name
+    if current_platform in {"nt", "win32"} or current_platform.startswith("win"):
+        root = Path(
+            str(environment.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+        )
+    else:
+        root = Path(str(environment.get("XDG_CONFIG_HOME") or Path.home() / ".config"))
+    return (root / "product-release-gate" / "config.json").resolve(strict=False)
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -92,6 +111,11 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 def default_config() -> dict[str, Any]:
     return {
         "storage_dir": str(Path.home() / ".codex" / "product-release-gate" / "events"),
+        "runtime": {
+            "state_dir": str(Path.home() / ".codex" / "product-release-gate" / "state"),
+            "poll_minutes": 60,
+            "scheduler_mode": "auto",
+        },
         "policy": {
             "allowed_extensions": [".exe", ".dll", ".sys", ".msi", ".zip"],
             "require_source_ref": True,
@@ -106,6 +130,14 @@ def default_config() -> dict[str, Any]:
         },
         "cloud_scan": {"command": [], "clean_verdict": "CLEAN", "timeout_seconds": 90},
         "test": {"command": [], "timeout_seconds": 3600},
+        "production": {
+            "enabled": False,
+            "approval_workflow": {
+                "mode": "legacy_external",
+                "verify_command": [],
+                "timeout_seconds": 120,
+            },
+        },
     }
 
 

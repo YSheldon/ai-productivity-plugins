@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Release Approval Verifier</title>
+  <desc id="desc">Shield and checklist icon for the release approval verifier plugin.</desc>
+  <rect width="128" height="128" rx="24" fill="#0f766e"/>
+  <path d="M64 18l34 12v27c0 24-13 40-34 53C43 97 30 81 30 57V30l34-12z" fill="#ccfbf1"/>
+  <path d="M46 61l11 11 25-27" fill="none" stroke="#0f766e" stroke-linecap="round" stroke-linejoin="round" stroke-width="10"/>
+</svg>

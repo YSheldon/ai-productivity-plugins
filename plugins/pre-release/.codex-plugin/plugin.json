@@ -1,0 +1,43 @@
+{
+  "name": "pre-release",
+  "version": "0.1.0",
+  "description": "Collect PASS or FAIL test conclusions, build Manifest-R through the locked product-release-gate kernel, and send PRERELEASE_REQUEST handoffs without Codex runtime dependence.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "pre-release",
+    "release-gate",
+    "mail",
+    "scheduler",
+    "manifest-r"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "runtimeEntrypoints": [
+    "src/pre_release_cli.py",
+    "src/pre_release_mcp.py"
+  ],
+  "interface": {
+    "displayName": "Pre Release",
+    "shortDescription": "Build Manifest-R and send PRERELEASE_REQUEST handoffs",
+    "longDescription": "Use one credential-free configuration across MCP, Skill, standalone CLI, and OS scheduler. Scheduled run_once only syncs SUBMISSION_GATE_PASS inputs and retries known unsent handoffs; explicit create-request owns PASS or FAIL input.",
+    "developerName": "Sheldon",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Run pre-release setup with zero manual JSON editing.",
+      "Sync pending SUBMISSION_GATE_PASS tasks from the submission mailbox.",
+      "List pending tasks and create one PRERELEASE_REQUEST.",
+      "Diagnose the OS scheduler and the locked product-release-gate binding."
+    ],
+    "brandColor": "#0F766E",
+    "composerIcon": "./assets/pre-release.svg",
+    "logo": "./assets/pre-release.svg",
+    "screenshots": []
+  }
+}

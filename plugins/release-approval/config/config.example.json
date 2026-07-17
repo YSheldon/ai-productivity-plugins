@@ -5,6 +5,19 @@
     "profile": "release-manager",
     "email": "release-manager@example.com"
   },
+  "request_authentication": {
+    "allowed_sender_emails": [
+      "release-gate@example.com"
+    ],
+    "allowed_authserv_ids": [
+      "mx.example.com"
+    ],
+    "accepted_paths": [
+      "dmarc",
+      "dkim",
+      "spf"
+    ]
+  },
   "release_group": "release-approvers@example.com",
   "mailbox": "INBOX",
   "page": {
@@ -24,10 +37,11 @@
     "start": "09:00",
     "end": "18:00"
   },
-  "state_dir": "%USERPROFILE%\\.codex\\release-approval\\state",
+  "state_dir": "%LOCALAPPDATA%\\release-approval\\state",
   "dependency_lock": "%RELEASE_APPROVAL_REPO_ROOT%\\dependency-lock.json",
   "audit": {
     "verify_chain_on_startup": true,
-    "retention_days": 3650
+    "retention_days": 3650,
+    "document_url": ""
   }
 }

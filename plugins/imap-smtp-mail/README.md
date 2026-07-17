@@ -9,15 +9,15 @@ and custom enterprise mailboxes can all be configured with the same account form
 
 ## Version
 
-Current plugin/server release: `0.2.0`.
-Changelog note: `0.2.0` adds authenticated thread evidence on readback, constrained reply-thread headers, and the locked CLI bridge.
+Current plugin/server release: `0.3.0`.
+Changelog note: `0.3.0` adds an allowlisted `release_workflow_headers` readback payload with duplicate-conflict, control-character, and length validation. `0.2.0` added authenticated thread evidence, constrained reply-thread headers, and the locked CLI bridge.
 
 ## MVP Scope
 
 - List configured accounts without exposing secrets.
 - Test IMAP and SMTP login.
 - Search recent mailbox messages.
-- Read a single message by IMAP UID, including `uidvalidity`, RFC thread evidence, authentication headers, and a raw-header SHA-256 digest.
+- Read a single message by IMAP UID, including `uidvalidity`, RFC thread evidence, authentication headers, a raw-header SHA-256 digest, and allowlisted release-workflow headers.
 - Save message attachments to a local folder.
 - Create safe reply drafts or sends with validated `In-Reply-To`, normalized `References`, and constrained `X-RD-*` custom headers.
 - Create real mailbox drafts for review by default, and send only when `dry_run` is explicitly `false`.
@@ -127,7 +127,7 @@ python3 ./src/imap_smtp_mail_cli.py <<'EOF'
 EOF
 ```
 
-The CLI accepts only `list_accounts`, `test_connection`, `search_messages`, `read_message`, and `send_email`, and returns JSON as `{"ok": true, "result": ...}` or `{"ok": false, "error": ...}`.
+The CLI accepts only `list_accounts`, `test_connection`, `search_messages`, `read_message`, `create_draft`, and `send_email`, and returns JSON as `{"ok": true, "result": ...}` or `{"ok": false, "error": ...}`.
 
 ## Security Notes
 
@@ -136,8 +136,8 @@ The CLI accepts only `list_accounts`, `test_connection`, `search_messages`, `rea
 - On Windows, the setup wizard and `migrate-credentials` store credentials as CurrentUser DPAPI ciphertext rather than plaintext JSON and re-harden the account file ACL after every write.
 - Prefer the local setup wizard over sending passwords or authorization codes in a Codex chat message.
 - Keep sending as an explicit action. The `imap_smtp_mail_send_email` tool defaults to `dry_run`, which writes a mailbox draft unless `preview_only` is set.
-- Reply threading is intentionally constrained: `in_reply_to` must be a single RFC Message-ID, `references` are normalized to RFC IDs, and arbitrary headers are rejected unless they use the `X-RD-*` prefix.
-- `read_message` returns authenticated thread evidence (`Return-Path`, `Authentication-Results`, `Received-SPF`) plus a SHA-256 digest of the raw header block so approval decisions can be verified independently.
+- Reply threading is intentionally constrained: `message_id` and `in_reply_to` must be single RFC Message-IDs, `references` are normalized to RFC IDs, and arbitrary headers are rejected unless they use the `X-RD-*` prefix. Draft/send previews echo the effective `message_id` so callers can verify which value was used.
+- `read_message` returns authenticated thread evidence (`Return-Path`, `Authentication-Results`, `Received-SPF`) plus a SHA-256 digest of the raw header block so approval decisions can be verified independently. Its separate `release_workflow_headers` object exposes only the fixed release protocol allowlist using lowercase snake-case keys; conflicting duplicates, control characters, and values longer than 2048 characters fail closed.
 - Attachment writes default to `~/Downloads/imap-smtp-mail-attachments`.
 
 ## Windows Notes

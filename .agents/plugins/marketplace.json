@@ -65,10 +65,82 @@
       "category": "Developer Tools"
     },
     {
+      "name": "release-approval",
+      "source": {
+        "source": "local",
+        "path": "./plugins/release-approval"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    },
+    {
+      "name": "release-approval-verifier",
+      "source": {
+        "source": "local",
+        "path": "./plugins/release-approval-verifier"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    },
+    {
       "name": "product-release-gate",
       "source": {
         "source": "local",
         "path": "./plugins/product-release-gate"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    },
+    {
+      "name": "test-submission",
+      "source": {
+        "source": "local",
+        "path": "./plugins/test-submission"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    },
+    {
+      "name": "submission-gate",
+      "source": {
+        "source": "local",
+        "path": "./plugins/submission-gate"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    },
+    {
+      "name": "pre-release",
+      "source": {
+        "source": "local",
+        "path": "./plugins/pre-release"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    },
+    {
+      "name": "release-gate",
+      "source": {
+        "source": "local",
+        "path": "./plugins/release-gate"
       },
       "policy": {
         "installation": "AVAILABLE",

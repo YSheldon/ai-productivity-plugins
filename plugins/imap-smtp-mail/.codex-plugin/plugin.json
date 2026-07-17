@@ -1,6 +1,6 @@
 {
   "name": "imap-smtp-mail",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Read, search, summarize, and send email through IMAP/SMTP providers.",
   "author": {
     "name": "gzlicanyi; adapted by Sheldon"
@@ -16,6 +16,9 @@
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
+  "runtimeEntrypoints": [
+    "./src/imap_smtp_mail_cli.py"
+  ],
   "interface": {
     "displayName": "IMAP/SMTP 邮箱",
     "shortDescription": "连接 IMAP/SMTP 邮箱",

@@ -2,7 +2,8 @@ import unittest
 from pathlib import Path
 
 
-SKILL = Path(__file__).resolve().parents[1] / "skills" / "rd-flywheel" / "SKILL.md"
+ROOT = Path(__file__).resolve().parents[1]
+SKILL = ROOT / "skills" / "rd-flywheel" / "SKILL.md"
 
 
 class HardInvariantTests(unittest.TestCase):
@@ -21,6 +22,28 @@ class HardInvariantTests(unittest.TestCase):
         self.assertIn("preserve the originating checkpoint", text)
         self.assertIn("replay the original immutable input", text)
         self.assertIn("preserving and resuming the original event", text)
+
+    def test_ai_and_tools_return_evidence_not_authority(self):
+        text = SKILL.read_text(encoding="utf-8")
+        for token in (
+            "evidence, never authority",
+            "cannot grant credentials",
+            "protected-branch merge",
+            "independent review",
+            "rollback",
+        ):
+            self.assertIn(token, text)
+
+    def test_unattended_runtime_is_fail_closed_and_skip_missed(self):
+        text = SKILL.read_text(encoding="utf-8")
+        for token in (
+            "kernel lock",
+            "RUN_ALREADY_ACTIVE",
+            "skip all missed intervals",
+            "no approved agent adapter",
+            "CAPABILITY_BLOCKED",
+        ):
+            self.assertIn(token, text)
 
 
 if __name__ == "__main__":

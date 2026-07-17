@@ -1,0 +1,42 @@
+{
+  "name": "test-submission",
+  "version": "0.1.0",
+  "description": "Collect one product-material submission, preview it through the locked product-release-gate core, and send a fail-closed submission request through IMAP/SMTP.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "license": "MIT",
+  "keywords": [
+    "submission",
+    "release-gate",
+    "mail",
+    "qa"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "runtimeEntrypoints": [
+    "src/test_submission_cli.py",
+    "src/test_submission_mcp.py"
+  ],
+  "interface": {
+    "displayName": "Test Submission",
+    "shortDescription": "Four-surface test-submission runtime",
+    "longDescription": "Use one credential-free configuration and one controller across MCP, Skill, standalone CLI, and an unattended retry scheduler. Every submission must explicitly choose a module and produces a signed machine block for the gate service.",
+    "developerName": "Sheldon",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Run test submission setup with zero manual JSON editing.",
+      "Submit one explicit kernel, client, or server package to the submission gate mailbox.",
+      "Retry any pending submission mail and show local status.",
+      "Diagnose dependency lock, mail account, and shared gate preview readiness."
+    ],
+    "brandColor": "#0F766E",
+    "composerIcon": "./assets/test-submission.svg",
+    "logo": "./assets/test-submission.svg",
+    "screenshots": []
+  }
+}

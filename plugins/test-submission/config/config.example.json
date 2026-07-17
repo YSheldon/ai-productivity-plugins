@@ -1,0 +1,39 @@
+{
+  "mail_account": {
+    "profile": "release-submitter",
+    "email": "submitter@example.com"
+  },
+  "submission_gate_address": "submission-gate@example.com",
+  "feishu_directory_url": "https://open.feishu.cn/wiki/product-materials",
+  "state_dir": "%LOCALAPPDATA%\\test-submission\\state",
+  "event_store_dir": "%LOCALAPPDATA%\\test-submission\\events",
+  "poll_minutes": 60,
+  "scheduler_mode": "auto",
+  "default_optional_checks": [],
+  "mandatory_checks_by_module": {
+    "kernel": [
+      "artifacts_present",
+      "hashes_match",
+      "version_present",
+      "signature_present",
+      "cloud_scan_required"
+    ],
+    "client": [
+      "artifacts_present",
+      "hashes_match",
+      "version_present",
+      "signature_present",
+      "cloud_scan_required"
+    ],
+    "server": [
+      "artifacts_present",
+      "hashes_match",
+      "source_revision_present",
+      "package_digest_present",
+      "cloud_scan_required"
+    ]
+  },
+  "product_gate_preview_config": "%LOCALAPPDATA%\\test-submission\\product-release-gate.preview.json",
+  "dependency_lock": "%LOCALAPPDATA%\\test-submission\\dependency-lock.test-submission.json",
+  "dependency_lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+}

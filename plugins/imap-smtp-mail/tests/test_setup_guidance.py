@@ -16,7 +16,7 @@ def test_server_version_matches_plugin_manifest() -> None:
     manifest_path = Path(__file__).parents[1] / ".codex-plugin" / "plugin.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    assert manifest["version"] == MODULE.SERVER_VERSION == "0.2.0"
+    assert manifest["version"] == MODULE.SERVER_VERSION == "0.3.0"
 
 
 def test_tencent_exmail_preset_has_exact_setup_paths() -> None:

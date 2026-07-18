@@ -213,6 +213,50 @@ def test_rejects_same_marketplace_name_with_wrong_source_before_running_commands
     assert calls == []
 
 
+def test_git_origin_url_reads_the_common_config_for_a_real_worktree(tmp_path: Path) -> None:
+    module = load_bootstrap_module()
+    worktree = tmp_path / "worktree"
+    common_git_dir = tmp_path / "repository.git"
+    worktree_git_dir = common_git_dir / "worktrees" / "release-workflow"
+    worktree.mkdir()
+    worktree_git_dir.mkdir(parents=True)
+    (worktree / ".git").write_text(
+        f"gitdir: {worktree_git_dir.as_posix()}\n",
+        encoding="utf-8",
+    )
+    (worktree_git_dir / "commondir").write_text("../..\n", encoding="utf-8")
+    (common_git_dir / "config").write_text(
+        "\n".join(
+            [
+                '[remote "origin"]',
+                f"\turl = {EXPECTED_MARKETPLACE_URL}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert module._git_origin_url(worktree) == EXPECTED_MARKETPLACE_URL
+
+
+def test_git_origin_url_fails_closed_when_worktree_common_config_is_missing(
+    tmp_path: Path,
+) -> None:
+    module = load_bootstrap_module()
+    worktree = tmp_path / "worktree"
+    worktree_git_dir = tmp_path / "repository.git" / "worktrees" / "release-workflow"
+    worktree.mkdir()
+    worktree_git_dir.mkdir(parents=True)
+    (worktree / ".git").write_text(
+        f"gitdir: {worktree_git_dir.as_posix()}\n",
+        encoding="utf-8",
+    )
+    (worktree_git_dir / "commondir").write_text("../..\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Git common config not found"):
+        module._git_origin_url(worktree)
+
+
 def test_bootstrap_writes_dependency_lock_and_marks_fresh_task_after_install(tmp_path: Path) -> None:
     module = load_bootstrap_module()
     build_fake_marketplace(tmp_path)

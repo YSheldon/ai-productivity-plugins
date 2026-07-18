@@ -249,8 +249,28 @@ def _git_dir(repo_root: Path) -> Path:
     return git_dir
 
 
+def _git_config_path(repo_root: Path) -> Path:
+    git_dir = _git_dir(repo_root)
+    config_path = git_dir / "config"
+    if config_path.is_file():
+        return config_path
+    commondir_path = git_dir / "commondir"
+    if not commondir_path.is_file():
+        raise ValueError(f"Git config not found: {config_path}")
+    commondir_text = commondir_path.read_text(encoding="utf-8").strip()
+    if not commondir_text:
+        raise ValueError(f"Git commondir is empty: {commondir_path}")
+    common_dir = Path(commondir_text)
+    if not common_dir.is_absolute():
+        common_dir = (git_dir / common_dir).resolve()
+    config_path = common_dir / "config"
+    if not config_path.is_file():
+        raise ValueError(f"Git common config not found: {config_path}")
+    return config_path
+
+
 def _git_origin_url(repo_root: Path) -> str:
-    config_path = _git_dir(repo_root) / "config"
+    config_path = _git_config_path(repo_root)
     parser = configparser.ConfigParser()
     parser.read_string(config_path.read_text(encoding="utf-8"))
     section_name = 'remote "origin"'

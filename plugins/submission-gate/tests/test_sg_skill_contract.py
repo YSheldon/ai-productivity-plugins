@@ -23,7 +23,7 @@ def test_skill_documents_all_four_surfaces() -> None:
 
 def test_manifest_and_readme_advertise_standalone_operation() -> None:
     manifest = json.loads((PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.1.2"
+    assert manifest["version"] == "0.1.3"
     assert manifest["skills"] == "./skills/"
     assert manifest["mcpServers"] == "./.mcp.json"
     readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")

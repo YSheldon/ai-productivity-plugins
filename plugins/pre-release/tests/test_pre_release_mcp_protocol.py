@@ -24,7 +24,7 @@ def _load_module():
 def test_mcp_inventory_and_manifest() -> None:
     module = _load_module()
     assert module.SERVER_NAME == "pre-release"
-    assert module.SERVER_VERSION == "0.1.2"
+    assert module.SERVER_VERSION == "0.1.3"
     assert list(module.TOOLS) == [
         "pre_release_preflight",
         "pre_release_start_setup",

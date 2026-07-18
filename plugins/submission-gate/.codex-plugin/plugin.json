@@ -1,6 +1,6 @@
 {
   "name": "submission-gate",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Headlessly scan signed submission mail, validate one frozen machine block, and execute the authoritative submission gate through the locked product-release-gate core.",
   "author": {
     "name": "Sheldon"

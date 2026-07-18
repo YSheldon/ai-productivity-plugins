@@ -211,6 +211,7 @@ def test_schannel_redirect_response_fails_closed(monkeypatch: pytest.MonkeyPatch
 def test_schannel_helper_disables_redirects() -> None:
     module = load_module()
     helper = module.SCHANNEL_HELPER.read_text(encoding="utf-8")
+    assert "Add-Type -AssemblyName System.Net.Http" in helper
     assert "$handler.AllowAutoRedirect = $false" in helper
 
 
@@ -277,7 +278,7 @@ def test_manifest_uses_cross_platform_node_launcher() -> None:
     manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
     mcp = json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8"))
     server = mcp["mcpServers"]["gitlab"]
-    assert manifest["version"] == "0.1.2"
+    assert manifest["version"] == "0.1.3"
     assert server == {"command": "node", "args": ["./scripts/run_mcp.js"], "cwd": "."}
 
 
@@ -304,4 +305,4 @@ def test_node_launcher_initializes_the_mcp_server() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     response = json.loads(completed.stdout.splitlines()[0])
-    assert response["result"]["serverInfo"] == {"name": "gitlab", "version": "0.1.2"}
+    assert response["result"]["serverInfo"] == {"name": "gitlab", "version": "0.1.3"}

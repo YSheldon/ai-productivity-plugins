@@ -1,4 +1,5 @@
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Net.Http
 $inputJson = [Console]::In.ReadToEnd()
 $requestData = $inputJson | ConvertFrom-Json
 

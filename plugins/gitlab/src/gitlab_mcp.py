@@ -16,7 +16,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.1.3"
+SERVER_VERSION = "0.1.4"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -47,10 +47,22 @@ def normalized_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value).casefold()).strip("_")
 
 
+def is_gitlab_variable_record(value: dict[Any, Any]) -> bool:
+    keys = {normalized_key(key) for key in value}
+    metadata = {"environment_scope", "masked", "protected", "raw", "variable_type"}
+    return {"key", "value"}.issubset(keys) and bool(keys & metadata)
+
+
 def redact_sensitive(value: Any) -> Any:
     if isinstance(value, dict):
+        variable_record = is_gitlab_variable_record(value)
         return {
-            key: REDACTED if normalized_key(key) in SENSITIVE_RESPONSE_KEYS else redact_sensitive(item)
+            key: (
+                REDACTED
+                if normalized_key(key) in SENSITIVE_RESPONSE_KEYS
+                or (variable_record and normalized_key(key) == "value")
+                else redact_sensitive(item)
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):

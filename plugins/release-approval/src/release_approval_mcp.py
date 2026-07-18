@@ -41,7 +41,7 @@ if str(_PLUGIN_ROOT) not in sys.path:
 from scripts.bootstrap_dependencies import bootstrap_profile
 
 SERVER_NAME = "release-approval"
-SERVER_VERSION = "0.2.1"
+SERVER_VERSION = "0.2.2"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 _REQUEST_BEGIN_MARKER = "-----BEGIN RELEASE APPROVAL REQUEST-----"
 _REQUEST_END_MARKER = "-----END RELEASE APPROVAL REQUEST-----"

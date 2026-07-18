@@ -10,7 +10,7 @@ from submission_gate_setup import run_setup_operation
 
 
 SERVER_NAME = "submission-gate"
-SERVER_VERSION = "0.1.1"
+SERVER_VERSION = "0.1.2"
 _CONTROLLER = SubmissionGateController(default_config_path()) if default_config_path().is_file() else None
 
 

@@ -506,6 +506,31 @@ def test_default_runner_uses_argument_arrays_without_shell(monkeypatch: pytest.M
     assert seen["kwargs"]["capture_output"] is True
     assert seen["kwargs"]["text"] is True
 
+
+def test_default_runner_resolves_windows_codex_wrapper_without_shell(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = load_bootstrap_module()
+    seen: dict[str, Any] = {}
+    wrapper = r"C:\Users\operator\AppData\Roaming\npm\codex.CMD"
+
+    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args[0], 0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(module.shutil, "which", lambda name: wrapper if name == "codex" else None)
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    command = ["codex", "plugin", "list", "--json"]
+
+    module.run_command(command, cwd=tmp_path)
+
+    assert command[0] == "codex"
+    assert seen["args"][0] == [wrapper, "plugin", "list", "--json"]
+    assert seen["kwargs"]["shell"] is False
+
+
 def installed_state_payload(
     marketplace_root: Path,
     plugin_names: list[str],

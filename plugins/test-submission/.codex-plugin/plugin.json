@@ -1,6 +1,6 @@
 {
   "name": "test-submission",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Collect one product-material submission, preview it through the locked product-release-gate core, and send a fail-closed submission request through IMAP/SMTP.",
   "author": {
     "name": "Sheldon"

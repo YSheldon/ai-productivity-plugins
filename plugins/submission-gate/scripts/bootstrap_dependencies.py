@@ -5,6 +5,7 @@ import configparser
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -59,8 +60,13 @@ Runner = Callable[[list[str], Path | None], subprocess.CompletedProcess[str]]
 
 
 def run_command(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    resolved_command = list(command)
+    if resolved_command and resolved_command[0].casefold() == "codex":
+        resolved_executable = shutil.which(resolved_command[0])
+        if resolved_executable is not None:
+            resolved_command[0] = resolved_executable
     return subprocess.run(
-        command,
+        resolved_command,
         cwd=str(cwd) if cwd is not None else None,
         capture_output=True,
         text=True,

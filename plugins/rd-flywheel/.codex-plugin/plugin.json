@@ -1,8 +1,10 @@
 {
   "name": "rd-flywheel",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Deterministic capability-gap governance through MCP, Skill, standalone CLI, and OS scheduling.",
-  "author": {"name": "Sheldon"},
+  "author": {
+    "name": "Sheldon"
+  },
   "license": "MIT",
   "keywords": [
     "rd-flywheel",
@@ -16,16 +18,20 @@
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
-    "displayName": "研发飞轮",
-    "shortDescription": "证据约束的能力缺口闭环运行时",
+    "displayName": "\u7814\u53d1\u98de\u8f6e",
+    "shortDescription": "\u8bc1\u636e\u7ea6\u675f\u7684\u80fd\u529b\u7f3a\u53e3\u95ed\u73af\u8fd0\u884c\u65f6",
     "longDescription": "Receive frozen capability-gap events, preserve original checkpoints, coordinate allowlisted evidence-only adapters, enforce independent production evidence, and resume the original workflow through one deterministic controller shared by MCP, Skill, CLI, and OS scheduling.",
     "developerName": "Sheldon",
     "category": "Developer Tools",
-    "capabilities": ["Interactive", "Read", "Write"],
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
     "defaultPrompt": [
-      "运行研发飞轮预检并列出能力缺口",
-      "重试已补齐依赖的能力缺口事件",
-      "验证研发飞轮审计哈希链"
+      "\u8fd0\u884c\u7814\u53d1\u98de\u8f6e\u9884\u68c0\u5e76\u5217\u51fa\u80fd\u529b\u7f3a\u53e3",
+      "\u91cd\u8bd5\u5df2\u8865\u9f50\u4f9d\u8d56\u7684\u80fd\u529b\u7f3a\u53e3\u4e8b\u4ef6",
+      "\u9a8c\u8bc1\u7814\u53d1\u98de\u8f6e\u5ba1\u8ba1\u54c8\u5e0c\u94fe"
     ],
     "brandColor": "#0F766E",
     "composerIcon": "./assets/rd-flywheel.svg",

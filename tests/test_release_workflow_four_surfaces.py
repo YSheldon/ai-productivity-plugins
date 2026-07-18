@@ -74,7 +74,7 @@ class WorkflowPlugin:
 WORKFLOW_PLUGINS = (
     WorkflowPlugin(
         name="release-approval",
-        version="0.2.1",
+        version="0.2.2",
         mcp_script="release_approval_mcp.py",
         mcp_server_name="release-approval",
         mcp_common_tools=(
@@ -94,7 +94,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="release-approval-verifier",
-        version="0.2.1",
+        version="0.2.2",
         mcp_script="release_approval_verifier_mcp.py",
         mcp_server_name="release-approval-verifier",
         mcp_common_tools=(
@@ -114,7 +114,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="product-release-gate",
-        version="0.3.1",
+        version="0.3.2",
         mcp_script="release_gate_mcp.py",
         mcp_server_name="product-release-gate",
         mcp_common_tools=(
@@ -134,7 +134,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="test-submission",
-        version="0.1.1",
+        version="0.1.2",
         mcp_script="test_submission_mcp.py",
         mcp_server_name="test-submission",
         mcp_common_tools=(
@@ -154,7 +154,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="submission-gate",
-        version="0.1.1",
+        version="0.1.2",
         mcp_script="submission_gate_mcp.py",
         mcp_server_name="submission-gate",
         mcp_common_tools=(
@@ -174,7 +174,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="pre-release",
-        version="0.1.1",
+        version="0.1.2",
         mcp_script="pre_release_mcp.py",
         mcp_server_name="pre-release",
         mcp_common_tools=(
@@ -194,7 +194,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="release-gate",
-        version="0.1.1",
+        version="0.1.2",
         mcp_script="release_gate_mcp.py",
         mcp_server_name="release-gate",
         mcp_common_tools=(
@@ -214,7 +214,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="rd-flywheel",
-        version="0.2.1",
+        version="0.2.2",
         mcp_script="rd_flywheel_mcp.py",
         mcp_server_name="rd-flywheel",
         mcp_common_tools=(

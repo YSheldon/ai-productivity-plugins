@@ -24,7 +24,7 @@ from rd_flywheel_store import AuditTamperError, StoreError
 
 
 SERVER_NAME = "rd-flywheel"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.2.1"
 PROTOCOL_VERSION = "2025-06-18"
 
 

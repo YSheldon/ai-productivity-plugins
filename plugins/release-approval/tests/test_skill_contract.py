@@ -59,7 +59,7 @@ def test_task6_skill_encodes_setup_and_run_once_contract() -> None:
 
 def test_task6_plugin_metadata_exposes_skill_and_task6_interface_boundary() -> None:
     manifest = json.loads((PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.2.0"
+    assert manifest["version"] == "0.2.1"
     assert manifest["skills"] == "./skills/"
     assert manifest["mcpServers"] == "./.mcp.json"
     long_description = manifest["interface"]["longDescription"].lower()

@@ -13,7 +13,7 @@ from release_workflow_gate_setup import SetupError, run_setup_operation
 
 
 SERVER_NAME = "release-gate"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.1.1"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 
 

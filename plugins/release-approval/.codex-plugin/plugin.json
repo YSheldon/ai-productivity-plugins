@@ -1,6 +1,6 @@
 {
   "name": "release-approval",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Operate one role-bound release approval controller through MCP, Skill, standalone CLI, and unattended OS scheduling.",
   "author": {
     "name": "Sheldon"

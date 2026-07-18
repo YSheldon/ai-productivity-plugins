@@ -506,3 +506,115 @@ def test_default_runner_uses_argument_arrays_without_shell(monkeypatch: pytest.M
     assert seen["kwargs"]["capture_output"] is True
     assert seen["kwargs"]["text"] is True
 
+def installed_state_payload(
+    marketplace_root: Path,
+    plugin_names: list[str],
+) -> dict[str, Any]:
+    installed: list[dict[str, Any]] = []
+    for plugin_name in plugin_names:
+        plugin_root = marketplace_root / "plugins" / plugin_name
+        manifest = json.loads(
+            (plugin_root / ".codex-plugin" / "plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        installed.append(
+            {
+                "pluginId": f"{plugin_name}@ai-productivity-plugins",
+                "name": plugin_name,
+                "marketplaceName": "ai-productivity-plugins",
+                "version": manifest["version"],
+                "installed": True,
+                "enabled": True,
+                "source": {"source": "local", "path": str(plugin_root)},
+            }
+        )
+    return {"installed": installed, "available": []}
+
+
+def test_installed_cache_discovers_marketplace_and_skips_matching_plugins(
+    tmp_path: Path,
+) -> None:
+    module = load_bootstrap_module()
+    marketplace_root = tmp_path / "marketplace"
+    build_fake_marketplace(marketplace_root)
+    cache_root = tmp_path / "cache" / "pre-release" / "0.1.0"
+    cache_root.mkdir(parents=True)
+    required = list(module.PROFILES["pre-release"])
+    state = installed_state_payload(marketplace_root, required)
+    commands: list[list[str]] = []
+
+    def runner(
+        command: list[str],
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[:3] == ["codex", "plugin", "list"]:
+            return completed(command, json.dumps(state) + "\n")
+        if command[:3] == ["git", "rev-parse", "HEAD"]:
+            return completed(command, "7777777777777777777777777777777777777777\n")
+        raise AssertionError(f"unexpected command: {command}")
+
+    result = module.bootstrap_profile(
+        "pre-release",
+        repo_root=cache_root,
+        runner=runner,
+    )
+
+    assert commands == [
+        module._plugin_list_command("codex"),
+        ["git", "rev-parse", "HEAD"],
+    ]
+    assert Path(result["dependency_lock"]).parent == marketplace_root.resolve()
+    assert all(
+        plugin["install_result"]["status"] == "ALREADY_INSTALLED"
+        for plugin in result["plugins"]
+    )
+    assert result["fresh_task_required"] is False
+
+
+def test_installed_cache_adds_only_missing_plugin_and_revalidates_state(
+    tmp_path: Path,
+) -> None:
+    module = load_bootstrap_module()
+    marketplace_root = tmp_path / "marketplace"
+    build_fake_marketplace(marketplace_root)
+    cache_root = tmp_path / "cache" / "pre-release" / "0.1.0"
+    cache_root.mkdir(parents=True)
+    required = list(module.PROFILES["pre-release"])
+    missing = required[-1]
+    installed_names = required[:-1]
+    commands: list[list[str]] = []
+
+    def runner(
+        command: list[str],
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[:3] == ["codex", "plugin", "list"]:
+            state = installed_state_payload(marketplace_root, installed_names)
+            return completed(command, json.dumps(state) + "\n")
+        if command[:3] == ["git", "rev-parse", "HEAD"]:
+            return completed(command, "8888888888888888888888888888888888888888\n")
+        if command[:3] == ["codex", "plugin", "add"]:
+            assert command[3] == f"{missing}@ai-productivity-plugins"
+            installed_names.append(missing)
+            return completed(
+                command,
+                json.dumps({"pluginId": command[3], "action": "installed"}) + "\n",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    result = module.bootstrap_profile(
+        "pre-release",
+        repo_root=cache_root,
+        runner=runner,
+    )
+
+    add_commands = [command for command in commands if command[:3] == ["codex", "plugin", "add"]]
+    assert add_commands == [
+        ["codex", "plugin", "add", f"{missing}@ai-productivity-plugins", "--json"]
+    ]
+    assert commands.count(module._plugin_list_command("codex")) == 2
+    assert result["fresh_task_required"] is True
+

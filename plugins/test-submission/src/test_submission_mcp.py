@@ -11,7 +11,7 @@ from test_submission_setup import run_setup_operation
 
 
 SERVER_NAME = "test-submission"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.1.1"
 _CONTROLLER = TestSubmissionController(default_config_path()) if default_config_path().is_file() else None
 
 

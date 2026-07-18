@@ -28,6 +28,27 @@ PROFILES: dict[str, tuple[str, ...]] = {
         "product-release-gate",
         "release-approval-verifier",
     ),
+    "test-submission": (
+        "imap-smtp-mail",
+        "lark-cli",
+    ),
+    "submission-gate": (
+        "imap-smtp-mail",
+        "gitlab",
+        "lark-cli",
+    ),
+    "pre-release": (
+        "imap-smtp-mail",
+        "rd-flywheel",
+        "lark-cli",
+        "release-approval-verifier",
+    ),
+    "release-gate": (
+        "imap-smtp-mail",
+        "rd-flywheel",
+        "lark-cli",
+        "release-approval-verifier",
+    ),
 }
 _MARKETPLACE_NAME = "ai-productivity-plugins"
 _PROFILE_PATTERN = re.compile(r"^[a-z0-9-]+$")
@@ -73,10 +94,125 @@ def _sha256_path(path: Path) -> str:
     return _sha256_file(path)
 
 
-def _repo_root(repo_root: str | Path | None) -> Path:
-    if repo_root is None:
-        return Path(__file__).resolve().parents[1]
-    return Path(repo_root).resolve()
+def _marketplace_root_from(start: Path) -> Path | None:
+    candidate = start.expanduser().resolve(strict=False)
+    if candidate.is_file():
+        candidate = candidate.parent
+    for root in (candidate, *candidate.parents):
+        manifest_path = root / ".agents" / "plugins" / "marketplace.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Marketplace manifest is invalid JSON: {manifest_path}") from exc
+        if manifest.get("name") != _MARKETPLACE_NAME:
+            continue
+        return root.resolve()
+    return None
+
+
+def _plugin_list_command(codex_command: str) -> list[str]:
+    return [
+        codex_command,
+        "plugin",
+        "list",
+        "--marketplace",
+        _MARKETPLACE_NAME,
+        "--available",
+        "--json",
+    ]
+
+
+def _parse_plugin_list_payload(
+    completed: subprocess.CompletedProcess[str],
+) -> dict[str, Any]:
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(detail or "plugin list failed")
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("plugin list returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("plugin list JSON payload must be an object")
+    if not isinstance(payload.get("installed"), list):
+        raise RuntimeError("plugin list JSON is missing the installed array")
+    if not isinstance(payload.get("available"), list):
+        raise RuntimeError("plugin list JSON is missing the available array")
+    return payload
+
+
+def _repo_root(
+    repo_root: str | Path | None,
+    *,
+    runner: Runner,
+    codex_command: str,
+) -> tuple[Path, dict[str, Any] | None]:
+    initial = Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve()
+    if repo_root is not None:
+        direct_manifest = initial / ".agents" / "plugins" / "marketplace.json"
+        if direct_manifest.is_file():
+            return initial, None
+    discovered = _marketplace_root_from(initial)
+    if discovered is not None:
+        return discovered, None
+
+    command = _plugin_list_command(codex_command)
+    try:
+        payload = _parse_plugin_list_payload(runner(command, None))
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "Cannot discover the ai-productivity-plugins marketplace without Codex; "
+            "run from a marketplace checkout or pass repo_root explicitly."
+        ) from exc
+    for collection_name in ("installed", "available"):
+        for entry in payload[collection_name]:
+            if not isinstance(entry, dict):
+                continue
+            source = entry.get("source")
+            if not isinstance(source, dict) or source.get("source") != "local":
+                continue
+            source_path = source.get("path")
+            if not isinstance(source_path, str) or not source_path.strip():
+                continue
+            discovered = _marketplace_root_from(Path(source_path))
+            if discovered is not None:
+                return discovered, payload
+    raise RuntimeError(
+        "Codex plugin state does not expose a trusted ai-productivity-plugins marketplace root."
+    )
+
+
+def _installed_plugins(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    installed: dict[str, dict[str, Any]] = {}
+    for entry in payload.get("installed", []):
+        if not isinstance(entry, dict):
+            continue
+        plugin_id = entry.get("pluginId")
+        if isinstance(plugin_id, str) and plugin_id:
+            installed[plugin_id] = entry
+    return installed
+
+
+def _plugin_state_matches(
+    entry: dict[str, Any] | None,
+    metadata: dict[str, Any],
+    plugin_root: Path,
+) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("installed") is not True or entry.get("enabled") is not True:
+        return False
+    if entry.get("version") != metadata.get("version"):
+        return False
+    source = entry.get("source")
+    if not isinstance(source, dict) or source.get("source") != "local":
+        return False
+    source_path = source.get("path")
+    if not isinstance(source_path, str) or not source_path.strip():
+        return False
+    return Path(source_path).expanduser().resolve(strict=False) == plugin_root.resolve()
 
 
 def _resolve_within(base: Path, relative_path: str) -> Path:
@@ -239,6 +375,17 @@ def _entrypoint_records(repo_root: Path, plugin_root: Path, manifest: dict[str, 
 
 def _plugin_metadata(repo_root: Path, plugin_name: str, plugin_root: Path) -> dict[str, Any]:
     manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
+    if not manifest_path.is_file():
+        return {
+            "name": plugin_name,
+            "version": "missing-local-metadata",
+            "marketplace_plugin_id": f"{plugin_name}@{_MARKETPLACE_NAME}",
+            "plugin_root": _relative_repo_path(repo_root, plugin_root),
+            "manifest_path": "",
+            "manifest_sha256": _sha256_bytes(b"missing-local-metadata"),
+            "entrypoints": [],
+            "metadata_status": "missing_local_metadata",
+        }
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     version = manifest.get("version")
     if not isinstance(version, str) or not version:
@@ -251,6 +398,7 @@ def _plugin_metadata(repo_root: Path, plugin_name: str, plugin_root: Path) -> di
         "manifest_path": _relative_repo_path(repo_root, manifest_path),
         "manifest_sha256": _sha256_file(manifest_path),
         "entrypoints": _entrypoint_records(repo_root, plugin_root, manifest),
+        "metadata_status": "local_manifest",
     }
 
 
@@ -301,43 +449,122 @@ def bootstrap_profile(
     codex_command: str = "codex",
 ) -> dict[str, Any]:
     plugin_names = _require_profile(profile)
-    resolved_repo_root = _repo_root(repo_root)
+    resolved_repo_root, installed_state = _repo_root(
+        repo_root,
+        runner=runner,
+        codex_command=codex_command,
+    )
     marketplace_name, marketplace_source, marketplace_paths = _load_marketplace(resolved_repo_root)
     commit = _git_commit(resolved_repo_root, runner)
 
     fresh_task_required = False
+    codex_required = False
     codex_available = True
     plugins: list[dict[str, Any]] = []
-    for plugin_name in plugin_names:
-        plugin_root = marketplace_paths.get(plugin_name)
-        if plugin_root is None:
-            raise ValueError(f"Plugin missing from marketplace: {plugin_name}")
-        plugin_metadata = _plugin_metadata(resolved_repo_root, plugin_name, plugin_root)
-        install_command = [codex_command, "plugin", "add", plugin_metadata["marketplace_plugin_id"], "--json"]
-        if codex_available:
-            try:
+
+    if installed_state is not None:
+        installed = _installed_plugins(installed_state)
+        added_plugins: list[tuple[dict[str, Any], Path]] = []
+        for plugin_name in plugin_names:
+            plugin_root = marketplace_paths.get(plugin_name)
+            if plugin_root is None:
+                raise ValueError(f"Plugin missing from marketplace: {plugin_name}")
+            plugin_metadata = _plugin_metadata(resolved_repo_root, plugin_name, plugin_root)
+            if plugin_metadata.get("metadata_status") != "local_manifest":
+                raise ValueError(f"Plugin metadata is not locally pinnable: {plugin_name}")
+            plugin_id = str(plugin_metadata["marketplace_plugin_id"])
+            if _plugin_state_matches(installed.get(plugin_id), plugin_metadata, plugin_root):
+                payload = {
+                    "status": "ALREADY_INSTALLED",
+                    "changed": False,
+                    "verified": True,
+                }
+            else:
+                install_command = [
+                    codex_command,
+                    "plugin",
+                    "add",
+                    plugin_id,
+                    "--json",
+                ]
                 payload = _parse_install_payload(runner(install_command, resolved_repo_root))
-            except FileNotFoundError:
-                codex_available = False
+                added_plugins.append((plugin_metadata, plugin_root))
+                fresh_task_required = True
+            plugin_metadata["install_result"] = payload
+            fresh_task_required = fresh_task_required or _install_changed(payload)
+            plugins.append(plugin_metadata)
+
+        if added_plugins:
+            refreshed = _parse_plugin_list_payload(
+                runner(_plugin_list_command(codex_command), resolved_repo_root)
+            )
+            refreshed_installed = _installed_plugins(refreshed)
+            for plugin_metadata, plugin_root in added_plugins:
+                plugin_id = str(plugin_metadata["marketplace_plugin_id"])
+                if not _plugin_state_matches(
+                    refreshed_installed.get(plugin_id),
+                    plugin_metadata,
+                    plugin_root,
+                ):
+                    raise RuntimeError(
+                        f"Plugin install did not produce the expected enabled version: {plugin_id}"
+                    )
+    else:
+        for plugin_name in plugin_names:
+            plugin_root = marketplace_paths.get(plugin_name)
+            if plugin_root is None:
+                raise ValueError(f"Plugin missing from marketplace: {plugin_name}")
+            plugin_metadata = _plugin_metadata(resolved_repo_root, plugin_name, plugin_root)
+            install_command = [
+                codex_command,
+                "plugin",
+                "add",
+                plugin_metadata["marketplace_plugin_id"],
+                "--json",
+            ]
+            if codex_available:
+                try:
+                    payload = _parse_install_payload(
+                        runner(install_command, resolved_repo_root)
+                    )
+                except FileNotFoundError:
+                    codex_available = False
+                    if plugin_metadata["metadata_status"] == "local_manifest":
+                        payload = {
+                            "status": "LOCAL_SOURCE_VALIDATED",
+                            "changed": False,
+                            "codex_required": codex_required,
+                        }
+                    else:
+                        codex_required = True
+                        payload = {
+                            "status": "LOCAL_METADATA_MISSING",
+                            "changed": False,
+                            "codex_required": True,
+                        }
+            elif plugin_metadata["metadata_status"] == "local_manifest":
                 payload = {
                     "status": "LOCAL_SOURCE_VALIDATED",
                     "changed": False,
-                    "codex_required": False,
+                    "codex_required": codex_required,
                 }
-        else:
-            payload = {
-                "status": "LOCAL_SOURCE_VALIDATED",
-                "changed": False,
-                "codex_required": False,
-            }
-        plugin_metadata["install_result"] = payload
-        fresh_task_required = fresh_task_required or _install_changed(payload)
-        plugins.append(plugin_metadata)
+            else:
+                codex_required = True
+                payload = {
+                    "status": "LOCAL_METADATA_MISSING",
+                    "changed": False,
+                    "codex_required": True,
+                }
+            plugin_metadata["install_result"] = payload
+            fresh_task_required = fresh_task_required or _install_changed(payload)
+            plugins.append(plugin_metadata)
 
     lock_payload = {
         "profile": profile,
-        "dependency_mode": "codex-plugin-install" if codex_available else "verified-local-source",
-        "codex_required": False,
+        "dependency_mode": (
+            "codex-plugin-install" if codex_available else "verified-local-source"
+        ),
+        "codex_required": codex_required,
         "marketplace": {
             "name": marketplace_name,
             "url": marketplace_source,
@@ -354,7 +581,7 @@ def bootstrap_profile(
         "dependency_lock": lock_path.resolve().as_posix(),
         "plugins": plugins,
         "dependency_mode": lock_payload["dependency_mode"],
-        "codex_required": False,
+        "codex_required": codex_required,
         "fresh_task_required": fresh_task_required,
     }
 

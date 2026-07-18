@@ -6,6 +6,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -73,7 +74,7 @@ class WorkflowPlugin:
 WORKFLOW_PLUGINS = (
     WorkflowPlugin(
         name="release-approval",
-        version="0.2.0",
+        version="0.2.1",
         mcp_script="release_approval_mcp.py",
         mcp_server_name="release-approval",
         mcp_common_tools=(
@@ -93,7 +94,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="release-approval-verifier",
-        version="0.2.0",
+        version="0.2.1",
         mcp_script="release_approval_verifier_mcp.py",
         mcp_server_name="release-approval-verifier",
         mcp_common_tools=(
@@ -113,7 +114,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="product-release-gate",
-        version="0.3.0",
+        version="0.3.1",
         mcp_script="release_gate_mcp.py",
         mcp_server_name="product-release-gate",
         mcp_common_tools=(
@@ -133,7 +134,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="test-submission",
-        version="0.1.0",
+        version="0.1.1",
         mcp_script="test_submission_mcp.py",
         mcp_server_name="test-submission",
         mcp_common_tools=(
@@ -153,7 +154,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="submission-gate",
-        version="0.1.0",
+        version="0.1.1",
         mcp_script="submission_gate_mcp.py",
         mcp_server_name="submission-gate",
         mcp_common_tools=(
@@ -173,7 +174,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="pre-release",
-        version="0.1.0",
+        version="0.1.1",
         mcp_script="pre_release_mcp.py",
         mcp_server_name="pre-release",
         mcp_common_tools=(
@@ -193,7 +194,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="release-gate",
-        version="0.1.0",
+        version="0.1.1",
         mcp_script="release_gate_mcp.py",
         mcp_server_name="release-gate",
         mcp_common_tools=(
@@ -213,7 +214,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="rd-flywheel",
-        version="0.2.0",
+        version="0.2.1",
         mcp_script="rd_flywheel_mcp.py",
         mcp_server_name="rd-flywheel",
         mcp_common_tools=(
@@ -928,3 +929,33 @@ def test_examples_and_contracts_contain_no_credentials_or_private_production_add
                 )
             for address in re.findall(r"(?<!\d)(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))(?:\.\d{1,3}){2,3}(?!\d)", value):
                 pytest.fail(f"private production address {address} in {fixture}:{value_path}")
+
+@pytest.mark.parametrize("plugin", WORKFLOW_PLUGINS, ids=lambda item: item.name)
+def test_each_workflow_plugin_embeds_the_canonical_bootstrap(
+    plugin: WorkflowPlugin,
+) -> None:
+    embedded = plugin.root / "scripts" / "bootstrap_dependencies.py"
+    assert embedded.read_bytes() == CANONICAL_BOOTSTRAP.read_bytes()
+
+
+@pytest.mark.parametrize("plugin", WORKFLOW_PLUGINS, ids=lambda item: item.name)
+def test_cli_help_runs_from_an_isolated_versioned_plugin_cache(
+    plugin: WorkflowPlugin,
+    tmp_path: Path,
+) -> None:
+    isolated_root = tmp_path / "cache" / plugin.name / plugin.version
+    shutil.copytree(plugin.root, isolated_root)
+    cli_path = isolated_root / "src" / plugin.cli_script
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(cli_path.parent)
+    environment["PYTHONNOUSERSITE"] = "1"
+    completed = subprocess.run(
+        [sys.executable, str(cli_path), "--help"],
+        cwd=cli_path.parent,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr

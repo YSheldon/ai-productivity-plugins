@@ -1,6 +1,6 @@
 {
   "name": "rd-flywheel",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Deterministic capability-gap governance through MCP, Skill, standalone CLI, and OS scheduling.",
   "author": {"name": "Sheldon"},
   "license": "MIT",

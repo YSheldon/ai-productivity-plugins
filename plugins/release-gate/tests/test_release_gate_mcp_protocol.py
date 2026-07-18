@@ -24,7 +24,7 @@ def _load_module():
 def test_mcp_inventory_and_manifest() -> None:
     module = _load_module()
     assert module.SERVER_NAME == "release-gate"
-    assert module.SERVER_VERSION == "0.1.3"
+    assert module.SERVER_VERSION == "0.1.4"
     assert list(module.TOOLS) == [
         "release_gate_preflight",
         "release_gate_start_setup",

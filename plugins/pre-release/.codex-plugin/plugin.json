@@ -1,6 +1,6 @@
 {
   "name": "pre-release",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Collect PASS or FAIL test conclusions, build Manifest-R through the locked product-release-gate kernel, and send PRERELEASE_REQUEST handoffs without Codex runtime dependence.",
   "author": {
     "name": "Sheldon"

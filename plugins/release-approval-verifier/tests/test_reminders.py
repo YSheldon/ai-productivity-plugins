@@ -124,6 +124,52 @@ def test_service_reminds_only_missing_roles_in_original_thread(tmp_path: Path) -
     assert len(store.get_accepted_reminder_times("evt-reminder", 3, "security-reviewer")) == 1
 
 
+def test_service_waits_past_one_hour_then_dedupes_accepted_reminder_for_only_missing_role(
+    tmp_path: Path,
+) -> None:
+    store = VerifierStore(tmp_path / "state.sqlite3")
+    roles = _roles()
+    _record_decision(store, roles[0])
+    calls: list[tuple[object, str]] = []
+
+    def smtp_sender(message, *, idempotency_key: str):
+        calls.append((message, idempotency_key))
+        return {"accepted": True, "message_id": "<accepted@example.com>"}
+
+    service = VerifierService(store=store, audit_key=AUDIT_KEY, smtp_sender=smtp_sender)
+    before_due = service.send_due_reminders(
+        _request(),
+        roles,
+        policy=_policy(),
+        now=datetime(2026, 7, 16, 1, 59, tzinfo=timezone.utc),
+    )
+    first_due = service.send_due_reminders(
+        _request(),
+        roles,
+        policy=_policy(),
+        now=datetime(2026, 7, 16, 2, 1, tzinfo=timezone.utc),
+    )
+    duplicate_window = service.send_due_reminders(
+        _request(),
+        roles,
+        policy=_policy(),
+        now=datetime(2026, 7, 16, 5, 59, tzinfo=timezone.utc),
+    )
+
+    assert before_due == ()
+    assert [outcome.role_id for outcome in first_due] == ["security-reviewer"]
+    assert first_due[0].accepted is True
+    assert duplicate_window == ()
+    assert len(calls) == 1
+    message, idempotency_key = calls[0]
+    assert message["To"] == "security@example.com"
+    assert message["In-Reply-To"] == "<request@example.com>"
+    assert message["References"] == "<root@example.com> <request@example.com>"
+    assert idempotency_key == first_due[0].idempotency_key
+    assert store.get_accepted_reminder_times("evt-reminder", 3, "release-manager") == ()
+    assert len(store.get_accepted_reminder_times("evt-reminder", 3, "security-reviewer")) == 1
+
+
 def test_smtp_refusal_and_failure_reuse_idempotency_key_without_incrementing_count(tmp_path: Path) -> None:
     store = VerifierStore(tmp_path / "state.sqlite3")
     role = _roles()[1]

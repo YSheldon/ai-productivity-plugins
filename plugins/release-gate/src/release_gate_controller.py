@@ -31,6 +31,8 @@ from release_gate_mail import (
 VERIFIED_BADGE = "合规插件发起（已验证）"
 PLAIN_BADGE = "普通邮件发起（未验证）"
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_SHA256_RE = re.compile(r"^(?:sha256:)?([0-9a-fA-F]{64})$")
+_AUTHORITATIVE_PROVENANCE_ERROR = "AUTHORITATIVE_PROVENANCE_UNAVAILABLE"
 
 
 class ReleaseGateError(RuntimeError):
@@ -136,17 +138,44 @@ class ReleaseGateController:
         self.audit.append(event_type="release_gate_received", status="RELEASE_GATE_RUNNING", payload={"event_id": record["event_id"], "round_id": record["round_id"], "source_transport_digest": record["source_transport_digest"], "machine_event_digest": record["machine_event_digest"], "retrieval_method": record["retrieval_method"], "origin_badge": record["origin_badge"]})
 
         gate_result = self.product_gate.call("run_release_gate", {"event_id": record["event_id"]})
-        if str(gate_result.get("status") or "") not in {"RELEASE_GATE_PASSED", "ready", "RELEASE_READY"}:
+        gate_status = str(gate_result.get("status") or "")
+        if gate_status not in {"RELEASE_GATE_PASSED", "ready", "RELEASE_READY"}:
+            record["status"] = "RELEASE_GATE_BLOCKED"
             record["decision"] = "RELEASE_GATE_BLOCKED"
-            record["blocked_reason"] = str(gate_result.get("status") or "RELEASE_GATE_BLOCKED")
-            record["pending_notice"] = self._build_outbound_notice(record, success=False)
+            record["blocked_reason"] = gate_status or "RELEASE_GATE_BLOCKED"
+            record["release_gate_result"] = dict(gate_result)
+            if record.get("transport_badge") == VERIFIED_BADGE:
+                record["pending_notice"] = self._build_outbound_notice(record, success=False)
+            else:
+                record.pop("pending_notice", None)
             self._save_event(record)
-            self.audit.append(event_type="release_gate_blocked", status="RELEASE_GATE_RUNNING", payload={"event_id": record["event_id"], "round_id": record["round_id"], "blocked_reason": record["blocked_reason"]})
-            self._retry_notice(record)
+            self.audit.append(event_type="release_gate_blocked", status="RELEASE_GATE_BLOCKED", payload={"event_id": record["event_id"], "round_id": record["round_id"], "blocked_reason": record["blocked_reason"]})
+            if record.get("transport_badge") == VERIFIED_BADGE:
+                self._retry_notice(record)
             return "blocked"
 
         record["status"] = "RELEASE_READY"
         record["release_gate_result"] = dict(gate_result)
+        if record.get("transport_badge") != VERIFIED_BADGE:
+            try:
+                authoritative_state = self.product_gate.call("get_event", {"event_id": record["event_id"]})
+                self._rebind_fallback_provenance(record, authoritative_state)
+            except Exception:
+                record["status"] = "RELEASE_GATE_BLOCKED"
+                record["decision"] = "RELEASE_GATE_BLOCKED"
+                record["blocked_reason"] = _AUTHORITATIVE_PROVENANCE_ERROR
+                record.pop("pending_notice", None)
+                self._save_event(record)
+                self.audit.append(
+                    event_type="release_gate_authoritative_provenance_failed",
+                    status="RELEASE_GATE_BLOCKED",
+                    payload={
+                        "event_id": record["event_id"],
+                        "round_id": record["round_id"],
+                        "blocked_reason": _AUTHORITATIVE_PROVENANCE_ERROR,
+                    },
+                )
+                return "blocked"
         record["pending_notice"] = self._build_outbound_notice(record, success=True)
         self._save_event(record)
         self.audit.append(event_type="release_gate_passed", status="RELEASE_READY", payload={"event_id": record["event_id"], "round_id": record["round_id"], "origin_badge": record["origin_badge"]})
@@ -202,28 +231,11 @@ class ReleaseGateController:
             source = parse_fallback_mail(body_text)
         if source.get("event_type") not in {None, "PRERELEASE_REQUEST"}:
             return None
-        required_fields = ("event_id", "round_id", "task", "module", "manifest_s_digest", "manifest_r_digest")
+        required_fields = ("event_id", "round_id", "task", "module")
+        if verified:
+            required_fields += ("manifest_s_digest", "manifest_r_digest")
         if any(not str(source.get(field) or "").strip() for field in required_fields):
             return None
-        retrieval_method = str(source.get("retrieval_method") or "build").strip().lower()
-        if retrieval_method == "svn":
-            retrieval_provenance = source.get("retrieval_provenance")
-            if not isinstance(retrieval_provenance, Mapping):
-                return None
-            if not str(retrieval_provenance.get("repository_path") or "").strip():
-                return None
-            if not str(retrieval_provenance.get("revision") or "").strip():
-                return None
-            retrieval_provenance_digest = str(source.get("retrieval_provenance_digest") or sha256_jsonable({"repository_path": str(retrieval_provenance.get("repository_path")), "revision": str(retrieval_provenance.get("revision"))}))
-            gitlab_evidence_digest = ""
-            gitlab_evidence_ref = ""
-        else:
-            gitlab_evidence_ref = str(source.get("gitlab_evidence_ref") or "").strip()
-            if not gitlab_evidence_ref:
-                return None
-            gitlab_evidence_digest = str(source.get("gitlab_evidence_digest") or sha256_jsonable({"gitlab_evidence_ref": gitlab_evidence_ref}))
-            retrieval_provenance = {}
-            retrieval_provenance_digest = ""
         thread_references = source.get("thread_references")
         if verified:
             if not isinstance(thread_references, list) or not thread_references:
@@ -232,22 +244,56 @@ class ReleaseGateController:
             if actual_references != [str(item).strip() for item in thread_references]:
                 return {"blocked_reason": "AUTHENTICATION_FAILED", "transport": evidence}
             origin_badge = str(source.get("source_origin_badge") or VERIFIED_BADGE)
+            retrieval_method = str(source.get("retrieval_method") or "build").strip().lower()
+            if retrieval_method == "svn":
+                retrieval_provenance = source.get("retrieval_provenance")
+                if not isinstance(retrieval_provenance, Mapping):
+                    return None
+                if not str(retrieval_provenance.get("repository_path") or "").strip():
+                    return None
+                if not str(retrieval_provenance.get("revision") or "").strip():
+                    return None
+                retrieval_provenance_digest = str(source.get("retrieval_provenance_digest") or sha256_jsonable({"repository_path": str(retrieval_provenance.get("repository_path")), "revision": str(retrieval_provenance.get("revision"))}))
+                gitlab_evidence_digest = ""
+                gitlab_evidence_ref = ""
+            else:
+                gitlab_evidence_ref = str(source.get("gitlab_evidence_ref") or "").strip()
+                if not gitlab_evidence_ref:
+                    return None
+                gitlab_evidence_digest = str(source.get("gitlab_evidence_digest") or sha256_jsonable({"gitlab_evidence_ref": gitlab_evidence_ref}))
+                retrieval_provenance = {}
+                retrieval_provenance_digest = ""
+            manifest_s_digest = str(source["manifest_s_digest"])
+            manifest_r_digest = str(source["manifest_r_digest"])
+            lark_evidence_ref = str(source.get("lark_evidence_ref") or "").strip()
+            if not lark_evidence_ref:
+                return None
         else:
             actual_references = list(evidence["references"]) or [evidence["message_id"]]
-            origin_badge = str(source.get("origin_badge") or PLAIN_BADGE)
-        checked_items = source.get("checked_items")
-        if isinstance(checked_items, list) and checked_items:
-            normalized_checks = [str(item).strip() for item in checked_items if str(item).strip()]
+            origin_badge = PLAIN_BADGE
+            retrieval_method = "authoritative_pending"
+            retrieval_provenance = {}
+            retrieval_provenance_digest = ""
+            gitlab_evidence_digest = ""
+            gitlab_evidence_ref = ""
+            manifest_s_digest = ""
+            manifest_r_digest = ""
+            lark_evidence_ref = ""
+        if verified:
+            checked_items = source.get("checked_items")
+            if isinstance(checked_items, list) and checked_items:
+                normalized_checks = [str(item).strip() for item in checked_items if str(item).strip()]
+            else:
+                normalized_checks = ["human_mail_reviewed"]
+            submission_policy_digest = str(source.get("submission_policy_digest") or "").strip()
+            pre_release_policy_digest = str(source.get("pre_release_policy_digest") or "").strip()
+            if not submission_policy_digest or not pre_release_policy_digest:
+                return None
         else:
-            normalized_checks = ["human_mail_reviewed"]
+            normalized_checks = []
+            submission_policy_digest = "unverified"
+            pre_release_policy_digest = "unverified"
         if str(source.get("test_result") or "").upper() != "PASS":
-            return None
-        submission_policy_digest = str(source.get("submission_policy_digest") or "").strip()
-        pre_release_policy_digest = str(source.get("pre_release_policy_digest") or "").strip()
-        if not submission_policy_digest or not pre_release_policy_digest:
-            return None
-        lark_evidence_ref = str(source.get("lark_evidence_ref") or "").strip()
-        if not lark_evidence_ref:
             return None
         submitter_email = str(source.get("submitter_email") or source.get("sender_email") or "").strip().lower()
         if submitter_email and not _EMAIL_RE.fullmatch(submitter_email):
@@ -272,8 +318,8 @@ class ReleaseGateController:
             "gitlab_evidence_digest": gitlab_evidence_digest,
             "gitlab_evidence_ref": gitlab_evidence_ref,
             "lark_evidence_ref": lark_evidence_ref,
-            "manifest_s_digest": str(source["manifest_s_digest"]),
-            "manifest_r_digest": str(source["manifest_r_digest"]),
+            "manifest_s_digest": manifest_s_digest,
+            "manifest_r_digest": manifest_r_digest,
             "checked_items": normalized_checks,
             "submitter_email": submitter_email,
             "submitter_email_status": "valid" if submitter_email else "missing_or_invalid",
@@ -283,13 +329,78 @@ class ReleaseGateController:
         }
         return {"record": record}
 
+    @staticmethod
+    def _normalized_sha256(value: Any, field_name: str) -> str:
+        match = _SHA256_RE.fullmatch(str(value or "").strip())
+        if not match:
+            raise ReleaseGateError(_AUTHORITATIVE_PROVENANCE_ERROR, f"{field_name} is unavailable")
+        return "sha256:" + match.group(1).lower()
+
+    def _rebind_fallback_provenance(
+        self,
+        record: dict[str, Any],
+        authoritative_state: Mapping[str, Any],
+    ) -> None:
+        event = authoritative_state.get("event")
+        manifest_s = authoritative_state.get("manifest_s")
+        manifest_r = authoritative_state.get("manifest_r")
+        if not isinstance(event, Mapping) or not isinstance(manifest_s, Mapping) or not isinstance(manifest_r, Mapping):
+            raise ReleaseGateError(_AUTHORITATIVE_PROVENANCE_ERROR, "authoritative event or manifests are unavailable")
+        if str(event.get("event_id") or "") != str(record["event_id"]):
+            raise ReleaseGateError(_AUTHORITATIVE_PROVENANCE_ERROR, "authoritative event_id differs")
+        authority_round = event.get("round_id", event.get("round_number"))
+        if isinstance(authority_round, bool) or not isinstance(authority_round, int) or authority_round != int(record["round_id"]):
+            raise ReleaseGateError(_AUTHORITATIVE_PROVENANCE_ERROR, "authoritative round differs")
+        authoritative_status = str(event.get("status") or "").strip()
+        if authoritative_status != "RELEASE_READY":
+            raise ReleaseGateError(_AUTHORITATIVE_PROVENANCE_ERROR, "authoritative event is not release ready")
+
+        manifest_s_digest = self._normalized_sha256(event.get("manifest_s_digest"), "manifest_s_digest")
+        manifest_r_digest = self._normalized_sha256(event.get("manifest_r_digest"), "manifest_r_digest")
+        if manifest_s_digest != self._normalized_sha256(manifest_s.get("digest"), "manifest_s.digest"):
+            raise ReleaseGateError(_AUTHORITATIVE_PROVENANCE_ERROR, "Manifest-S authority differs")
+        if manifest_r_digest != self._normalized_sha256(manifest_r.get("digest"), "manifest_r.digest"):
+            raise ReleaseGateError(_AUTHORITATIVE_PROVENANCE_ERROR, "Manifest-R authority differs")
+        if manifest_s_digest != self._normalized_sha256(manifest_r.get("source_manifest_s_digest"), "manifest_r.source_manifest_s_digest"):
+            raise ReleaseGateError(_AUTHORITATIVE_PROVENANCE_ERROR, "Manifest-R source binding differs")
+
+        record.update(
+            {
+                "event_id": str(event["event_id"]),
+                "round_id": authority_round,
+                "status": authoritative_status,
+                "manifest_s_digest": manifest_s_digest,
+                "manifest_r_digest": manifest_r_digest,
+                "origin_badge": PLAIN_BADGE,
+                "lark_evidence_ref": "",
+                "retrieval_method": "unverified",
+                "retrieval_provenance": {},
+                "retrieval_provenance_digest": "",
+                "gitlab_evidence_ref": "",
+                "gitlab_evidence_digest": "",
+                "submission_policy_digest": "unverified",
+                "pre_release_policy_digest": "unverified",
+                "checked_items": [],
+                "provenance_classification": "UNVERIFIED_FALLBACK",
+                "authoritative_provenance_rebound": True,
+            }
+        )
+
     def _build_outbound_notice(self, record: Mapping[str, Any], *, success: bool) -> dict[str, Any]:
-        check_results = [
-            {"check": "hmac" if record.get("transport_badge") == VERIFIED_BADGE else "human_fallback", "result": "PASS"},
-            {"check": "thread", "result": "PASS"},
-            {"check": "manifest", "result": "PASS"},
-            {"check": "retrieval_provenance" if record.get("retrieval_method") == "svn" else "gitlab_evidence", "result": "PASS"},
-        ]
+        if record.get("transport_badge") == VERIFIED_BADGE:
+            check_results = [
+                {"check": "hmac", "result": "PASS"},
+                {"check": "thread", "result": "PASS"},
+                {"check": "manifest", "result": "PASS"},
+                {"check": "retrieval_provenance" if record.get("retrieval_method") == "svn" else "gitlab_evidence", "result": "PASS"},
+            ]
+        else:
+            check_results = [
+                {"check": "hmac", "result": "UNVERIFIED"},
+                {"check": "thread", "result": "PASS"},
+                {"check": "manifest", "result": "PASS" if success else "NOT_EVALUATED"},
+                {"check": "upstream_body_evidence", "result": "NOT_PROPAGATED"},
+            ]
         machine_event = {
             "contract": "ProductMaterialWorkflow/v1",
             "event_type": "RELEASE_GATE_PASS" if success else "RELEASE_GATE_BLOCKED",
@@ -314,12 +425,17 @@ class ReleaseGateController:
             "status": "RELEASE_READY_NOTIFIED" if success else "RELEASE_GATE_BLOCKED",
             "blocked_reason": record.get("blocked_reason"),
             "source_origin_badge": record["origin_badge"],
-            "transport_badge": (VERIFIED_BADGE if self.config.shared_hmac_secret_path.exists() else PLAIN_BADGE),
+            "transport_badge": record["transport_badge"],
         }
         if self.config.shared_hmac_secret_path.exists():
             machine_event = sign_machine_event(machine_event, self.config.shared_hmac_secret_path.read_bytes())
         title = "【发布申请】" if success else "【发布阻断】"
         state_text = "RELEASE_READY_NOTIFIED" if success else "RELEASE_GATE_BLOCKED"
+        if record.get("transport_badge") == VERIFIED_BADGE:
+            upstream_evidence_lines = [f"- SVN：{record['retrieval_provenance'].get('repository_path')}@{record['retrieval_provenance'].get('revision')}"] if record.get("retrieval_method") == "svn" else [f"- GitLab：{record['gitlab_evidence_ref']}"]
+            upstream_evidence_lines.append(f"- 飞书：{record['lark_evidence_ref']}")
+        else:
+            upstream_evidence_lines = ["- 上游正文证据：未验证来源，未传播；请在审批页独立核验"]
         body = "\n".join(
             [
                 f"事件：{record['event_id']}#{record['round_id']}",
@@ -335,8 +451,7 @@ class ReleaseGateController:
                 "证据引用：",
                 f"- Manifest-S：{record['manifest_s_digest']}",
                 f"- Manifest-R：{record['manifest_r_digest']}",
-                *([f"- SVN：{record['retrieval_provenance'].get('repository_path')}@{record['retrieval_provenance'].get('revision')}"] if record.get("retrieval_method") == "svn" else [f"- GitLab：{record['gitlab_evidence_ref']}"]),
-                f"- 飞书：{record['lark_evidence_ref']}",
+                *upstream_evidence_lines,
                 f"提测人邮箱：{record.get('submitter_email') or '未提供'}",
                 f"发起标识：{record['origin_badge']}",
                 f"传输标识：{record['transport_badge']}",

@@ -114,7 +114,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="product-release-gate",
-        version="0.3.3",
+        version="0.3.4",
         mcp_script="release_gate_mcp.py",
         mcp_server_name="product-release-gate",
         mcp_common_tools=(
@@ -174,7 +174,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="pre-release",
-        version="0.1.3",
+        version="0.1.4",
         mcp_script="pre_release_mcp.py",
         mcp_server_name="pre-release",
         mcp_common_tools=(
@@ -194,7 +194,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="release-gate",
-        version="0.1.3",
+        version="0.1.4",
         mcp_script="release_gate_mcp.py",
         mcp_server_name="release-gate",
         mcp_common_tools=(

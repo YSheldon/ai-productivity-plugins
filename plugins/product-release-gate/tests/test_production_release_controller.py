@@ -613,6 +613,116 @@ else:
         self.assertEqual("ROLLED_BACK", result["status"])
         self.assertIn("timed out", result["receipt"]["error"].lower())
 
+
+    def test_readback_failure_persists_separate_readback_and_rollback_evidence(
+        self,
+    ) -> None:
+        controller = ProductionReleaseController(str(self._write_config(mode="fail-readback")))
+        self._release_ready(controller, "event-readback-evidence")
+        self._authorize(controller, "event-readback-evidence")
+        controller.run_deployment_stage("event-readback-evidence", "preproduction")
+        controller.run_deployment_stage("event-readback-evidence", "production_canary")
+        controller.run_deployment_stage("event-readback-evidence", "production_full")
+
+        result = controller.run_production_readback("event-readback-evidence")
+
+        event = controller.get_event("event-readback-evidence")["event"]
+        stage = event["deployment"]["stages"]["production_full"]
+        readback_path = Path(result["receipt_path"])
+        rollback_path = Path(stage["rollback_path"])
+        readback_receipt = json.loads(readback_path.read_text(encoding="utf-8"))
+        rollback_receipt = json.loads(rollback_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("ROLLED_BACK", result["status"])
+        self.assertTrue(readback_path.is_file())
+        self.assertTrue(rollback_path.is_file())
+        self.assertNotEqual(readback_path, rollback_path)
+        self.assertEqual("BLOCKED", readback_receipt["result"])
+        self.assertEqual("PASS", rollback_receipt["rollback"]["result"])
+        self.assertEqual("production_readback", rollback_receipt["failure"]["phase"])
+
+    def test_signed_production_readback_receipt_repairs_interrupted_state_commit(
+        self,
+    ) -> None:
+        controller = ProductionReleaseController(str(self._write_config()))
+        self._release_ready(controller, "event-readback-replay")
+        self._authorize(controller, "event-readback-replay")
+        controller.run_deployment_stage("event-readback-replay", "preproduction")
+        controller.run_deployment_stage("event-readback-replay", "production_canary")
+        controller.run_deployment_stage("event-readback-replay", "production_full")
+        initial = controller.run_production_readback("event-readback-replay")
+        controller.config["production"]["readback"]["command"] = [
+            sys.executable,
+            str(self.root / "missing-readback-adapter.py"),
+        ]
+
+        event = controller._load_event("event-readback-replay")
+        event["status"] = "PRODUCTION_DEPLOYED"
+        event.pop("production_readback_path", None)
+        controller._save_event(event)
+
+        replay = controller.run_production_readback("event-readback-replay")
+
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual("PRODUCTION_VERIFIED", replay["status"])
+        self.assertEqual(initial["receipt_path"], replay["receipt_path"])
+        self.assertEqual(
+            initial["receipt_path"],
+            controller.get_event("event-readback-replay")["event"]["production_readback_path"],
+        )
+        chain_path = Path(
+            controller.verify_control_event_chain("event-readback-replay")["path"]
+        )
+        records = [
+            json.loads(line)
+            for line in chain_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual("PRODUCTION_READBACK_REPLAYED", records[-1]["event_type"])
+
+    def test_mismatched_production_readback_receipt_fails_closed(
+        self,
+    ) -> None:
+        controller = ProductionReleaseController(str(self._write_config()))
+        self._release_ready(controller, "event-readback-receipt-tamper")
+        self._authorize(controller, "event-readback-receipt-tamper")
+        controller.run_deployment_stage(
+            "event-readback-receipt-tamper", "preproduction"
+        )
+        controller.run_deployment_stage(
+            "event-readback-receipt-tamper", "production_canary"
+        )
+        controller.run_deployment_stage(
+            "event-readback-receipt-tamper", "production_full"
+        )
+        result = controller.run_production_readback(
+            "event-readback-receipt-tamper"
+        )
+        receipt_path = Path(result["receipt_path"])
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["payload"]["observed_manifest_r_digest"] = "0" * 64
+        receipt.pop("receipt_hmac", None)
+        receipt_path.write_text(
+            json.dumps(controller._seal_receipt(receipt)),
+            encoding="utf-8",
+        )
+        controller.config["production"]["readback"]["command"] = [
+            sys.executable,
+            str(self.root / "missing-readback-adapter.py"),
+        ]
+
+        event = controller._load_event("event-readback-receipt-tamper")
+        event["status"] = "PRODUCTION_DEPLOYED"
+        event.pop("production_readback_path", None)
+        controller._save_event(event)
+
+        with self.assertRaises(GateError):
+            controller.run_production_readback("event-readback-receipt-tamper")
+
+        self.assertEqual(
+            "PRODUCTION_DEPLOYED",
+            controller.get_event("event-readback-receipt-tamper")["event"]["status"],
+        )
+
     def test_expired_authorization_before_readback_rolls_back_full_stage(
         self,
     ) -> None:
@@ -720,6 +830,35 @@ else:
             ]["result"],
         )
 
+
+    def test_full_stage_signed_receipt_repairs_interrupted_state_commit(self) -> None:
+        controller = ProductionReleaseController(str(self._write_config()))
+        self._release_ready(controller, "event-full-receipt-replay")
+        self._authorize(controller, "event-full-receipt-replay")
+        controller.run_deployment_stage("event-full-receipt-replay", "preproduction")
+        controller.run_deployment_stage("event-full-receipt-replay", "production_canary")
+        controller.run_deployment_stage("event-full-receipt-replay", "production_full")
+
+        event = controller._load_event("event-full-receipt-replay")
+        event["status"] = "CANARY_VERIFIED"
+        event["deployment"]["stages"]["production_full"] = {
+            "result": "PENDING",
+            "manifest_r_digest": event["manifest_r_digest"],
+        }
+        controller._save_event(event)
+
+        replay = controller.run_deployment_stage(
+            "event-full-receipt-replay",
+            "production_full",
+        )
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual("PRODUCTION_DEPLOYED", replay["status"])
+        self.assertEqual(
+            "PASS",
+            controller.get_event("event-full-receipt-replay")["event"]["deployment"][
+                "stages"
+            ]["production_full"]["result"],
+        )
     def test_control_events_form_a_hash_chain(self) -> None:
         controller = ProductionReleaseController(str(self._write_config()))
         self._release_ready(controller, "event-ledger")

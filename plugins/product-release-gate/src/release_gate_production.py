@@ -2225,6 +2225,30 @@ class ProductionReleaseController(HardenedReleaseGateController):
             raise GateError(f"{stage} deployment receipt is not bound to the current release")
         return receipt
 
+    def _validate_production_readback_receipt(
+        self,
+        event: dict[str, Any],
+        context: dict[str, str],
+        receipt: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(receipt, dict) or not self._verify_receipt_seal(receipt):
+            raise GateError("production readback receipt signature is invalid")
+        payload = receipt.get("payload")
+        valid = (
+            receipt.get("event_id") == event.get("event_id")
+            and str(receipt.get("result") or "").upper() == "PASS"
+            and receipt.get("manifest_r_digest") == event.get("manifest_r_digest")
+            and receipt.get("target_ref") == context.get("target_ref")
+            and isinstance(payload, dict)
+            and str(payload.get("result") or "").upper() == "PASS"
+            and payload.get("target_ref") == context.get("target_ref")
+            and payload.get("observed_manifest_r_digest") == event.get("manifest_r_digest")
+            and bool(str(payload.get("readback_ref") or "").strip())
+        )
+        if not valid:
+            raise GateError("production readback receipt is not bound to the current release")
+        return receipt
+
     def _rollback_stage(
         self,
         event: dict[str, Any],
@@ -2523,6 +2547,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         production = self._production_config()
         readback_config = production.get("readback") or {}
         context = self._deployment_context(event, "production_full")
+        path = self._event_dir(event_id) / "production-readback.json"
         try:
             credential = self._verify_authorization_credential(event)
             self._revalidate_unified_approval_for_deployment(
@@ -2566,6 +2591,34 @@ class ProductionReleaseController(HardenedReleaseGateController):
                 "result": "BLOCKED",
                 "failure": failure,
                 "rollback": rollback,
+            }
+        if path.exists():
+            receipt = self._validate_production_readback_receipt(
+                event,
+                context,
+                read_json(path),
+            )
+            event["production_readback_path"] = str(path)
+            self._transition(
+                event,
+                "PRODUCTION_VERIFIED",
+                "production readback state recovered from a valid signed receipt",
+            )
+            self._append_control_event(
+                event,
+                "PRODUCTION_READBACK_REPLAYED",
+                {
+                    "receipt_path": str(path),
+                    "receipt_digest": object_digest(receipt),
+                },
+            )
+            self._save_event(event)
+            return {
+                "status": event["status"],
+                "result": "PASS",
+                "receipt_path": str(path),
+                "receipt": receipt,
+                "idempotent": True,
             }
         payload, error = self._run_json_adapter(
             readback_config.get("command"),

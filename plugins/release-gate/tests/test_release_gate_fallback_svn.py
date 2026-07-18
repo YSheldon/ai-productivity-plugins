@@ -10,7 +10,8 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from release_gate_config import MailAccountConfig, ProductGateConfig, ReleaseGateConfig
-from release_gate_controller import ReleaseGateController
+from release_gate_controller import PLAIN_BADGE, ReleaseGateController
+from release_gate_mail import decode_machine_event
 
 
 FIXED_NOW = datetime(2026, 7, 17, 6, 7, 8, tzinfo=timezone.utc)
@@ -34,10 +35,15 @@ class FakeMailGateway:
 
 
 class FakeProductGate:
-    def __init__(self, *, status: str = "RELEASE_GATE_PASSED") -> None:
+    def __init__(self, *, status: str = "RELEASE_GATE_PASSED", authoritative_state: dict[str, object] | None = None) -> None:
         self.status = status
+        self.authoritative_state = authoritative_state or {}
+        self.calls: list[tuple[str, dict[str, object]]] = []
 
     def call(self, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        self.calls.append((operation, dict(payload)))
+        if operation == "get_event":
+            return dict(self.authoritative_state)
         return {"status": self.status}
 
 
@@ -64,6 +70,37 @@ def _config(tmp_path: Path) -> ReleaseGateConfig:
     )
 
 
+def _authoritative_state(
+    *,
+    event_id: str,
+    round_id: int,
+    retrieval_method: str,
+    origin_badge: str = PLAIN_BADGE,
+    manifest_s_digest: str = "sha256:" + "9" * 64,
+    manifest_r_digest: str = "sha256:" + "8" * 64,
+) -> dict[str, object]:
+    event: dict[str, object] = {
+        "event_id": event_id,
+        "round_id": round_id,
+        "status": "RELEASE_READY",
+        "manifest_s_digest": manifest_s_digest,
+        "manifest_r_digest": manifest_r_digest,
+        "origin_badge": origin_badge,
+        "lark_evidence_ref": f"lark://doc/{event_id}",
+        "retrieval_method": retrieval_method,
+    }
+    if retrieval_method == "svn":
+        event["retrieval_provenance"] = {"repository_path": "svn://repo/path", "revision": "12345"}
+    else:
+        event["gitlab_evidence_ref"] = f"gitlab://pipeline/{event_id}"
+        event["gitlab_evidence_digest"] = "sha256:" + "7" * 64
+    return {
+        "event": event,
+        "manifest_s": {"digest": manifest_s_digest},
+        "manifest_r": {"digest": manifest_r_digest, "source_manifest_s_digest": manifest_s_digest},
+    }
+
+
 def test_plain_fallback_request_can_progress_as_unverified(tmp_path: Path) -> None:
     config = _config(tmp_path)
     body = "\n".join(
@@ -77,11 +114,12 @@ def test_plain_fallback_request_can_progress_as_unverified(tmp_path: Path) -> No
             "Manifest-R：sha256:" + "2" * 64,
             "- 提测门禁策略摘要：sha256:" + "3" * 64,
             "- 预发布策略摘要：sha256:" + "4" * 64,
-            "- GitLab：gitlab://pipeline/plain",
-            "- 飞书：lark://doc/plain",
+            "- GitLab：gitlab://pipeline/plain-spoofed",
+            "- 飞书：lark://doc/plain-spoofed",
             "发起标识：普通邮件发起（未验证）",
         ]
     )
+    gate = FakeProductGate(authoritative_state=_authoritative_state(event_id="evt-plain", round_id=5, retrieval_method="build"))
     controller = ReleaseGateController(
         config,
         mail_gateway=FakeMailGateway(
@@ -98,16 +136,24 @@ def test_plain_fallback_request_can_progress_as_unverified(tmp_path: Path) -> No
                 }
             ]
         ),
-        product_gate=FakeProductGate(),
+        product_gate=gate,
         now_fn=lambda: FIXED_NOW,
     )
     result = controller.run_once()
     assert result["processed"] == 1
+    assert gate.calls == [("run_release_gate", {"event_id": "evt-plain"}), ("get_event", {"event_id": "evt-plain"})]
     record = json.loads((tmp_path / "state" / "events" / "evt-plain--5.json").read_text(encoding="utf-8"))
-    assert record["origin_badge"] == "普通邮件发起（未验证）"
+    assert record["origin_badge"] == PLAIN_BADGE
+    assert record["transport_badge"] == PLAIN_BADGE
+    assert record["manifest_s_digest"] == "sha256:" + "9" * 64
+    assert record["gitlab_evidence_ref"] == ""
+    assert record["lark_evidence_ref"] == ""
+    assert record["submission_policy_digest"] == "unverified"
+    assert "gitlab://pipeline/plain-spoofed" not in controller.mail_gateway.sent[0]["body_text"]
+    assert "gitlab://pipeline/evt-plain" not in controller.mail_gateway.sent[0]["body_text"]
 
 
-def test_svn_request_does_not_require_gitlab_evidence(tmp_path: Path) -> None:
+def test_unverified_svn_body_evidence_is_not_propagated(tmp_path: Path) -> None:
     config = _config(tmp_path)
     body = "\n".join(
         [
@@ -120,32 +166,47 @@ def test_svn_request_does_not_require_gitlab_evidence(tmp_path: Path) -> None:
             "Manifest-R：sha256:" + "6" * 64,
             "- 提测门禁策略摘要：sha256:" + "7" * 64,
             "- 预发布策略摘要：sha256:" + "8" * 64,
-            "- SVN：svn://repo/path@12345",
-            "- 飞书：lark://doc/svn",
+            "- SVN：svn://repo/spoofed@99999",
+            "- 飞书：lark://doc/svn-spoofed",
             "发起标识：普通邮件发起（未验证）",
+        ]
+    )
+    gate = FakeProductGate(authoritative_state=_authoritative_state(event_id="evt-svn", round_id=6, retrieval_method="svn"))
+    mail = FakeMailGateway(
+        [
+            {
+                "uid": "12",
+                "message_id": "<svn@example.com>",
+                "body_text": body,
+                "evidence": {
+                    "message_id": "<svn@example.com>",
+                    "references": ["<svn@example.com>"],
+                    "raw_headers_sha256": "b" * 64,
+                },
+            }
         ]
     )
     controller = ReleaseGateController(
         config,
-        mail_gateway=FakeMailGateway(
-            [
-                {
-                    "uid": "12",
-                    "message_id": "<svn@example.com>",
-                    "body_text": body,
-                    "evidence": {
-                        "message_id": "<svn@example.com>",
-                        "references": ["<svn@example.com>"],
-                        "raw_headers_sha256": "b" * 64,
-                    },
-                }
-            ]
-        ),
-        product_gate=FakeProductGate(),
+        mail_gateway=mail,
+        product_gate=gate,
         now_fn=lambda: FIXED_NOW,
     )
     result = controller.run_once()
     assert result["processed"] == 1
     record = json.loads((tmp_path / "state" / "events" / "evt-svn--6.json").read_text(encoding="utf-8"))
-    assert record["retrieval_method"] == "svn"
+    assert record["retrieval_method"] == "unverified"
     assert record["gitlab_evidence_ref"] == ""
+    assert record["lark_evidence_ref"] == ""
+    assert record["retrieval_provenance"] == {}
+    assert record["submission_policy_digest"] == "unverified"
+    assert record["pre_release_policy_digest"] == "unverified"
+    outbound = decode_machine_event(str(mail.sent[0]["body_text"]))
+    assert outbound["transport_badge"] == PLAIN_BADGE
+    assert outbound["source_origin_badge"] == PLAIN_BADGE
+    assert outbound["gitlab_evidence_ref"] == ""
+    assert outbound["lark_evidence_ref"] == ""
+    assert outbound["retrieval_provenance"] == {}
+    assert "svn://repo/spoofed" not in mail.sent[0]["body_text"]
+    assert "svn://repo/path" not in mail.sent[0]["body_text"]
+    assert "请在审批页独立核验" in mail.sent[0]["body_text"]

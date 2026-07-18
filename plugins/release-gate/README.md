@@ -37,8 +37,9 @@ The setup path is bounded to at most four prompts, requires zero manual JSON edi
    - `test_result`
    - `shared_kernel_release_gate`
 3. Success reaches only `RELEASE_READY_NOTIFIED`; it never mints `RELEASE_AUTHORIZED`.
-4. The outbound mail always carries a signed machine event, frozen policy digests, checklist results, provenance badge propagation, evidence refs, and the submitter email when it is available.
-5. The plugin never performs production deployment; it stops at the `RELEASE_READY_NOTIFIED` boundary.
+4. Verified intake outbound mail carries a signed machine event, frozen policy digests, checklist results, provenance badges, evidence refs, and the submitter email when available.
+5. Unverified fallback outbound mail carries only authoritative Manifest-S/Manifest-R bindings plus explicit `UNVERIFIED` and `NOT_PROPAGATED` markers; sender-supplied provenance, policy digests, and checklist claims are never propagated.
+6. The plugin never performs production deployment; it stops at the `RELEASE_READY_NOTIFIED` boundary.
 
 ## SVN Policy
 

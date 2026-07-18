@@ -429,6 +429,51 @@ def test_run_once_quarantines_spoof_and_only_reminds_missing_roles(tmp_path: Pat
     assert event["receipt"]["status"] == "APPROVAL_PAUSED"
 
 
+def test_run_once_normalizes_multi_role_direct_replies_and_aggregates_verified_receipt(
+    tmp_path: Path,
+) -> None:
+    controller = _controller(
+        tmp_path,
+        request_messages=[_request_message()],
+        reply_messages=[
+            _reply_message(
+                message_id="<decision-manager@example.com>",
+                sender="manager@example.com",
+                return_path="manager@example.com",
+                body="通过",
+            ),
+            _reply_message(
+                message_id="<decision-security@example.com>",
+                sender="security@example.com",
+                return_path="security@example.com",
+                body=(
+                    "批准\n\n"
+                    "发件人： 发布机器人\n"
+                    "发送时间： 2026-07-16 01:00\n"
+                    "收件人： security@example.com\n\n"
+                    "Best regards,\n"
+                    "Reviewer\n\n"
+                    "This email and any attachments are confidential.\n"
+                ),
+            ),
+        ],
+    )
+
+    result = controller.run_once()
+    event = controller.get_event(event_id="evt-runtime", round_id=1)
+
+    assert result["status"] == "CAPABILITY_BLOCKED"
+    assert result["receipt"]["status"] == "APPROVAL_VERIFIED"
+    assert result["processed"] == {"requests": 1, "validated": 2, "quarantined": 0}
+    assert result["reminders"] == []
+    assert [item["role_id"] for item in event["current_decisions"]] == [
+        "release-manager",
+        "security-reviewer",
+    ]
+    assert event["current_decisions"][1]["decision"] == "APPROVE"
+    assert event["current_decisions"][1]["normalized_text"] == "批准"
+
+
 def test_hold_decision_pauses_without_handoff_and_status_doctor_surface_runtime_state(tmp_path: Path) -> None:
     controller = _controller(
         tmp_path,

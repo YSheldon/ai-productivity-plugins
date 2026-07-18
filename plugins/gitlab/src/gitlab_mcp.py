@@ -4,21 +4,25 @@ import base64
 import json
 import os
 import re
+import ssl
+import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.1.1"
+SERVER_VERSION = "0.1.2"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
 MAX_LIMIT = 100
 REDACTED = "[REDACTED]"
+SCHANNEL_HELPER = Path(__file__).resolve().parents[1] / "scripts" / "invoke_schannel.ps1"
 SENSITIVE_RESPONSE_KEYS = frozenset(
     {
         "access_token",
@@ -194,8 +198,84 @@ class NoRedirectHandler(HTTPRedirectHandler):
         return None
 
 
+@lru_cache(maxsize=1)
+def trusted_ssl_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    enum_certificates = getattr(ssl, "enum_certificates", None)
+    if enum_certificates is None:
+        return context
+
+    server_auth_oid = "1.3.6.1.5.5.7.3.1"
+    trusted_certificates: list[str] = []
+    for store_name in ("ROOT", "CA"):
+        for certificate, encoding, trust in enum_certificates(store_name):
+            if encoding != "x509_asn":
+                continue
+            if trust is not True and server_auth_oid not in trust:
+                continue
+            trusted_certificates.append(ssl.DER_cert_to_PEM_cert(certificate))
+    if trusted_certificates:
+        context.load_verify_locations(cadata="".join(trusted_certificates))
+    return context
+
+
 def open_url(request: Request, timeout: int) -> Any:
-    return build_opener(NoRedirectHandler()).open(request, timeout=timeout)
+    opener = build_opener(HTTPSHandler(context=trusted_ssl_context()), NoRedirectHandler())
+    return opener.open(request, timeout=timeout)
+
+
+def is_windows_tls_verification_failure(error: URLError) -> bool:
+    return os.name == "nt" and isinstance(error.reason, ssl.SSLCertVerificationError)
+
+
+def schannel_request(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    data: bytes | None,
+    timeout: int,
+) -> tuple[int, dict[str, str], bytes]:
+    system_root = os.environ.get("SystemRoot")
+    if not system_root:
+        raise ToolError("Windows Schannel fallback is unavailable; request failed closed")
+    powershell = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if not powershell.is_file() or not SCHANNEL_HELPER.is_file():
+        raise ToolError("Windows Schannel fallback is unavailable; request failed closed")
+
+    request_payload = {
+        "method": method.upper(),
+        "url": url,
+        "headers": headers,
+        "body_base64": base64.b64encode(data).decode("ascii") if data is not None else None,
+        "timeout_seconds": max(1, int(timeout)),
+    }
+    command = [
+        str(powershell),
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        str(SCHANNEL_HELPER),
+    ]
+    completed = subprocess.run(
+        command,
+        input=json.dumps(request_payload, ensure_ascii=True),
+        capture_output=True,
+        text=True,
+        timeout=max(10, int(timeout) + 5),
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if completed.returncode != 0:
+        raise ToolError("Windows Schannel request failed closed")
+    try:
+        envelope = json.loads(completed.stdout)
+        status = int(envelope["status"])
+        response_headers = {str(key): str(value) for key, value in envelope["headers"].items()}
+        content = base64.b64decode(envelope["body_base64"], validate=True)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ToolError("Windows Schannel returned an invalid response envelope") from exc
+    return status, response_headers, content
 
 
 class GitLabClient:
@@ -264,7 +344,26 @@ class GitLabClient:
             safe_body = sanitize_error_text(body_text[:2000], secrets=(self.token,))
             raise ToolError(f"GitLab API {exc.code} {exc.reason}: {safe_body}") from exc
         except URLError as exc:
-            raise ToolError(f"GitLab connection failed: {exc.reason}") from exc
+            if not is_windows_tls_verification_failure(exc):
+                raise ToolError(f"GitLab connection failed: {exc.reason}") from exc
+            status, response_headers, content = schannel_request(
+                method,
+                self.api_url(path, query),
+                headers,
+                data,
+                self.timeout,
+            )
+            if status >= 300:
+                body_text = content.decode("utf-8", errors="replace")
+                safe_body = sanitize_error_text(body_text[:2000], secrets=(self.token,))
+                raise ToolError(f"GitLab API {status} through Schannel: {safe_body}")
+            if raw:
+                return {
+                    "status": status,
+                    "headers": response_headers,
+                    "body_base64": base64.b64encode(content).decode("ascii"),
+                }
+            return decode_response(status, content)
 
 
 def decode_response(status: int, content: bytes) -> Any:

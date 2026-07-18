@@ -29,5 +29,7 @@ tokens. Set `auth_header` to `Authorization` to send `Bearer <token>`, or
 ## Security Boundaries
 
 - API calls are restricted to relative paths on the configured GitLab origin. Absolute URLs, network paths, embedded query strings, and redirects are rejected so authentication headers cannot be forwarded to another host.
+- On Windows, HTTPS verification automatically includes trusted root and intermediate CA certificates from the system certificate stores; certificate verification is never disabled.
 - Structured tool results and JSON error bodies recursively redact token, password, secret, cookie, and runner-registration fields.
 - Unexpected exception details are suppressed. Supply authentication only through the configured environment variable or profile, never through raw API paths, query objects, or request bodies.
+- If Python strict TLS rejects a Windows enterprise certificate chain, the plugin falls back to Schannel through a bundled non-redirecting helper launched by system-directory Windows PowerShell. Credentials are passed over stdin, never in process arguments.

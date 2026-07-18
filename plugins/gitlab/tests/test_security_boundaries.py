@@ -5,6 +5,7 @@ import io
 import json
 import shutil
 import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -74,6 +75,35 @@ def test_api_url_keeps_requests_on_the_configured_gitlab_origin() -> None:
     assert url == "https://gitlab.example.com/api/v4/projects/1?simple=True"
 
 
+
+def test_trusted_ssl_context_imports_windows_root_certificates(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_module()
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.loaded = []
+
+        def load_verify_locations(self, *, cadata: str) -> None:
+            self.loaded.append(cadata)
+
+    context = FakeContext()
+    monkeypatch.setattr(module.ssl, "create_default_context", lambda: context)
+    stores = {
+        "ROOT": [
+            (b"trusted", "x509_asn", True),
+            (b"other", "x509_asn", {"1.2.3"}),
+            (b"bundle", "pkcs_7_asn", True),
+        ],
+        "CA": [(b"server", "x509_asn", {"1.3.6.1.5.5.7.3.1"})],
+    }
+    monkeypatch.setattr(module.ssl, "enum_certificates", lambda store: stores[store])
+    monkeypatch.setattr(module.ssl, "DER_cert_to_PEM_cert", lambda value: f"PEM:{value.decode()}\n")
+    module.trusted_ssl_context.cache_clear()
+
+    assert module.trusted_ssl_context() is context
+    assert context.loaded == ["PEM:trusted\nPEM:server\n"]
+
+
 def test_redirect_handler_never_constructs_a_followup_request() -> None:
     module = load_module()
     handler = module.NoRedirectHandler()
@@ -86,6 +116,102 @@ def test_redirect_handler_never_constructs_a_followup_request() -> None:
         {},
         "https://attacker.example/collect",
     ) is None
+
+
+
+def test_schannel_fallback_keeps_credentials_out_of_process_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module()
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["input"] = kwargs["input"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "status": 200,
+                    "headers": {"Content-Type": "application/json"},
+                    "body_base64": "e30=",
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setenv("SystemRoot", "C:/Windows")
+    monkeypatch.setattr(module.Path, "is_file", lambda _path: True)
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    status, _headers, content = module.schannel_request(
+        "GET",
+        "https://gitlab.example.com/api/v4/user",
+        {"PRIVATE-TOKEN": "credential-must-stay-on-stdin"},
+        None,
+        5,
+    )
+
+    assert status == 200
+    assert content == b"{}"
+    assert "credential-must-stay-on-stdin" not in " ".join(captured["command"])
+    assert "credential-must-stay-on-stdin" in captured["input"]
+
+
+
+def test_schannel_process_failure_does_not_echo_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module()
+    monkeypatch.setenv("SystemRoot", "C:/Windows")
+    monkeypatch.setattr(module.Path, "is_file", lambda _path: True)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="credential-must-not-leak",
+        ),
+    )
+
+    with pytest.raises(module.ToolError) as captured:
+        module.schannel_request(
+            "GET",
+            "https://gitlab.example.com/api/v4/user",
+            {"PRIVATE-TOKEN": "credential-must-not-leak"},
+            None,
+            5,
+        )
+
+    assert "credential-must-not-leak" not in str(captured.value)
+    assert "failed closed" in str(captured.value)
+
+
+def test_schannel_redirect_response_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_module()
+    client = bare_client(module)
+
+    def tls_failure(_request, _timeout):
+        raise module.URLError(module.ssl.SSLCertVerificationError(1, "certificate verify failed"))
+
+    monkeypatch.setattr(module, "open_url", tls_failure)
+    monkeypatch.setattr(module, "is_windows_tls_verification_failure", lambda _error: True)
+    monkeypatch.setattr(
+        module,
+        "schannel_request",
+        lambda *_args: (302, {"Location": "https://attacker.example/collect"}, b"redirect blocked"),
+    )
+
+    with pytest.raises(module.ToolError) as captured:
+        client.request("GET", "/projects/1")
+
+    assert "302" in str(captured.value)
+
+
+def test_schannel_helper_disables_redirects() -> None:
+    module = load_module()
+    helper = module.SCHANNEL_HELPER.read_text(encoding="utf-8")
+    assert "$handler.AllowAutoRedirect = $false" in helper
 
 
 def test_http_error_body_and_configured_token_are_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -151,7 +277,7 @@ def test_manifest_uses_cross_platform_node_launcher() -> None:
     manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
     mcp = json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8"))
     server = mcp["mcpServers"]["gitlab"]
-    assert manifest["version"] == "0.1.1"
+    assert manifest["version"] == "0.1.2"
     assert server == {"command": "node", "args": ["./scripts/run_mcp.js"], "cwd": "."}
 
 
@@ -178,4 +304,4 @@ def test_node_launcher_initializes_the_mcp_server() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     response = json.loads(completed.stdout.splitlines()[0])
-    assert response["result"]["serverInfo"] == {"name": "gitlab", "version": "0.1.1"}
+    assert response["result"]["serverInfo"] == {"name": "gitlab", "version": "0.1.2"}

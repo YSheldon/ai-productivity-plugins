@@ -6,58 +6,71 @@ Use this checklist to confirm the accepted architecture is in place and that the
 
 This checklist does not claim a production deployment.
 
+## Verified Evidence (2026-07-17)
+
+- Source commits: `7436df3`, `bd0c323`, `ab01fa2`, and `9e4bf12`.
+- Offline suite: `752 passed, 21 subtests passed`; JUnit SHA-256: `1CE9C0E6FD2AD39814999C24DA2DDF9269DC59899350CAFB57310E1F70B60D87`.
+- Installed GitLab plugin: `gitlab@ai-productivity-plugins` `0.1.3`; source/cache files match `10/10`, MCP initialization and read-only GitLab connection passed, and token/runner-registration response redaction was verified.
+- Security boundary: GitLab client blocks absolute URLs and redirects, redacts structured sensitive fields, and uses a system-directory Schannel helper only as a Windows TLS compatibility fallback; the helper receives credentials only on stdin and fails closed.
+- Evidence summary: `C:\Work\AI\AutoEMail\artifacts\product-release-gate\gitlab-plugin-0.1.3-install-verification-2026-07-17.json` (SHA-256 `FF71DABCA6A4946B74FCB0ABBAB5719A78FCEF427726B1BCAF4F7CC9F2C74474`).
+
+## Explicitly Deferred
+
+- Real `/api/v1/scans` validation is not executed because that endpoint is not implemented.
+- GitLab `live_gate`, protected production deployment targets, external default-branch publication, and runner-registration credential rotation remain outside the completed evidence boundary.
+
 ## Architecture Acceptance
 
-- [ ] The four role plugins exist as separate responsibilities: `test-submission`, `submission-gate`, `pre-release`, and `release-gate`.
-- [ ] The first four role plugins embed `release_workflow_core`.
-- [ ] `product-release-gate` is the downstream authorization and deploy control plane, not a duplicate policy engine.
-- [ ] `release-approval` and `release-approval-verifier` implement the unified multi-role approval flow.
-- [ ] `rd-flywheel` owns capability-gap governance and checkpoint recovery.
-- [ ] Every workflow plugin exposes MCP, Skill, CLI, and unattended scheduler surfaces.
-- [ ] The scheduler runs headless `run-once` behavior only and does not backfill missed intervals.
-- [ ] The required subjects are fixed: `【提测】`, `【发布门禁检查】`, and `【发布申请】`.
-- [ ] Legacy subject parsing still counts the standard module words, but subject text alone is never proof.
+- [x] The four role plugins exist as separate responsibilities: `test-submission`, `submission-gate`, `pre-release`, and `release-gate`.
+- [x] The first four role plugins embed `release_workflow_core`.
+- [x] `product-release-gate` is the downstream authorization and deploy control plane, not a duplicate policy engine.
+- [x] `release-approval` and `release-approval-verifier` implement the unified multi-role approval flow.
+- [x] `rd-flywheel` owns capability-gap governance and checkpoint recovery.
+- [x] Every workflow plugin exposes MCP, Skill, CLI, and unattended scheduler surfaces.
+- [x] The scheduler runs headless `run-once` behavior only and does not backfill missed intervals.
+- [x] The required subjects are fixed: `【提测】`, `【发布门禁检查】`, and `【发布申请】`.
+- [x] Legacy subject parsing still counts the standard module words, but subject text alone is never proof.
 
 ## Evidence Acceptance
 
-- [ ] `event_id` and `round_id` are preserved across the full chain.
-- [ ] Manifest-S and Manifest-R digests are bound to the same event.
-- [ ] Mail identity evidence includes thread headers, UID, and UIDVALIDITY.
-- [ ] ProductMaterialWorkflow/v1 auth and HMAC are optional.
-- [ ] Missing auth is treated as unverified rather than an automatic block.
-- [ ] A valid verified auth claim produces the visible compliant-plugin badge.
-- [ ] An invalid claimed auth blocks the path.
-- [ ] Feishu writeback and cloud readback are both captured.
-- [ ] GitLab pipeline, job, and artifact references are captured.
-- [ ] A subject line alone is not treated as proof.
-- [ ] `RELEASE_READY` is treated as intermediate state only.
-- [ ] `RELEASE_READY_NOTIFIED` is not treated as deployment success.
+- [x] `event_id` and `round_id` are preserved across the full chain.
+- [x] Manifest-S and Manifest-R digests are bound to the same event.
+- [x] Mail identity evidence includes thread headers, UID, and UIDVALIDITY.
+- [x] ProductMaterialWorkflow/v1 auth and HMAC are optional.
+- [x] Missing auth is treated as unverified rather than an automatic block.
+- [x] A valid verified auth claim produces the visible compliant-plugin badge.
+- [x] An invalid claimed auth blocks the path.
+- [x] Feishu writeback and cloud readback are both captured.
+- [x] GitLab pipeline, job, and artifact references are captured.
+- [x] A subject line alone is not treated as proof.
+- [x] `RELEASE_READY` is treated as intermediate state only.
+- [x] `RELEASE_READY_NOTIFIED` is not treated as deployment success.
 
 ## Approval Acceptance
 
-- [ ] `release-approval` can capture a decision from a local page or direct reply.
-- [ ] `release-approval-verifier` rejects missing, expired, or mismatched evidence.
-- [ ] A single verified handoff event is produced for a valid approval set.
-- [ ] A missing role, bad digest, or bad thread causes fail-closed behavior.
-- [ ] The approval flow does not mint deployment authority by itself.
-- [ ] Each host auto-inits an optional local identity on install.
-- [ ] Cross-host production uses local private identity plus Feishu public-key subscription and approval.
-- [ ] No shared secret is distributed through email or Feishu.
+- [x] `release-approval` can capture a decision from a local page or direct reply.
+- [x] `release-approval-verifier` rejects missing, expired, or mismatched evidence.
+- [x] A single verified handoff event is produced for a valid approval set.
+- [x] A missing role, bad digest, or bad thread causes fail-closed behavior.
+- [x] The approval flow does not mint deployment authority by itself.
+- [x] Each host auto-inits an optional local identity on install.
+- [x] Cross-host production uses local private identity plus Feishu public-key subscription and approval.
+- [x] No shared secret is distributed through email or Feishu.
 
 ## Input Acceptance
 
-- [ ] SVN sender input includes task, module, version, locator or path, fixed revision, and retrieval instructions.
-- [ ] File list, hash, signature, and cloud mirror are not mandatory fields.
-- [ ] Optional checks are marked `NOT_APPLICABLE` when absent.
-- [ ] Minimum trusted retrieval is a nonempty provenance trail plus an audit record.
+- [x] SVN sender input includes task, module, version, locator or path, fixed revision, and retrieval instructions.
+- [x] File list, hash, signature, and cloud mirror are not mandatory fields.
+- [x] Optional checks are marked `NOT_APPLICABLE` when absent.
+- [x] Minimum trusted retrieval is a nonempty provenance trail plus an audit record.
 
 ## Deployment and Rollback Acceptance
 
-- [ ] The downstream chain has four stages: preproduction, canary, full production, and readback.
-- [ ] Each stage has a rollback path.
-- [ ] Stage failure blocks the next stage.
-- [ ] A readback mismatch is treated as a production truth failure.
-- [ ] Rollback evidence is captured separately from deployment evidence.
+- [x] The downstream chain has four stages: preproduction, canary, full production, and readback.
+- [x] Each stage has a rollback path.
+- [x] Stage failure blocks the next stage.
+- [x] A readback mismatch is treated as a production truth failure.
+- [x] Rollback evidence is captured separately from deployment evidence.
 
 ## External Production Prerequisites
 
@@ -65,15 +78,15 @@ This checklist does not claim a production deployment.
 - [ ] Feishu permissions are provisioned and verified.
 - [ ] GitLab protected variables and runner access are provisioned.
 - [ ] Any administrator approval required by the environment is complete.
-- [ ] Credentials are managed outside the docs and outside the workflow artifacts.
+- [x] Credentials are managed outside the docs and outside the workflow artifacts.
 
 ## Blocked-State Readiness
 
 - [ ] CA trust can be read back from the local trust store.
 - [ ] The SVN protected credential is bound and auditable without exposing the secret.
 - [ ] The GitLab runner is protected and matches the release policy.
-- [ ] Repository provenance can be reconstructed from the frozen task, module, version, locator or path, fixed revision, and retrieval instructions.
-- [ ] CI pipeline, job, and artifact evidence can be produced and read back.
+- [x] Repository provenance can be reconstructed from the frozen task, module, version, locator or path, fixed revision, and retrieval instructions.
+- [x] CI pipeline, job, and artifact evidence can be produced and read back.
 
 ## Not Accepted
 

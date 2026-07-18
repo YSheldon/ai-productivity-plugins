@@ -8,11 +8,12 @@ This checklist does not claim a production deployment.
 
 ## Verified Evidence (2026-07-17)
 
-- Source commits: `7436df3`, `bd0c323`, `ab01fa2`, `9e4bf12`, and `d1d3467`.
-- Offline suite: `752 passed, 21 subtests passed`; final JUnit SHA-256: `B9B190335933A436D88B406B75F55F87461740AC5946752305B92F608912EE50`.
-- Installed GitLab plugin: `gitlab@ai-productivity-plugins` `0.1.4`; source/cache files match `10/10`, MCP initialization and read-only GitLab connection passed, and token, runner-registration, and GitLab CI-variable value redaction were verified.
-- Security boundary: GitLab client blocks absolute URLs and redirects, redacts structured sensitive fields, and uses a system-directory Schannel helper only as a Windows TLS compatibility fallback; the helper receives credentials only on stdin and fails closed.
-- Final evidence summary: `C:\Work\AI\AutoEMail\artifacts\product-release-gate\production-readiness-verification-2026-07-17.json` (SHA-256 `64FBA5D76322D9CFD6CA43AE2016274BF02539DBFE2BE55CCF84032BF592D039`).
+- Source and hardening commits: `7436df3`, `bd0c323`, `ab01fa2`, `9e4bf12`, `d1d3467`, and `64e0a68`.
+- Offline suite: `793` JUnit cases with zero failures, errors, or skips, including `20` GitLab security-boundary tests; final JUnit SHA-256: `42517CD62C720AE58E61C3F34D21E956C2BC5E0DD0F4DB364297E6094F858843`.
+- Installed GitLab plugin: `gitlab@ai-productivity-plugins` `0.1.5`; runtime source/cache files match `9/9`, MCP initialization and read-only GitLab connection passed, and token, runner-registration, and GitLab CI-variable value redaction were verified.
+- Security boundary: GitLab client blocks absolute URLs and redirects, redacts structured sensitive fields, and resolves system PowerShell with Win32 `GetSystemDirectoryW` before using the Schannel fallback; the helper receives credentials only on stdin and fails closed.
+- Base evidence summary: `C:\Work\AI\AutoEMail\artifacts\product-release-gate\production-readiness-verification-2026-07-17.json` (SHA-256 `64FBA5D76322D9CFD6CA43AE2016274BF02539DBFE2BE55CCF84032BF592D039`).
+- Final JUnit evidence: `C:\Work\AI\AutoEMail\artifacts\product-release-gate\plugin-offline-tests-2026-07-17-gitlab-0.1.5-final.xml` (SHA-256 `42517CD62C720AE58E61C3F34D21E956C2BC5E0DD0F4DB364297E6094F858843`).
 
 ## Explicitly Deferred
 
@@ -20,6 +21,7 @@ This checklist does not claim a production deployment.
 - GitLab `live_gate`, protected production deployment targets, external default-branch publication, and runner-registration credential rotation remain outside the completed evidence boundary.
 - The enterprise mailbox passed IMAP and SMTP login checks; its persisted credential uses Windows CurrentUser DPAPI with no plaintext password field or unexpected non-owner write ACL.
 - GitLab project 59 currently has zero CI variables, so protected scan/deployment variables are not provisioned and the corresponding production prerequisite remains unchecked.
+- The exact `live_gate` tag resolves to one active, unpaused, `ref_protected` runner, but that runner is currently offline; no pipeline or job was triggered during verification.
 
 ## Architecture Acceptance
 
@@ -78,7 +80,8 @@ This checklist does not claim a production deployment.
 
 - [x] A real mailbox is provisioned and accessible.
 - [x] Feishu permissions are provisioned and verified.
-- [ ] GitLab protected variables and runner access are provisioned.
+- [ ] GitLab protected scan, SVN retrieval, and deployment variables are provisioned.
+- [ ] The protected runner bound to the `live_gate` tag is online and able to accept release jobs.
 - [ ] Any administrator approval required by the environment is complete.
 - [x] Credentials are managed outside the docs and outside the workflow artifacts.
 
@@ -86,7 +89,8 @@ This checklist does not claim a production deployment.
 
 - [x] CA trust can be read back from the local trust store.
 - [ ] The SVN protected credential is bound and auditable without exposing the secret.
-- [ ] The GitLab runner is protected and matches the release policy.
+- [x] The GitLab runner selected by the exact `live_gate` tag is protected and matches the release policy.
+- [ ] The selected protected runner is online.
 - [x] Repository provenance can be reconstructed from the frozen task, module, version, locator or path, fixed revision, and retrieval instructions.
 - [x] CI pipeline, job, and artifact evidence can be produced and read back.
 

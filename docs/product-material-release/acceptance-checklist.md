@@ -9,6 +9,7 @@ This checklist does not claim a production deployment.
 ## Verified Evidence (2026-07-18)
 
 - Plugin hardening commits: `64e0a68`, `99d1715`, `cdbb363`, and `4c39493`; the product CI Windows trust-anchor hardening commit is `abaaf9595273da6f7e8948fb0e38af2f4b414034`.
+- Default-branch publication was independently read back: GitHub plugin marketplace `main` at `bb9cfc644a8c09bc43976454ab1ed93c65753e83`; GitLab product CI `main` at `abaaf9595273da6f7e8948fb0e38af2f4b414034`, published with `ci.skip`.
 - Offline suite: `807` JUnit cases with zero failures, errors, or skips; final JUnit SHA-256: `A846B0FC47AB528CD10D2ABC06D91D761C05855C31B9281FA87D67F7DF4E195C`.
 - Workflow plugin versions under test: `product-release-gate` `0.3.4`, `pre-release` `0.1.4`, and `release-gate` `0.1.4`.
 - Installed GitLab plugin: `gitlab@ai-productivity-plugins` `0.1.5`; runtime source/cache files match `9/9`, MCP initialization and read-only GitLab connection passed, and token, runner-registration, and GitLab CI-variable value redaction were verified.
@@ -19,7 +20,7 @@ This checklist does not claim a production deployment.
 ## Explicitly Deferred
 
 - Real `/api/v1/scans` validation is not executed because that endpoint is not implemented.
-- GitLab `live_gate`, protected production deployment targets, external default-branch publication, and runner-registration credential rotation remain outside the completed evidence boundary.
+- GitLab `live_gate`, protected production deployment targets, and runner-registration credential rotation remain outside the completed evidence boundary.
 - The enterprise mailbox passed IMAP and SMTP login checks; its persisted credential uses Windows CurrentUser DPAPI with no plaintext password field or unexpected non-owner write ACL.
 - GitLab project 59 currently has zero CI variables, so protected scan/deployment variables are not provisioned and the corresponding production prerequisite remains unchecked.
 - One configured runner matches the exact `live_gate` tag and is active, unpaused, and `ref_protected`; its last verified state was offline, and no pipeline or job was triggered during verification.

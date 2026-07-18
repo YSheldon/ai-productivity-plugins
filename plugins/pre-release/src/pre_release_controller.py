@@ -27,6 +27,7 @@ from pre_release_mail import (
 
 VERIFIED_BADGE = "合规插件发起（已验证）"
 PLAIN_BADGE = "普通邮件发起（未验证）"
+_ALLOWED_TRANSPORT_BADGES = frozenset({VERIFIED_BADGE, PLAIN_BADGE})
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -310,6 +311,7 @@ class PreReleaseController:
 
     def _send_prerelease_request(self, task: dict[str, Any]) -> dict[str, Any]:
         payload = dict(task["request_payload"])
+        persisted_badge = self._validate_outbound_transport_badge(task, payload)
         body_lines = [
             f"事件：{task['event_id']}#{task['round_id']}",
             f"任务：{task['task']}",
@@ -319,9 +321,9 @@ class PreReleaseController:
             f"- 提测门禁策略摘要：{task['submission_policy_digest']}",
             f"- 预发布策略摘要：{task['pre_release_policy_digest']}",
             "检查结果：",
-            ("- HMAC：PASS" if task.get("transport_badge") == VERIFIED_BADGE else "- 人工回退：PASS"),
-            f"- 来源标识：{task['origin_badge']}",
-            f"- 传输标识：{task['transport_badge']}",
+            ("- HMAC：PASS" if persisted_badge == VERIFIED_BADGE else "- 人工回退：PASS"),
+            f"- 来源标识：{persisted_badge}",
+            f"- 传输标识：{persisted_badge}",
             "- Manifest：PASS",
             *([f"- SVN 固定版本：PASS"] if task.get("retrieval_method") == "svn" else [f"- GitLab 构建证据：PASS"]),
             "证据引用：",
@@ -378,11 +380,38 @@ class PreReleaseController:
             "checked_items": checked,
             "submitter_email": task.get("submitter_email", ""),
             "source_origin_badge": task["origin_badge"],
-            "transport_badge": (VERIFIED_BADGE if self.secret_path.exists() else PLAIN_BADGE),
+            "transport_badge": self._validated_task_transport_badge(task),
         }
         if self.secret_path.exists():
             return sign_machine_event(payload, self._secret_bytes())
         return payload
+
+    def _validated_task_transport_badge(self, task: Mapping[str, Any]) -> str:
+        transport_badge = str(task.get("transport_badge") or "").strip()
+        origin_badge = str(task.get("origin_badge") or "").strip()
+        if transport_badge not in _ALLOWED_TRANSPORT_BADGES or origin_badge not in _ALLOWED_TRANSPORT_BADGES:
+            raise PreReleaseError("TRANSPORT_BADGE_MISMATCH", "persisted transport badge is missing or invalid")
+        if origin_badge != transport_badge:
+            raise PreReleaseError("TRANSPORT_BADGE_MISMATCH", "persisted origin and transport badges differ")
+        return transport_badge
+
+    def _validate_outbound_transport_badge(self, task: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+        persisted_task = self._load_task(str(task["event_id"]), int(task["round_id"]))
+        persisted_badge = self._validated_task_transport_badge(persisted_task)
+        in_memory_badge = self._validated_task_transport_badge(task)
+        outbound_badge = str(payload.get("transport_badge") or "").strip()
+        outbound_origin_badge = str(payload.get("source_origin_badge") or "").strip()
+        if not (
+            persisted_badge
+            == in_memory_badge
+            == outbound_badge
+            == outbound_origin_badge
+        ):
+            raise PreReleaseError(
+                "TRANSPORT_BADGE_MISMATCH",
+                "persisted, in-memory, and outbound transport badges differ",
+            )
+        return persisted_badge
 
     def _policy_snapshot(self) -> dict[str, str]:
         payload = {"profile": self.config.policy_profile, "enabled_optional_checks": list(self.config.enabled_optional_checks)}

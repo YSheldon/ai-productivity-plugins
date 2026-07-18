@@ -10,6 +10,7 @@ sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from pre_release_config import MailAccountConfig, PreReleaseConfig, ProductGateConfig
 from pre_release_controller import PreReleaseController
+from pre_release_mail import decode_machine_event, verify_machine_event
 
 
 FIXED_NOW = datetime(2026, 7, 17, 5, 6, 7, tzinfo=timezone.utc)
@@ -102,6 +103,21 @@ def test_plain_human_mail_fallback_can_progress_as_unverified(tmp_path: Path) ->
     assert result["matched_events"] == 1
     listed = controller.list_tasks()["tasks"]
     assert listed[0]["event_id"] == "evt-plain"
+
+    request = controller.create_request(
+        event_id="evt-plain",
+        round_id=3,
+        test_result="PASS",
+        summary="fallback verified by tester",
+        output_dir=str(tmp_path / "out"),
+    )
+    assert request["status"] == "PRERELEASE_SENT"
+    sent_body = str(controller.mail_gateway.sent[0]["body_text"])
+    outbound = decode_machine_event(sent_body)
+    assert outbound["source_origin_badge"] == "普通邮件发起（未验证）"
+    assert outbound["transport_badge"] == "普通邮件发起（未验证）"
+    assert verify_machine_event(outbound, config.shared_hmac_secret_path.read_bytes()) is True
+    assert "- 传输标识：普通邮件发起（未验证）" in sent_body
 
 
 def test_svn_submission_does_not_require_gitlab_evidence(tmp_path: Path) -> None:

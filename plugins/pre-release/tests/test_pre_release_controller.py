@@ -10,7 +10,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from pre_release_config import MailAccountConfig, PreReleaseConfig, ProductGateConfig
-from pre_release_controller import PreReleaseController
+from pre_release_controller import PLAIN_BADGE, VERIFIED_BADGE, PreReleaseController, PreReleaseError
 from pre_release_mail import encode_machine_event, sign_machine_event
 
 
@@ -153,4 +153,34 @@ def test_fail_requires_reason_and_never_sends_request(tmp_path: Path) -> None:
         failure_reason="冒烟失败",
     )
     assert result["status"] == "TEST_FAILED"
+    assert mail.sent == []
+
+
+def test_send_fails_closed_when_persisted_and_outbound_badges_differ(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    mail = FakeMailGateway([_submission_message(config)])
+    controller = PreReleaseController(
+        config,
+        mail_gateway=mail,
+        product_gate=FakeProductGate(),
+        now_fn=lambda: FIXED_NOW,
+    )
+    controller.run_once()
+    task = controller._load_task("evt-1", 2)  # noqa: SLF001
+    task["transport_badge"] = VERIFIED_BADGE
+    task["origin_badge"] = VERIFIED_BADGE
+    task["request_payload"] = {
+        "event_id": "evt-1",
+        "round_id": 2,
+        "source_origin_badge": VERIFIED_BADGE,
+        "transport_badge": PLAIN_BADGE,
+    }
+    task["request_subject"] = "test"
+
+    try:
+        controller._send_prerelease_request(task)  # noqa: SLF001
+    except PreReleaseError as exc:
+        assert exc.code == "TRANSPORT_BADGE_MISMATCH"
+    else:
+        raise AssertionError("badge mismatch must fail closed")
     assert mail.sent == []

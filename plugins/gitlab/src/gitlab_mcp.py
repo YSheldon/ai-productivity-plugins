@@ -16,7 +16,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.1.4"
+SERVER_VERSION = "0.1.5"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -240,6 +240,32 @@ def is_windows_tls_verification_failure(error: URLError) -> bool:
     return os.name == "nt" and isinstance(error.reason, ssl.SSLCertVerificationError)
 
 
+def windows_system_directory() -> Path | None:
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        capacity = 32768
+        buffer = ctypes.create_unicode_buffer(capacity)
+        length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, capacity)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    if length <= 0 or length >= capacity:
+        return None
+    return Path(buffer.value)
+
+
+def system_powershell_path() -> Path | None:
+    system_directory = windows_system_directory()
+    if system_directory is None:
+        return None
+    candidate = system_directory / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
 def schannel_request(
     method: str,
     url: str,
@@ -247,11 +273,8 @@ def schannel_request(
     data: bytes | None,
     timeout: int,
 ) -> tuple[int, dict[str, str], bytes]:
-    system_root = os.environ.get("SystemRoot")
-    if not system_root:
-        raise ToolError("Windows Schannel fallback is unavailable; request failed closed")
-    powershell = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-    if not powershell.is_file() or not SCHANNEL_HELPER.is_file():
+    powershell = system_powershell_path()
+    if powershell is None or not SCHANNEL_HELPER.is_file():
         raise ToolError("Windows Schannel fallback is unavailable; request failed closed")
 
     request_payload = {

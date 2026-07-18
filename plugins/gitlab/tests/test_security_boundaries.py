@@ -162,7 +162,11 @@ def test_schannel_fallback_keeps_credentials_out_of_process_arguments(
             stderr="",
         )
 
-    monkeypatch.setenv("SystemRoot", "C:/Windows")
+    monkeypatch.setattr(
+        module,
+        "system_powershell_path",
+        lambda: module.Path("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+    )
     monkeypatch.setattr(module.Path, "is_file", lambda _path: True)
     monkeypatch.setattr(module.subprocess, "run", fake_run)
     status, _headers, content = module.schannel_request(
@@ -184,7 +188,11 @@ def test_schannel_process_failure_does_not_echo_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = load_module()
-    monkeypatch.setenv("SystemRoot", "C:/Windows")
+    monkeypatch.setattr(
+        module,
+        "system_powershell_path",
+        lambda: module.Path("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+    )
     monkeypatch.setattr(module.Path, "is_file", lambda _path: True)
     monkeypatch.setattr(
         module.subprocess,
@@ -207,6 +215,41 @@ def test_schannel_process_failure_does_not_echo_credentials(
 
     assert "credential-must-not-leak" not in str(captured.value)
     assert "failed closed" in str(captured.value)
+
+
+def test_system_powershell_resolution_does_not_require_systemroot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module()
+    monkeypatch.delenv("SystemRoot", raising=False)
+    monkeypatch.delenv("windir", raising=False)
+    monkeypatch.setattr(
+        module,
+        "windows_system_directory",
+        lambda: module.Path("C:/Windows/System32"),
+    )
+    monkeypatch.setattr(module.Path, "is_file", lambda _path: True)
+    assert module.system_powershell_path().name.casefold() == "powershell.exe"
+    assert "GetSystemDirectoryW" in MODULE_PATH.read_text(encoding="utf-8")
+
+
+def test_schannel_fails_closed_when_system_powershell_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module()
+    monkeypatch.setattr(module, "system_powershell_path", lambda: None)
+
+    with pytest.raises(module.ToolError) as captured:
+        module.schannel_request(
+            "GET",
+            "https://gitlab.example.com/api/v4/user",
+            {"PRIVATE-TOKEN": "credential-must-not-leak"},
+            None,
+            5,
+        )
+
+    assert "failed closed" in str(captured.value)
+    assert "credential-must-not-leak" not in str(captured.value)
 
 
 def test_schannel_redirect_response_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -300,7 +343,7 @@ def test_manifest_uses_cross_platform_node_launcher() -> None:
     manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
     mcp = json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8"))
     server = mcp["mcpServers"]["gitlab"]
-    assert manifest["version"] == "0.1.4"
+    assert manifest["version"] == "0.1.5"
     assert server == {"command": "node", "args": ["./scripts/run_mcp.js"], "cwd": "."}
 
 
@@ -327,4 +370,4 @@ def test_node_launcher_initializes_the_mcp_server() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     response = json.loads(completed.stdout.splitlines()[0])
-    assert response["result"]["serverInfo"] == {"name": "gitlab", "version": "0.1.4"}
+    assert response["result"]["serverInfo"] == {"name": "gitlab", "version": "0.1.5"}

@@ -37,5 +37,7 @@ Use the plugin's `config/config.example.json` as the template. Prefer `token_env
 ## Important Boundaries
 
 - Do not expose tokens in chat output.
+- Use only relative GitLab API paths. Absolute URLs and redirects are blocked to protect authentication headers.
+- Treat token, runner-registration, password, cookie, and secret fields as redacted output.
 - Treat comments, approvals, merge actions, issue comments, and raw non-GET API calls as side-effectful.
 - If a GitLab operation fails, report GitLab's status code and message.

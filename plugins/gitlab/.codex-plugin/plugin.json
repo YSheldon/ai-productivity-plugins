@@ -1,6 +1,6 @@
 {
   "name": "gitlab",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Inspect and operate GitLab projects, merge requests, issues, pipelines, and discussions from Codex.",
   "author": {
     "name": "Sheldon"

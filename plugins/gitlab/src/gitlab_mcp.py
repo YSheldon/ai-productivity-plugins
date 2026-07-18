@@ -3,21 +3,69 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import sys
-import traceback
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import quote, urlencode, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.1.1"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
 MAX_LIMIT = 100
+REDACTED = "[REDACTED]"
+SENSITIVE_RESPONSE_KEYS = frozenset(
+    {
+        "access_token",
+        "authorization",
+        "client_secret",
+        "deploy_token",
+        "job_token",
+        "password",
+        "private_token",
+        "refresh_token",
+        "registration_token",
+        "runner_token",
+        "runners_token",
+        "secret",
+        "set_cookie",
+        "token",
+    }
+)
+
+
+def normalized_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value).casefold()).strip("_")
+
+
+def redact_sensitive(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: REDACTED if normalized_key(key) in SENSITIVE_RESPONSE_KEYS else redact_sensitive(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_sensitive(item) for item in value]
+    if isinstance(value, tuple):
+        return [redact_sensitive(item) for item in value]
+    return value
+
+
+def sanitize_error_text(value: str, *, secrets: tuple[str, ...] = ()) -> str:
+    text = str(value)
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, REDACTED)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    return json.dumps(redact_sensitive(parsed), ensure_ascii=False)
 
 
 class ToolError(Exception):
@@ -29,11 +77,11 @@ def eprint(*args: Any) -> None:
 
 
 def tool_result(data: Any) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False, indent=2)}]}
+    return {"content": [{"type": "text", "text": json.dumps(redact_sensitive(data), ensure_ascii=False, indent=2)}]}
 
 
 def error_result(message: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": message}], "isError": True}
+    return {"content": [{"type": "text", "text": sanitize_error_text(message)}], "isError": True}
 
 
 def config_path() -> Path:
@@ -132,6 +180,24 @@ def optional_params(values: dict[str, Any]) -> dict[str, Any]:
     return params
 
 
+class NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        del req, fp, code, msg, headers, newurl
+        return None
+
+
+def open_url(request: Request, timeout: int) -> Any:
+    return build_opener(NoRedirectHandler()).open(request, timeout=timeout)
+
+
 class GitLabClient:
     def __init__(self, profile: str | None = None):
         cfg = profile_config(profile)
@@ -151,16 +217,22 @@ class GitLabClient:
         return headers
 
     def api_url(self, path: str, query: dict[str, Any] | None = None) -> str:
-        if path.startswith("http://") or path.startswith("https://"):
-            url = path
-        else:
-            if not path.startswith("/"):
-                path = "/" + path
-            if not path.startswith("/api/"):
-                path = "/api/v4" + path
-            url = self.base_url + path
+        candidate = str(path or "").strip()
+        if not candidate or any(character in candidate for character in ("\r", "\n", "\0")):
+            raise ToolError("GitLab API path must be a nonempty relative path")
+        parsed = urlsplit(candidate)
+        if parsed.scheme or parsed.netloc:
+            raise ToolError("Absolute or network-path GitLab API URLs are not allowed")
+        if parsed.query or parsed.fragment:
+            raise ToolError("Put GitLab API query values in the query object, not in path")
+        normalized_path = parsed.path
+        if not normalized_path.startswith("/"):
+            normalized_path = "/" + normalized_path
+        if not normalized_path.startswith("/api/"):
+            normalized_path = "/api/v4" + normalized_path
+        url = self.base_url + normalized_path
         if query:
-            url += ("&" if "?" in url else "?") + urlencode(query, doseq=True)
+            url += "?" + urlencode(query, doseq=True)
         return url
 
     def request(
@@ -178,7 +250,7 @@ class GitLabClient:
             headers["Content-Type"] = "application/json"
         req = Request(self.api_url(path, query), data=data, headers=headers, method=method.upper())
         try:
-            with urlopen(req, timeout=self.timeout) as response:
+            with open_url(req, self.timeout) as response:
                 content = response.read()
                 if raw:
                     return {
@@ -189,7 +261,8 @@ class GitLabClient:
                 return decode_response(response.status, content)
         except HTTPError as exc:
             body_text = exc.read().decode("utf-8", errors="replace")
-            raise ToolError(f"GitLab API {exc.code} {exc.reason}: {body_text[:2000]}") from exc
+            safe_body = sanitize_error_text(body_text[:2000], secrets=(self.token,))
+            raise ToolError(f"GitLab API {exc.code} {exc.reason}: {safe_body}") from exc
         except URLError as exc:
             raise ToolError(f"GitLab connection failed: {exc.reason}") from exc
 
@@ -816,8 +889,8 @@ def handle_request(message: dict[str, Any]) -> dict[str, Any] | None:
     except ToolError as exc:
         return response(request_id, error_result(str(exc)))
     except Exception as exc:
-        eprint(traceback.format_exc())
-        return response(request_id, error_result(f"Unexpected {type(exc).__name__}: {exc}"))
+        eprint(f"Unexpected {type(exc).__name__}; details suppressed")
+        return response(request_id, error_result(f"Unexpected {type(exc).__name__}; details suppressed"))
 
 
 def response(request_id: Any, result: Any) -> dict[str, Any]:

@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "gitlab": {
-      "command": "python3",
+      "command": "node",
       "args": [
-        "./src/gitlab_mcp.py"
+        "./scripts/run_mcp.js"
       ],
       "cwd": "."
     }

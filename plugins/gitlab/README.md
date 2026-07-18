@@ -25,3 +25,9 @@ Use `config/config.example.json` as the template. Tokens may be supplied through
 The default header is `PRIVATE-TOKEN`, which works for GitLab personal access
 tokens. Set `auth_header` to `Authorization` to send `Bearer <token>`, or
 `JOB-TOKEN` for GitLab CI job tokens.
+
+## Security Boundaries
+
+- API calls are restricted to relative paths on the configured GitLab origin. Absolute URLs, network paths, embedded query strings, and redirects are rejected so authentication headers cannot be forwarded to another host.
+- Structured tool results and JSON error bodies recursively redact token, password, secret, cookie, and runner-registration fields.
+- Unexpected exception details are suppressed. Supply authentication only through the configured environment variable or profile, never through raw API paths, query objects, or request bodies.

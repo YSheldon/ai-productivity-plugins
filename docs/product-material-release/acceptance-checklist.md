@@ -8,16 +8,18 @@ This checklist does not claim a production deployment.
 
 ## Verified Evidence (2026-07-17)
 
-- Source commits: `7436df3`, `bd0c323`, `ab01fa2`, and `9e4bf12`.
-- Offline suite: `752 passed, 21 subtests passed`; JUnit SHA-256: `1CE9C0E6FD2AD39814999C24DA2DDF9269DC59899350CAFB57310E1F70B60D87`.
-- Installed GitLab plugin: `gitlab@ai-productivity-plugins` `0.1.3`; source/cache files match `10/10`, MCP initialization and read-only GitLab connection passed, and token/runner-registration response redaction was verified.
+- Source commits: `7436df3`, `bd0c323`, `ab01fa2`, `9e4bf12`, and `d1d3467`.
+- Offline suite: `752 passed, 21 subtests passed`; final JUnit SHA-256: `B9B190335933A436D88B406B75F55F87461740AC5946752305B92F608912EE50`.
+- Installed GitLab plugin: `gitlab@ai-productivity-plugins` `0.1.4`; source/cache files match `10/10`, MCP initialization and read-only GitLab connection passed, and token, runner-registration, and GitLab CI-variable value redaction were verified.
 - Security boundary: GitLab client blocks absolute URLs and redirects, redacts structured sensitive fields, and uses a system-directory Schannel helper only as a Windows TLS compatibility fallback; the helper receives credentials only on stdin and fails closed.
-- Evidence summary: `C:\Work\AI\AutoEMail\artifacts\product-release-gate\gitlab-plugin-0.1.3-install-verification-2026-07-17.json` (SHA-256 `FF71DABCA6A4946B74FCB0ABBAB5719A78FCEF427726B1BCAF4F7CC9F2C74474`).
+- Final evidence summary: `C:\Work\AI\AutoEMail\artifacts\product-release-gate\production-readiness-verification-2026-07-17.json` (SHA-256 `64FBA5D76322D9CFD6CA43AE2016274BF02539DBFE2BE55CCF84032BF592D039`).
 
 ## Explicitly Deferred
 
 - Real `/api/v1/scans` validation is not executed because that endpoint is not implemented.
 - GitLab `live_gate`, protected production deployment targets, external default-branch publication, and runner-registration credential rotation remain outside the completed evidence boundary.
+- The enterprise mailbox passed IMAP and SMTP login checks; its persisted credential uses Windows CurrentUser DPAPI with no plaintext password field or unexpected non-owner write ACL.
+- GitLab project 59 currently has zero CI variables, so protected scan/deployment variables are not provisioned and the corresponding production prerequisite remains unchecked.
 
 ## Architecture Acceptance
 
@@ -74,15 +76,15 @@ This checklist does not claim a production deployment.
 
 ## External Production Prerequisites
 
-- [ ] A real mailbox is provisioned and accessible.
-- [ ] Feishu permissions are provisioned and verified.
+- [x] A real mailbox is provisioned and accessible.
+- [x] Feishu permissions are provisioned and verified.
 - [ ] GitLab protected variables and runner access are provisioned.
 - [ ] Any administrator approval required by the environment is complete.
 - [x] Credentials are managed outside the docs and outside the workflow artifacts.
 
 ## Blocked-State Readiness
 
-- [ ] CA trust can be read back from the local trust store.
+- [x] CA trust can be read back from the local trust store.
 - [ ] The SVN protected credential is bound and auditable without exposing the secret.
 - [ ] The GitLab runner is protected and matches the release policy.
 - [x] Repository provenance can be reconstructed from the frozen task, module, version, locator or path, fixed revision, and retrieval instructions.

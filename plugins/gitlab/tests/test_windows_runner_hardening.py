@@ -552,6 +552,35 @@ def test_wait_for_runner_online_honors_full_validated_policy_timeout(
     assert observed == [100.0, 221.0, 699.0, 700.0]
 
 
+def test_wait_for_runner_online_accepts_gitlab_18_paused_online_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_module()
+    policy = make_policy(tmp_path, module, install_service=True)
+    policy["timeout_seconds"] = 0
+    gl = FakeGitLab()
+    original_request = gl.request
+
+    def request(method, path, *args, **kwargs):
+        record = original_request(method, path, *args, **kwargs)
+        if method == "GET" and path == f"/runners/{gl.runner_id}":
+            record["online"] = True
+            record["status"] = "paused"
+        return record
+
+    monkeypatch.setattr(gl, "request", request)
+    monkeypatch.setattr(
+        module, "windows_service_record", lambda _name: service_record(policy)
+    )
+
+    assert module.wait_for_runner_online(
+        gl, policy, gl.runner_id, gl.project_id
+    ) is True
+
+    assert module.runner_record_is_online({"online": False, "status": "online"}) is False
+    assert module.runner_record_is_online({"status": "online"}) is True
+
+
 @pytest.mark.parametrize(
     "config_text",
     (

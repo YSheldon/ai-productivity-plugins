@@ -20,7 +20,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.2.6"
+SERVER_VERSION = "0.2.7"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -1506,6 +1506,14 @@ def attest_windows_service(policy: dict[str, Any], record: Any, *, require_runni
         raise ToolError("Dedicated Windows Runner service is not Running")
 
 
+def runner_record_is_online(record: Any) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if "online" in record:
+        return record.get("online") is True
+    return str(record.get("status") or "").casefold() == "online"
+
+
 def wait_for_runner_online(
     gl: GitLabClient,
     policy: dict[str, Any],
@@ -1519,7 +1527,7 @@ def wait_for_runner_online(
             attest_windows_service(policy, service, require_running=True)
             record = gl.request("GET", f"/runners/{runner_id}")
             attest_runner_record(record, policy, runner_id, project_id, paused=True)
-            if str(record.get("status") or "").casefold() == "online":
+            if runner_record_is_online(record):
                 return True
         except ToolError:
             pass
@@ -1953,7 +1961,7 @@ def activate_registered_runner(
         attest_windows_service(policy, service, require_running=True)
         paused_record = gl.request("GET", f"/runners/{runner_id}")
         attest_runner_record(paused_record, policy, runner_id, project_id, paused=True)
-        if str(paused_record.get("status") or "").casefold() != "online":
+        if not runner_record_is_online(paused_record):
             raise ToolError("Paused Runner did not remain online before identity receipt creation")
         failure_stage = "identity_receipt_failed"
         write_runner_identity_receipt(policy, runner_id, project_id)
@@ -1961,7 +1969,7 @@ def activate_registered_runner(
         gl.request("PUT", f"/runners/{runner_id}", body={"paused": False})
         activated_record = gl.request("GET", f"/runners/{runner_id}")
         attest_runner_record(activated_record, policy, runner_id, project_id, paused=False)
-        if str(activated_record.get("status") or "").casefold() != "online":
+        if not runner_record_is_online(activated_record):
             raise ToolError("Activated Runner did not remain online")
         write_runner_journal(policy, runner_id, project_id, "ready", "running")
     except Exception:

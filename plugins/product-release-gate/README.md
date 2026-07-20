@@ -33,6 +33,35 @@ Both keys must be at least 32 bytes and must be different. Configure an exact 40
 
 The MCP process reads `PRODUCT_RELEASE_GATE_CONFIG` once at startup. Tool calls cannot override `config_path`; restart the server to load an approved configuration change.
 
+## Built-in Filesystem Production Adapter
+
+For three local or mounted filesystem targets, generate a locked production configuration instead of hand-editing deployment commands:
+
+```powershell
+py -3 scripts/bootstrap_filesystem_production.py `
+  --output-config C:\ProgramData\ProductReleaseGate\config.json `
+  --adapter-dir C:\ProgramData\ProductReleaseGate\adapters\filesystem-1.0.0 `
+  --preproduction-target D:\ReleaseTargets\Preproduction `
+  --canary-target D:\ReleaseTargets\Canary `
+  --production-target D:\ReleaseTargets\Production
+```
+
+The bootstrap copies the packaged adapter into a dedicated immutable directory and locks the exact Python executable, adapter SHA-256, and all five command templates: deploy, verify, rollback, rollback verification, and production readback. It rejects root paths, duplicate or overlapping stage targets, symlinks, Windows Junctions, target/config overlap, embedded secret values, and in-place replacement of a changed adapter. Choose a new adapter directory for upgrades.
+
+The generated configuration deliberately keeps `production.enabled`, automatic authorization, automatic deployment, automatic report generation, and automatic report delivery disabled.
+
+It records only secret environment-variable names. It never writes authorization or audit secret values. Enable production only after the independent authorization verifier, distinct authorization/audit secrets, signature trust policy, cloud-scan and test adapters, mail identities, recipients, and real target access have passed live preflight.
+
+Each stage stores content-addressed releases under:
+
+```text
+<target>/.product-release-gate/releases/<manifest-r-digest>/files/
+```
+
+`current.json` is the atomic active-release pointer. Target consumers must resolve that pointer and consume its `files` directory; they must not assume files are copied directly into the target root. Deployment copies and synchronizes every file, verifies size plus SHA1 and SHA256, writes a PREPARED receipt, atomically switches the pointer, and then seals the ACTIVE receipt. Interrupted deployment and rollback are reconciled idempotently on retry. Verification and readback recompute the frozen Manifest-R binding and deployed inventory; changing both a file and its local inventory does not hide tampering.
+
+Manifest-S and Manifest-R require both SHA1 and SHA256 for every artifact. A legacy Manifest-R without SHA256 must be rebuilt and re-approved; it cannot be silently accepted. The built-in filesystem adapter does not replace approval, signing, cloud scan, testing, mail delivery, or an external immutable audit anchor.
+
 ## Required Flow
 
 1. Run `release_gate_preflight` and reject missing submission, scan, signature, or test capabilities.

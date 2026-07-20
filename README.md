@@ -60,7 +60,17 @@ $env:GITLAB_TOKEN = "<personal-access-token>"
 
 For multiple GitLab instances, set `GITLAB_CONFIG` to a JSON profile file based on `plugins/gitlab/config/config.example.json`. Store tokens in environment variables through `token_env` rather than committing secrets.
 
-After installing the Product Release Gate plugin, copy and customize `plugins/product-release-gate/config/config.example.json`, then point the plugin at the protected local configuration:
+After installing the Product Release Gate plugin, use the built-in production bootstrap for filesystem targets. It writes a disabled, fail-closed configuration and an exact adapter dependency lock without writing secret values:
+
+```powershell
+py -3 plugins/product-release-gate/scripts/bootstrap_filesystem_production.py `
+  --output-config C:\ProgramData\ProductReleaseGate\config.json `
+  --preproduction-target D:\ReleaseTargets\Preproduction `
+  --canary-target D:\ReleaseTargets\Canary `
+  --production-target D:\ReleaseTargets\Production
+```
+
+For another adapter type, copy and customize `plugins/product-release-gate/config/config.example.json`. Then point the plugin at the protected configuration:
 
 ```powershell
 $env:PRODUCT_RELEASE_GATE_CONFIG = "C:\path\to\product-release-gate.json"
@@ -76,7 +86,7 @@ submission -> submission gate -> test evidence -> approval
 -> PRODUCTION_VERIFIED -> sealed report -> SMTP delivery + exact IMAP readback
 ```
 
-The cloud-scan, automated-test, deployment, rollback, and production-readback commands are locked local adapter contracts and must return schema-bound JSON. Missing adapters, invalid signatures, non-clean scan results, failed tests, missing files, extra files, SHA1 drift, approval drift, deployment evidence drift, or production readback mismatch block the event. `RELEASE_READY` proves gate completion only. The independent production controller then requires unified approval, issues an expiring stage-scoped credential, executes the configured stages, verifies production state, and can deliver the sealed completion report with deterministic Message-ID and exact IMAP readback. All production automation and report delivery remain explicit opt-ins and default to disabled.
+The cloud-scan, automated-test, deployment, rollback, and production-readback commands are locked local adapter contracts and must return schema-bound JSON. Missing adapters, invalid signatures, non-clean scan results, failed tests, missing files, extra files, SHA1/SHA256 drift, approval drift, deployment evidence drift, or production readback mismatch block the event. `RELEASE_READY` proves gate completion only. The independent production controller then requires unified approval, issues an expiring stage-scoped credential, executes the configured stages, verifies production state, and can deliver the sealed completion report with deterministic Message-ID and exact IMAP readback. All production automation and report delivery remain explicit opt-ins and default to disabled.
 
 The four product-material role plugins are moving to one build-embedded shared `release_workflow_core` copy per plugin so they no longer depend on a runtime `product-release-gate` bridge, while still keeping submitter, gate, tester, and release-mailbox responsibilities separate:
 

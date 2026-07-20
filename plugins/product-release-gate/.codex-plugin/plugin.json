@@ -1,6 +1,6 @@
 {
   "name": "product-release-gate",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "description": "Create verifiable product-material gates and authorized phased production releases.",
   "author": {
     "name": "Sheldon"

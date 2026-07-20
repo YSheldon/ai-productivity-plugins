@@ -20,6 +20,11 @@ RESULT_ERROR = "ERROR"
 VALID_TEST_RESULTS = {"PASS", "FAIL", "BLOCKED"}
 VALID_RISK_LEVELS = {"standard", "high", "emergency"}
 EVENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,120}$")
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{index}" for index in range(1, 10)}
+    | {f"lpt{index}" for index in range(1, 10)}
+)
 
 
 class GateError(Exception):
@@ -68,6 +73,17 @@ def sha1_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def read_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -92,8 +108,20 @@ def safe_event_id(event_id: str) -> str:
 
 
 def safe_logical_name(value: str) -> str:
-    name = str(value or "").strip()
-    if not name or name in {".", ".."} or "/" in name or "\\" in name or ":" in name:
+    raw = str(value or "")
+    name = raw.strip()
+    stem = name.split(".", 1)[0].casefold()
+    if (
+        not name
+        or raw != name
+        or name in {".", ".."}
+        or name.endswith(".")
+        or "/" in name
+        or "\\" in name
+        or ":" in name
+        or any(ord(character) < 32 for character in name)
+        or stem in _WINDOWS_RESERVED_NAMES
+    ):
         raise GateError("logical_name must be a single file name without path components")
     return name
 
@@ -368,18 +396,20 @@ class ReleaseGateController:
             raise GateError("At least one artifact is required")
         baseline = self._baseline_index(baseline_manifest_path)
         prepared: list[dict[str, Any]] = []
-        seen_names: set[str] = set()
+        seen_names_casefold: set[str] = set()
         for raw in artifact_values:
             if not isinstance(raw, dict):
                 raise GateError("Each artifact must be an object")
             logical_name = safe_logical_name(str(raw.get("logical_name") or ""))
-            if logical_name in seen_names:
+            normalized_name = logical_name.casefold()
+            if normalized_name in seen_names_casefold:
                 raise GateError(f"Duplicate logical_name: {logical_name}")
-            seen_names.add(logical_name)
+            seen_names_casefold.add(normalized_name)
             path = Path(os.path.expandvars(str(raw.get("file_path") or ""))).expanduser().resolve()
             if not path.is_file():
                 raise GateError(f"Artifact file does not exist: {path}")
             sha1 = sha1_file(path)
+            sha256 = sha256_file(path)
             old_sha1 = baseline.get(logical_name)
             change_type = "new" if old_sha1 is None else ("unchanged" if old_sha1 == sha1 else "updated")
             prepared.append(
@@ -388,6 +418,7 @@ class ReleaseGateController:
                     "file_path": str(path),
                     "size": path.stat().st_size,
                     "sha1": sha1,
+                    "sha256": sha256,
                     "extension": path.suffix.lower(),
                     "source_ref": str(raw.get("source_ref") or source_ref or "").strip(),
                     "change_type": change_type,
@@ -432,10 +463,26 @@ class ReleaseGateController:
         name = artifact["logical_name"]
         if not path.is_file():
             return result(rule_id, "artifact integrity", RESULT_ERROR, "artifact file is missing", name)
-        actual = sha1_file(path)
-        if actual != artifact["sha1"]:
-            return result(rule_id, "artifact integrity", RESULT_FAIL, "SHA1 differs from the frozen manifest", name)
-        return result(rule_id, "artifact integrity", RESULT_PASS, f"SHA1={actual}", name)
+        actual_sha1 = sha1_file(path)
+        actual_sha256 = sha256_file(path)
+        if (
+            actual_sha1 != artifact.get("sha1")
+            or actual_sha256 != artifact.get("sha256")
+        ):
+            return result(
+                rule_id,
+                "artifact integrity",
+                RESULT_FAIL,
+                "SHA1/SHA256 differs from the frozen manifest",
+                name,
+            )
+        return result(
+            rule_id,
+            "artifact integrity",
+            RESULT_PASS,
+            f"SHA1={actual_sha1};SHA256={actual_sha256}",
+            name,
+        )
 
     def _extension_result(self, rule_id: str, artifact: dict[str, Any]) -> dict[str, Any]:
         allowed = {str(value).lower() for value in self.config["policy"].get("allowed_extensions", [])}
@@ -575,7 +622,24 @@ class ReleaseGateController:
             raise GateError(f"Submission gate cannot run from status {event.get('status')}")
         manifest = self._load_manifest(event_id, "manifest-s.json")
         artifacts = as_list(manifest.get("artifacts"), "manifest-s.artifacts")
-        entries: list[dict[str, Any]] = []
+        computed_digest = object_digest({"artifacts": artifacts})
+        manifest_ok = (
+            computed_digest
+            == manifest.get("digest")
+            == event.get("manifest_s_digest")
+        )
+        entries: list[dict[str, Any]] = [
+            result(
+                "T-00",
+                "submission manifest integrity",
+                RESULT_PASS if manifest_ok else RESULT_FAIL,
+                (
+                    "Manifest-S digest matches the frozen event"
+                    if manifest_ok
+                    else "Manifest-S digest differs from the frozen event"
+                ),
+            )
+        ]
         for artifact in artifacts:
             entries.append(self._artifact_integrity_result("T-01", artifact))
             entries.append(self._extension_result("T-02", artifact))
@@ -736,26 +800,57 @@ class ReleaseGateController:
         event = self._load_event(event_id)
         if event.get("status") != "RELEASE_PREPARING":
             raise GateError(f"Final material cannot be produced from status {event.get('status')}")
+        manifest_s = self._load_manifest(event_id, "manifest-s.json")
+        artifacts = as_list(
+            manifest_s.get("artifacts"),
+            "manifest-s.artifacts",
+        )
+        computed_manifest_s_digest = object_digest({"artifacts": artifacts})
+        if (
+            computed_manifest_s_digest != manifest_s.get("digest")
+            or computed_manifest_s_digest != event.get("manifest_s_digest")
+        ):
+            raise GateError("Manifest-S digest drifted before final material build")
+        for artifact in artifacts:
+            source = Path(str(artifact.get("file_path") or ""))
+            if not source.is_file():
+                raise GateError(f"Submission artifact is missing: {source}")
+            if (
+                sha1_file(source) != artifact.get("sha1")
+                or sha256_file(source) != artifact.get("sha256")
+            ):
+                raise GateError(
+                    "Submission artifact SHA1/SHA256 drifted: "
+                    + str(artifact.get("logical_name"))
+                )
         destination_root = Path(os.path.expandvars(str(output_dir or ""))).expanduser().resolve()
         if destination_root.exists() and any(destination_root.iterdir()):
             raise GateError("output_dir must be empty to prevent untracked final material")
         destination_root.mkdir(parents=True, exist_ok=True)
-        manifest_s = self._load_manifest(event_id, "manifest-s.json")
         final_artifacts: list[dict[str, Any]] = []
-        for artifact in as_list(manifest_s.get("artifacts"), "manifest-s.artifacts"):
+        for artifact in artifacts:
             source = Path(artifact["file_path"])
-            if not source.is_file():
-                raise GateError(f"Submission artifact is missing: {source}")
             destination = destination_root / safe_logical_name(str(artifact["logical_name"]))
             shutil.copy2(source, destination)
             final_sha1 = sha1_file(destination)
+            final_sha256 = sha256_file(destination)
+            if (
+                final_sha1 != artifact.get("sha1")
+                or final_sha256 != artifact.get("sha256")
+            ):
+                raise GateError(
+                    "Copied final artifact SHA1/SHA256 differs: "
+                    + str(artifact.get("logical_name"))
+                )
             final_artifacts.append(
                 {
                     "logical_name": artifact["logical_name"],
                     "file_path": str(destination),
                     "size": destination.stat().st_size,
                     "sha1": final_sha1,
+                    "sha256": final_sha256,
                     "source_sha1": artifact["sha1"],
+                    "source_sha256": artifact["sha256"],
                     "source_ref": artifact["source_ref"],
                 }
             )
@@ -811,9 +906,26 @@ class ReleaseGateController:
             for item in as_list(manifest_r.get("artifacts"), "manifest-r.artifacts")
         }
         entries: list[dict[str, Any]] = []
+        computed_manifest_s_digest = object_digest(
+            {"artifacts": manifest_s.get("artifacts")}
+        )
+        computed_manifest_r_digest = object_digest(
+            {
+                "source_manifest_s_digest": manifest_r.get(
+                    "source_manifest_s_digest"
+                ),
+                "artifacts": manifest_r.get("artifacts"),
+            }
+        )
         digest_ok = (
-            manifest_r.get("source_manifest_s_digest") == event.get("manifest_s_digest")
-            and manifest_r.get("digest") == event.get("manifest_r_digest")
+            computed_manifest_s_digest
+            == manifest_s.get("digest")
+            == event.get("manifest_s_digest")
+            and manifest_r.get("source_manifest_s_digest")
+            == computed_manifest_s_digest
+            and computed_manifest_r_digest
+            == manifest_r.get("digest")
+            == event.get("manifest_r_digest")
         )
         entries.append(
             result(
@@ -825,6 +937,8 @@ class ReleaseGateController:
         )
         mapping_ok = all(
             name in source and item.get("source_sha1") == source[name].get("sha1")
+            and item.get("source_sha256")
+            == source[name].get("sha256")
             for name, item in final.items()
         )
         entries.append(
@@ -855,22 +969,34 @@ class ReleaseGateController:
         )
         for name, artifact in final.items():
             path = Path(str(artifact.get("file_path") or ""))
-            actual = sha1_file(path) if path.is_file() else None
+            actual_sha1 = sha1_file(path) if path.is_file() else None
+            actual_sha256 = sha256_file(path) if path.is_file() else None
             source_sha1 = source.get(name, {}).get("sha1")
-            matches = actual == artifact.get("sha1") == source_sha1
+            source_sha256 = source.get(name, {}).get("sha256")
+            matches = (
+                actual_sha1 == artifact.get("sha1") == source_sha1
+                and actual_sha256
+                == artifact.get("sha256")
+                == source_sha256
+            )
             entries.append(
                 result(
                     "R-05",
-                    "final SHA1 consistency",
+                    "final SHA1/SHA256 consistency",
                     RESULT_PASS if matches else RESULT_FAIL,
-                    "final SHA1 matches Manifest-S" if matches else "final SHA1 differs from Manifest-R or Manifest-S",
+                    (
+                        "final SHA1/SHA256 matches Manifest-S"
+                        if matches
+                        else "final SHA1/SHA256 differs from Manifest-R or Manifest-S"
+                    ),
                     name,
                 )
             )
             signature_artifact = {
                 "logical_name": name,
                 "file_path": str(path),
-                "sha1": actual or artifact.get("sha1", ""),
+                "sha1": actual_sha1 or artifact.get("sha1", ""),
+                "sha256": actual_sha256 or artifact.get("sha256", ""),
             }
             entries.append(self._signature_result("R-06", signature_artifact))
             entries.append(self._cloud_scan_result("R-07", signature_artifact))

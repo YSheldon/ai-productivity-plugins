@@ -9,6 +9,18 @@ Use this plugin for submission, testing, final-material production, release auth
 
 Run `py -3 src/release_gate_cli.py setup` for zero manual JSON editing. A setup rerun reuses the same configuration with zero prompts. MCP, this Skill, the standalone CLI, and the OS scheduler all use the same controller; Codex is optional.
 
+## Filesystem Production Bootstrap
+
+When all three deployment stages use filesystem targets, prefer `py -3 scripts/bootstrap_filesystem_production.py` over hand-written adapter commands. Supply three distinct, non-overlapping absolute targets plus the protected output config. The bootstrap must:
+
+- install the packaged filesystem adapter into a dedicated versioned directory;
+- pin the Python and adapter SHA256 plus every deploy/verify/rollback/readback argv template;
+- reject filesystem roots, duplicate/overlapping targets, symlinks, Junctions, embedded secrets, and mutable in-place upgrades;
+- keep production and all automatic actions disabled;
+- avoid creating any deployment target during bootstrap.
+
+Do not enable the generated config until external approval, separate authorization/audit keys, signature trust, scan, test, mail, recipient, and live-target checks are proven. Every frozen artifact must carry size, SHA1, and SHA256. Consumers must follow `<target>/.product-release-gate/current.json` to the content-addressed release `files` directory. A local bootstrap PASS proves only the deployment binding; it is not production deployment evidence.
+
 ## Required Workflow
 
 1. Start the MCP server with one protected `PRODUCT_RELEASE_GATE_CONFIG`. Per-call `config_path` overrides are forbidden. Call `release_gate_preflight`; never interpret a missing required integration as PASS.

@@ -107,6 +107,8 @@
         "{authorization_path}",
         "--idempotency-key",
         "{idempotency_key}",
+        "--expected-digest",
+        "{manifest_r_digest}",
         "--json"
       ],
       "verify_command": [
@@ -118,6 +120,8 @@
         "{target_ref}",
         "--deployment-ref",
         "{deployment_ref}",
+        "--rollback-ref",
+        "{rollback_ref}",
         "--expected-digest",
         "{manifest_r_digest}",
         "--json"

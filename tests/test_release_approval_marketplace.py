@@ -35,7 +35,7 @@ PLUGINS = (
         "release_approval_verifier_mcp.py",
         "verifier_cli.py",
     ),
-    MarketplacePlugin("product-release-gate", "0.3.6", "release_gate_mcp.py", "release_gate_cli.py"),
+    MarketplacePlugin("product-release-gate", "0.4.0", "release_gate_mcp.py", "release_gate_cli.py"),
     MarketplacePlugin("test-submission", "0.1.3", "test_submission_mcp.py", "test_submission_cli.py"),
     MarketplacePlugin("submission-gate", "0.1.3", "submission_gate_mcp.py", "submission_gate_cli.py"),
     MarketplacePlugin("pre-release", "0.1.4", "pre_release_mcp.py", "pre_release_cli.py"),

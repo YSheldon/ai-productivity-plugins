@@ -13,6 +13,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from release_gate_hardened import HardenedReleaseGateController
+from release_gate_core import GateError
 
 
 class ReleaseGateFlowTests(unittest.TestCase):
@@ -127,6 +128,73 @@ class ReleaseGateFlowTests(unittest.TestCase):
         r05 = [item for item in gate["execution"]["results"] if item["rule_id"] == "R-05"]
         self.assertEqual("SUBMISSION_BLOCKED", gate["status"])
         self.assertEqual(["FAIL"], [item["result"] for item in r05])
+
+    def test_submission_manifest_digest_tamper_is_blocked(self) -> None:
+        controller = self._controller()
+        self._create(controller, "event-submission-manifest-tamper")
+        manifest_path = (
+            controller._event_dir("event-submission-manifest-tamper")
+            / "manifest-s.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifacts"][0]["source_ref"] = "commit:forged"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        gate = controller.run_submission_gate(
+            "event-submission-manifest-tamper"
+        )
+        integrity = [
+            item
+            for item in gate["execution"]["results"]
+            if item["rule_id"] == "T-00"
+        ]
+        self.assertEqual("SUBMISSION_BLOCKED", gate["status"])
+        self.assertEqual(["FAIL"], [item["result"] for item in integrity])
+
+    def test_build_final_rejects_manifest_tamper_without_output(self) -> None:
+        controller = self._controller()
+        event_id = "event-final-manifest-tamper"
+        self._create(controller, event_id)
+        self.assertEqual(
+            "PASS",
+            controller.run_submission_gate(event_id)["overall"],
+        )
+        controller.record_test_result(event_id, "PASS", "test-run:1")
+        manifest_path = (
+            controller._event_dir(event_id)
+            / "manifest-s.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifacts"][0]["source_ref"] = "commit:forged"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        output_dir = self.root / "must-not-exist"
+
+        with self.assertRaisesRegex(GateError, "Manifest-S digest drifted"):
+            controller.build_final_release(event_id, str(output_dir))
+        self.assertFalse(output_dir.exists())
+
+    def test_release_manifest_digest_tamper_is_blocked(self) -> None:
+        controller, _ = self._reach_release_gate(
+            "event-release-manifest-tamper"
+        )
+        manifest_path = (
+            controller._event_dir("event-release-manifest-tamper")
+            / "manifest-r.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifacts"][0]["source_ref"] = "commit:forged"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        gate = controller.run_release_gate(
+            "event-release-manifest-tamper"
+        )
+        integrity = [
+            item
+            for item in gate["execution"]["results"]
+            if item["rule_id"] == "R-01"
+        ]
+        self.assertEqual("SUBMISSION_BLOCKED", gate["status"])
+        self.assertEqual(["FAIL"], [item["result"] for item in integrity])
 
     def test_required_cloud_scan_without_adapter_fails_closed(self) -> None:
         cloud_config = self._write_config(require_cloud_scan=True)

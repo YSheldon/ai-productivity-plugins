@@ -104,6 +104,41 @@ class ProductionReleaseController(HardenedReleaseGateController):
             and all(isinstance(item, str) and bool(item) for item in value)
         )
 
+    @staticmethod
+    def _deployment_targets_isolated(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        references = [
+            str(value.get(stage) or "").strip()
+            for stage in REQUIRED_DEPLOYMENT_STAGES
+        ]
+        if any(not reference for reference in references):
+            return False
+        normalized_references = {
+            os.path.normcase(reference) for reference in references
+        }
+        if len(normalized_references) != len(REQUIRED_DEPLOYMENT_STAGES):
+            return False
+
+        absolute_paths = [
+            Path(os.path.abspath(os.path.normpath(reference)))
+            for reference in references
+            if Path(reference).is_absolute()
+        ]
+        for index, left in enumerate(absolute_paths):
+            for right in absolute_paths[index + 1 :]:
+                try:
+                    left.relative_to(right)
+                    return False
+                except ValueError:
+                    pass
+                try:
+                    right.relative_to(left)
+                    return False
+                except ValueError:
+                    pass
+        return True
+
     def _authorization_key(self) -> bytes:
         production = self._production_config()
         authorization = production.get("authorization") or {}
@@ -420,6 +455,10 @@ class ProductionReleaseController(HardenedReleaseGateController):
                 "name": "deployment.targets",
                 "configured": isinstance(targets, dict)
                 and all(bool(str(targets.get(stage) or "").strip()) for stage in REQUIRED_DEPLOYMENT_STAGES),
+            },
+            {
+                "name": "deployment.targets.isolated",
+                "configured": self._deployment_targets_isolated(targets),
             },
             {
                 "name": "deployment.deploy_command",
@@ -1927,10 +1966,34 @@ class ProductionReleaseController(HardenedReleaseGateController):
         }
         if actual_names != expected_names:
             raise GateError("final material file set drifted after release authorization")
+        computed_manifest_digest = object_digest(
+            {
+                "source_manifest_s_digest": manifest_r.get(
+                    "source_manifest_s_digest"
+                ),
+                "artifacts": artifacts,
+            }
+        )
+        if (
+            computed_manifest_digest != event.get("manifest_r_digest")
+            or manifest_r.get("source_manifest_s_digest")
+            != event.get("manifest_s_digest")
+            or manifest_r.get("digest") != computed_manifest_digest
+        ):
+            raise GateError(
+                "final material Manifest-R digest drifted after release authorization"
+            )
         for artifact in artifacts:
             path = Path(str(artifact.get("file_path") or ""))
-            if not path.is_file() or sha1_file(path) != artifact.get("sha1"):
-                raise GateError(f"final material SHA1 drifted: {artifact.get('logical_name')}")
+            if (
+                not path.is_file()
+                or sha1_file(path) != artifact.get("sha1")
+                or sha256_file(path) != artifact.get("sha256")
+            ):
+                raise GateError(
+                    "final material SHA1/SHA256 drifted: "
+                    + str(artifact.get("logical_name"))
+                )
 
     def _deployment_adapter_lock_ready(self) -> bool:
         try:

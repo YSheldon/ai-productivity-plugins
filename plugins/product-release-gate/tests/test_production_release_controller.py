@@ -1137,6 +1137,50 @@ else:
 
         self.assertFalse(controller.verify_control_event_chain("event-ledger-truncate")["valid"])
 
+    def test_production_preflight_requires_isolated_stage_targets(self) -> None:
+        config_path = self._write_config()
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        targets = config["production"]["deployment"]["targets"]
+        targets["production_canary"] = targets["preproduction"]
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+
+        duplicate = ProductionReleaseController(
+            str(config_path)
+        ).production_preflight()
+        self.assertFalse(duplicate["ready"])
+        self.assertIn(
+            "deployment.targets.isolated",
+            duplicate["missing_capabilities"],
+        )
+
+        config_path = self._write_config()
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        target_root = self.root / "isolated-stage-targets"
+        config["production"]["deployment"]["targets"] = {
+            "preproduction": str(self.root / "preproduction-target"),
+            "production_canary": str(target_root / "canary"),
+            "production_full": str(target_root),
+        }
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+
+        overlapping = ProductionReleaseController(
+            str(config_path)
+        ).production_preflight()
+        self.assertFalse(overlapping["ready"])
+        self.assertIn(
+            "deployment.targets.isolated",
+            overlapping["missing_capabilities"],
+        )
+
+        config_path = self._write_config()
+        valid = ProductionReleaseController(
+            str(config_path)
+        ).production_preflight()
+        self.assertNotIn(
+            "deployment.targets.isolated",
+            valid["missing_capabilities"],
+        )
+
 
     def test_production_preflight_rejects_invalid_locked_entrypoints(self) -> None:
         controller = ProductionReleaseController(str(self._write_config()))

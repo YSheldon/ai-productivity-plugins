@@ -20,7 +20,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.2.5"
+SERVER_VERSION = "0.2.6"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -1340,7 +1340,7 @@ if ($null -eq $service) {
     if ($LASTEXITCODE -ne 0) { throw 'service descriptor query failed' }
     $sddl = $lines | Where-Object { [string]$_ -match '^(O:|G:|D:|S:)' } | Select-Object -Last 1
     if ([string]::IsNullOrWhiteSpace([string]$sddl)) { throw 'service descriptor missing' }
-    $descriptor = New-Object Security.AccessControl.RawSecurityDescriptor([string]$sddl, 0)
+    $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new([string]$sddl)
     $daclProtected = ($descriptor.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) -ne 0
     $daclSafe = $null -ne $descriptor.DiscretionaryAcl -and $daclProtected
     $dangerous = 0x00000002 -bor 0x00000010 -bor 0x00000020 -bor 0x00000040 -bor

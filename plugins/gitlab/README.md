@@ -1,7 +1,9 @@
 # GitLab Codex Plugin
 
 This plugin exposes a local MCP server for GitLab REST API workflows. Version
-`0.2.5` accepts the exact Windows service command emitted by GitLab Runner
+`0.2.6` uses the unambiguous string SDDL constructor when attesting a hardened
+Windows service DACL. Version `0.2.5` accepts the exact Windows service command
+emitted by GitLab Runner
 18.11, including the policy working directory plus `--syslog`, while still
 rejecting unknown, duplicate, or mismatched arguments.
 Version `0.2.3` isolates Windows PowerShell 5.1 from incompatible PowerShell 7 module

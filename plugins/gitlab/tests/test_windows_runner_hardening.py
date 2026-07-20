@@ -352,6 +352,8 @@ def test_service_dacl_hardening_is_fixed_nonsecret_and_protected(
     assert "password" not in harden_script.casefold()
     assert "token" not in harden_script.casefold()
     inspect_script, _payload = captured[1]
+    assert "[Security.AccessControl.RawSecurityDescriptor]::new([string]$sddl)" in inspect_script
+    assert "New-Object Security.AccessControl.RawSecurityDescriptor" not in inspect_script
     assert "DiscretionaryAclProtected" in inspect_script
     assert "$null -ne $descriptor.DiscretionaryAcl" in inspect_script
     assert "QualifiedAce" in inspect_script

@@ -84,6 +84,80 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def durable_copy_file(source: Path, destination: Path) -> None:
+    shutil.copyfile(source, destination)
+    with destination.open("rb+") as handle:
+        handle.flush()
+        os.fsync(handle.fileno())
+    shutil.copystat(source, destination, follow_symlinks=False)
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _windows_move(source: Path, destination: Path, *, replace: bool) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    move_file = kernel32.MoveFileExW
+    move_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+    ]
+    move_file.restype = wintypes.BOOL
+    replace_existing = 0x00000001
+    write_through = 0x00000008
+    flags = write_through | (replace_existing if replace else 0)
+    if not move_file(str(source), str(destination), flags):
+        error = ctypes.get_last_error()
+        raise OSError(
+            error,
+            ctypes.FormatError(error),
+            str(destination),
+        )
+
+
+def durable_replace_file(source: Path, destination: Path) -> None:
+    if os.name == "nt":
+        _windows_move(source, destination, replace=True)
+        return
+    os.replace(source, destination)
+    _fsync_directory(destination.parent)
+
+
+def publish_directory(source: Path, destination: Path) -> None:
+    if os.name == "nt":
+        _windows_move(source, destination, replace=False)
+        return
+    source.rename(destination)
+    _fsync_directory(destination.parent)
+
+
+def write_text_file(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        durable_replace_file(temporary, path)
+    except Exception:
+        if os.path.lexists(temporary):
+            temporary.unlink()
+        raise
+
+
 def read_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -94,10 +168,7 @@ def read_json(path: Path) -> Any:
 
 
 def write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    write_text_file(path, json.dumps(value, ensure_ascii=True, indent=2) + "\n")
 
 
 def safe_event_id(event_id: str) -> str:
@@ -823,56 +894,90 @@ class ReleaseGateController:
                     "Submission artifact SHA1/SHA256 drifted: "
                     + str(artifact.get("logical_name"))
                 )
-        destination_root = Path(os.path.expandvars(str(output_dir or ""))).expanduser().resolve()
-        if destination_root.exists() and any(destination_root.iterdir()):
-            raise GateError("output_dir must be empty to prevent untracked final material")
-        destination_root.mkdir(parents=True, exist_ok=True)
-        final_artifacts: list[dict[str, Any]] = []
-        for artifact in artifacts:
-            source = Path(artifact["file_path"])
-            destination = destination_root / safe_logical_name(str(artifact["logical_name"]))
-            shutil.copy2(source, destination)
-            final_sha1 = sha1_file(destination)
-            final_sha256 = sha256_file(destination)
-            if (
-                final_sha1 != artifact.get("sha1")
-                or final_sha256 != artifact.get("sha256")
-            ):
-                raise GateError(
-                    "Copied final artifact SHA1/SHA256 differs: "
-                    + str(artifact.get("logical_name"))
-                )
-            final_artifacts.append(
-                {
-                    "logical_name": artifact["logical_name"],
-                    "file_path": str(destination),
-                    "size": destination.stat().st_size,
-                    "sha1": final_sha1,
-                    "sha256": final_sha256,
-                    "source_sha1": artifact["sha1"],
-                    "source_sha256": artifact["sha256"],
-                    "source_ref": artifact["source_ref"],
-                }
+        raw_output_dir = str(output_dir or "").strip()
+        if not raw_output_dir:
+            raise GateError("output_dir is required")
+        destination_root = Path(
+            os.path.abspath(
+                os.path.expanduser(os.path.expandvars(raw_output_dir))
             )
-        manifest_r = {
-            "event_id": event_id,
-            "phase": "Manifest-R",
-            "created_at": utc_now(),
-            "source_manifest_s_digest": event["manifest_s_digest"],
-            "output_dir": str(destination_root),
-            "artifacts": final_artifacts,
-        }
-        manifest_r["digest"] = object_digest(
-            {
-                "source_manifest_s_digest": manifest_r["source_manifest_s_digest"],
+        )
+        if os.path.lexists(destination_root):
+            raise GateError(
+                "output_dir must not already exist; final material is published atomically"
+            )
+        destination_root.parent.mkdir(parents=True, exist_ok=True)
+        staging_root = destination_root.with_name(
+            f".{destination_root.name}.staging-{uuid.uuid4().hex}"
+        )
+        published = False
+        staging_created = False
+        try:
+            staging_root.mkdir()
+            staging_created = True
+            final_artifacts: list[dict[str, Any]] = []
+            for artifact in artifacts:
+                source = Path(artifact["file_path"])
+                logical_name = safe_logical_name(str(artifact["logical_name"]))
+                staged_destination = staging_root / logical_name
+                durable_copy_file(source, staged_destination)
+                final_sha1 = sha1_file(staged_destination)
+                final_sha256 = sha256_file(staged_destination)
+                if (
+                    final_sha1 != artifact.get("sha1")
+                    or final_sha256 != artifact.get("sha256")
+                ):
+                    raise GateError(
+                        "Copied final artifact SHA1/SHA256 differs: "
+                        + str(artifact.get("logical_name"))
+                    )
+                final_artifacts.append(
+                    {
+                        "logical_name": artifact["logical_name"],
+                        "file_path": str(destination_root / logical_name),
+                        "size": staged_destination.stat().st_size,
+                        "sha1": final_sha1,
+                        "sha256": final_sha256,
+                        "source_sha1": artifact["sha1"],
+                        "source_sha256": artifact["sha256"],
+                        "source_ref": artifact["source_ref"],
+                    }
+                )
+            manifest_r = {
+                "event_id": event_id,
+                "phase": "Manifest-R",
+                "created_at": utc_now(),
+                "source_manifest_s_digest": event["manifest_s_digest"],
+                "output_dir": str(destination_root),
                 "artifacts": final_artifacts,
             }
-        )
-        self._save_manifest(event_id, "manifest-r.json", manifest_r)
-        event["manifest_r_digest"] = manifest_r["digest"]
-        event["final_output_dir"] = str(destination_root)
-        self._transition(event, "RELEASE_GATING", "final material copied from the approved submission manifest")
-        self._save_event(event)
+            manifest_r["digest"] = object_digest(
+                {
+                    "source_manifest_s_digest": manifest_r["source_manifest_s_digest"],
+                    "artifacts": final_artifacts,
+                }
+            )
+            publish_directory(staging_root, destination_root)
+            published = True
+            self._save_manifest(event_id, "manifest-r.json", manifest_r)
+            event["manifest_r_digest"] = manifest_r["digest"]
+            event["final_output_dir"] = str(destination_root)
+            self._transition(event, "RELEASE_GATING", "final material copied from the approved submission manifest")
+            self._save_event(event)
+        except Exception:
+            cleanup_root = (
+                destination_root
+                if published
+                else staging_root if staging_created else None
+            )
+            try:
+                if cleanup_root is not None and os.path.lexists(cleanup_root):
+                    shutil.rmtree(cleanup_root)
+            except OSError as cleanup_error:
+                raise GateError(
+                    "Final material build failed and its private staging output could not be cleaned"
+                ) from cleanup_error
+            raise
         return {
             "event_id": event_id,
             "status": event["status"],
@@ -1091,7 +1196,7 @@ class ReleaseGateController:
         manifest_r = read_json(manifest_r_path) if manifest_r_path.exists() else None
         report = self._render_report(event, manifest_s, manifest_r)
         path = self._event_dir(event_id) / "report.md"
-        path.write_text(report, encoding="utf-8")
+        write_text_file(path, report)
         return {"event_id": event_id, "report_path": str(path), "report": report}
 
     def get_event(self, event_id: str) -> dict[str, Any]:

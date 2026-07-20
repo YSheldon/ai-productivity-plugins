@@ -96,6 +96,10 @@ class McpProtocolTests(unittest.TestCase):
         responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
         self.assertEqual([1, 2, 3], [item["id"] for item in responses])
         self.assertEqual("product-release-gate", responses[0]["result"]["serverInfo"]["name"])
+        manifest = json.loads(
+            (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["version"], responses[0]["result"]["serverInfo"]["version"])
 
         tools = responses[1]["result"]["tools"]
         tool_names = {item["name"] for item in tools}

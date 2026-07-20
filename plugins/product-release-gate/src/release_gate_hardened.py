@@ -12,6 +12,7 @@ from release_gate_core import (
     overall_result,
     result,
     sha1_file,
+    sha256_file,
 )
 
 
@@ -67,6 +68,8 @@ class HardenedReleaseGateController(ReleaseGateController):
         mapping_ok = output_binding_ok and all(
             name in source
             and item.get("source_sha1") == source[name].get("sha1")
+            and item.get("source_sha256")
+            == source[name].get("sha256")
             and Path(str(item.get("file_path") or "")).resolve() == manifest_output / name
             for name, item in final.items()
         )
@@ -121,24 +124,32 @@ class HardenedReleaseGateController(ReleaseGateController):
 
         for name, artifact in final.items():
             path = Path(str(artifact.get("file_path") or ""))
-            actual = sha1_file(path) if path.is_file() else None
+            actual_sha1 = sha1_file(path) if path.is_file() else None
+            actual_sha256 = sha256_file(path) if path.is_file() else None
             source_sha1 = source.get(name, {}).get("sha1")
-            matches = actual == artifact.get("sha1") == source_sha1
+            source_sha256 = source.get(name, {}).get("sha256")
+            matches = (
+                actual_sha1 == artifact.get("sha1") == source_sha1
+                and actual_sha256
+                == artifact.get("sha256")
+                == source_sha256
+            )
             entries.append(
                 result(
                     "R-05",
-                    "final SHA1 consistency",
+                    "final SHA1/SHA256 consistency",
                     RESULT_PASS if matches else RESULT_FAIL,
-                    "final SHA1 matches Manifest-S and Manifest-R"
+                    "final SHA1/SHA256 matches Manifest-S and Manifest-R"
                     if matches
-                    else "final SHA1 differs from Manifest-S or Manifest-R",
+                    else "final SHA1/SHA256 differs from Manifest-S or Manifest-R",
                     name,
                 )
             )
             check_artifact = {
                 "logical_name": name,
                 "file_path": str(path),
-                "sha1": actual or artifact.get("sha1", ""),
+                "sha1": actual_sha1 or artifact.get("sha1", ""),
+                "sha256": actual_sha256 or artifact.get("sha256", ""),
             }
             entries.append(self._signature_result("R-06", check_artifact))
             entries.append(self._cloud_scan_result("R-07", check_artifact))

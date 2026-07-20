@@ -13,7 +13,13 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from release_gate_hardened import HardenedReleaseGateController
-from release_gate_core import GateError
+from release_gate_core import (
+    GateError,
+    durable_copy_file,
+    object_digest,
+    read_json,
+    write_json,
+)
 
 
 class ReleaseGateFlowTests(unittest.TestCase):
@@ -172,6 +178,170 @@ class ReleaseGateFlowTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "Manifest-S digest drifted"):
             controller.build_final_release(event_id, str(output_dir))
         self.assertFalse(output_dir.exists())
+
+    def test_write_json_preserves_old_state_and_cleans_temporary_on_failure(self) -> None:
+        path = self.root / "durable-state.json"
+        write_json(path, {"status": "OLD"})
+
+        with patch(
+            "release_gate_core.durable_replace_file",
+            side_effect=OSError("injected replace failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "injected replace failure"):
+                write_json(path, {"status": "NEW"})
+
+        self.assertEqual({"status": "OLD"}, read_json(path))
+        self.assertEqual(
+            [],
+            list(path.parent.glob(f".{path.name}.tmp-*")),
+        )
+
+    def test_build_final_release_rejects_preexisting_empty_output(self) -> None:
+        controller = self._controller()
+        event_id = "event-final-existing-output"
+        self._create(controller, event_id)
+        controller.run_submission_gate(event_id)
+        controller.record_test_result(event_id, "PASS", "test-run:1")
+        output_dir = self.root / "preexisting-empty-output"
+        output_dir.mkdir()
+
+        with self.assertRaisesRegex(GateError, "must not already exist"):
+            controller.build_final_release(event_id, str(output_dir))
+
+        self.assertEqual([], list(output_dir.iterdir()))
+        self.assertEqual(
+            "RELEASE_PREPARING",
+            controller._load_event(event_id)["status"],
+        )
+
+    def test_build_final_release_cleans_staging_after_copy_failure(self) -> None:
+        controller = self._controller()
+        event_id = "event-final-copy-failure"
+        second_artifact = self.root / "second.bin"
+        second_artifact.write_bytes(b"approved-build-v2")
+        controller.create_submission(
+            event_id=event_id,
+            task_id="TASK-1",
+            artifacts=[
+                {
+                    "logical_name": "product.bin",
+                    "file_path": str(self.artifact),
+                    "source_ref": "commit:abc123",
+                },
+                {
+                    "logical_name": "second.bin",
+                    "file_path": str(second_artifact),
+                    "source_ref": "commit:abc123",
+                },
+            ],
+            source_ref="commit:abc123",
+            rollback_ref="rollback:stable-v0",
+            risk_level="standard",
+        )
+        controller.run_submission_gate(event_id)
+        controller.record_test_result(event_id, "PASS", "test-run:1")
+        output_dir = self.root / "atomic-final-output"
+        original_copy = durable_copy_file
+        copy_count = 0
+
+        def fail_second_copy(source: Path, destination: Path) -> None:
+            nonlocal copy_count
+            copy_count += 1
+            if copy_count == 2:
+                raise OSError("injected copy failure")
+            return original_copy(source, destination)
+
+        with patch(
+            "release_gate_core.durable_copy_file",
+            side_effect=fail_second_copy,
+        ):
+            with self.assertRaisesRegex(OSError, "injected copy failure"):
+                controller.build_final_release(event_id, str(output_dir))
+
+        self.assertFalse(output_dir.exists())
+        self.assertEqual(
+            [],
+            list(output_dir.parent.glob(f".{output_dir.name}.staging-*")),
+        )
+        self.assertEqual(
+            "RELEASE_PREPARING",
+            controller._load_event(event_id)["status"],
+        )
+
+    def test_build_final_release_removes_output_after_state_write_failure(self) -> None:
+        controller = self._controller()
+        event_id = "event-final-state-failure"
+        self._create(controller, event_id)
+        controller.run_submission_gate(event_id)
+        controller.record_test_result(event_id, "PASS", "test-run:1")
+        output_dir = self.root / "state-failure-output"
+
+        with patch.object(
+            controller,
+            "_save_manifest",
+            side_effect=OSError("injected state write failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "injected state write failure"):
+                controller.build_final_release(event_id, str(output_dir))
+
+        self.assertFalse(output_dir.exists())
+        self.assertEqual(
+            [],
+            list(output_dir.parent.glob(f".{output_dir.name}.staging-*")),
+        )
+        self.assertEqual(
+            "RELEASE_PREPARING",
+            controller._load_event(event_id)["status"],
+        )
+
+    def test_hardened_release_gate_binds_source_sha256(self) -> None:
+        controller, _ = self._reach_release_gate("event-source-sha256")
+        manifest_r = controller._load_manifest(
+            "event-source-sha256", "manifest-r.json"
+        )
+        manifest_r["artifacts"][0]["source_sha256"] = "0" * 64
+        manifest_r["digest"] = object_digest(
+            {
+                "source_manifest_s_digest": manifest_r["source_manifest_s_digest"],
+                "artifacts": manifest_r["artifacts"],
+            }
+        )
+        controller._save_manifest(
+            "event-source-sha256", "manifest-r.json", manifest_r
+        )
+        event = controller._load_event("event-source-sha256")
+        event["manifest_r_digest"] = manifest_r["digest"]
+        controller._save_event(event)
+
+        gate = controller.run_release_gate("event-source-sha256")
+        r02 = [
+            item
+            for item in gate["execution"]["results"]
+            if item["rule_id"] == "R-02"
+        ]
+        self.assertEqual(["FAIL"], [item["result"] for item in r02])
+
+    def test_hardened_release_gate_checks_sha256_when_sha1_is_spoofed(self) -> None:
+        event_id = "event-final-sha256"
+        controller, output_dir = self._reach_release_gate(event_id)
+        final_path = output_dir / "product.bin"
+        final_path.write_bytes(b"tampered-after-final-build")
+        manifest_s = controller._load_manifest(event_id, "manifest-s.json")
+        expected_sha1 = manifest_s["artifacts"][0]["sha1"]
+
+        with patch("release_gate_hardened.sha1_file", return_value=expected_sha1):
+            gate = controller.run_release_gate(event_id)
+
+        r05 = [
+            item
+            for item in gate["execution"]["results"]
+            if item["rule_id"] == "R-05"
+        ]
+        self.assertEqual(["FAIL"], [item["result"] for item in r05])
+        self.assertIn(
+            "SHA1/SHA256 differs",
+            r05[0]["detail"],
+        )
 
     def test_release_manifest_digest_tamper_is_blocked(self) -> None:
         controller, _ = self._reach_release_gate(

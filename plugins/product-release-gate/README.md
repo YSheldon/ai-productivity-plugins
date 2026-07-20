@@ -62,6 +62,8 @@ Each stage stores content-addressed releases under:
 
 Manifest-S and Manifest-R require both SHA1 and SHA256 for every artifact. A legacy Manifest-R without SHA256 must be rebuilt and re-approved; it cannot be silently accepted. The built-in filesystem adapter does not replace approval, signing, cloud scan, testing, mail delivery, or an external immutable audit anchor.
 
+Final material must be built into a new, non-existent output path. The controller durably copies every artifact into a private sibling staging directory, verifies SHA1 and SHA256, and publishes the complete directory in one filesystem switch. Copy, hash, publication, or state-write failure removes the private output and leaves the event at `RELEASE_PREPARING`; a partial directory is never accepted as Manifest-R.
+
 ## Required Flow
 
 1. Run `release_gate_preflight` and reject missing submission, scan, signature, or test capabilities.

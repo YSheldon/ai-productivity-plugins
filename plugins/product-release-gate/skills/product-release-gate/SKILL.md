@@ -24,10 +24,10 @@ Do not enable the generated config until external approval, separate authorizati
 ## Required Workflow
 
 1. Start the MCP server with one protected `PRODUCT_RELEASE_GATE_CONFIG`. Per-call `config_path` overrides are forbidden. Call `release_gate_preflight`; never interpret a missing required integration as PASS.
-2. Create Manifest-S from real local artifacts. The controller computes SHA1 values; never submit narrative hashes.
+2. Create Manifest-S from real local artifacts. The controller computes SHA1 and SHA256 values; never submit narrative hashes.
 3. Run the submission gate. Any non-PASS result returns to a new submission round unless the same frozen checkpoint can be safely replayed.
 4. Run tests or ingest a trusted callback. High and emergency risk require an auditable test approval.
-5. Build Manifest-R into an empty directory and run the release gate. File drift, omissions, extras, signature failure, scan failure, or approval mismatch blocks release. Authenticode must match an exact configured certificate-thumbprint allowlist.
+5. Build Manifest-R into a new, non-existent output path and run the release gate. The controller stages, durably copies, verifies SHA1/SHA256, and atomically publishes the complete directory; any failure cleans it and leaves `RELEASE_PREPARING`. File drift, omissions, extras, signature failure, scan failure, or approval mismatch blocks release. Authenticode must match an exact configured certificate-thumbprint allowlist.
 6. Treat `RELEASE_READY` as an intermediate state. Call `release_gate_production_preflight` before requesting production authority.
 7. Create the bound authorization request. Use the configured external approval system and read the instance back; do not invent an approval reference.
 8. Record release authorization only when the verifier returns the same event, actor, decision, Manifest-S digest, Manifest-R digest, and explicit comma-separated stage scope. The signed ledger request, not mutable event fields, is authoritative. The controller then issues an expiring scoped credential and enters `RELEASE_AUTHORIZED`.

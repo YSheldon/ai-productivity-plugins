@@ -22,6 +22,7 @@ from release_gate_core import (
     sha1_file,
     utc_now,
     write_json,
+    write_text_file,
 )
 from release_gate_hardened import HardenedReleaseGateController
 from release_gate_approval_mail import (
@@ -3615,7 +3616,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
             ]
         )
         report = "\n".join(lines) + "\n"
-        report_path.write_text(report, encoding="utf-8")
+        write_text_file(report_path, report)
         report_sha256 = sha256_file(report_path)
         receipt = self._seal_receipt(
             {

@@ -64,7 +64,7 @@ Rollback is a two-adapter contract. The rollback adapter must echo the exact `ta
 
 Final production readback must return `result=PASS`, the configured `target_ref`, `readback_ref`, and `observed_manifest_r_digest`. A full-production readback mismatch automatically invokes the bound full-production rollback.
 
-The deployment lock must pin every production adapter argv template and every executable/script entrypoint used by those commands. Supported shapes are one pinned executable (`deployment-adapter.exe ...`) or a pinned interpreter plus pinned script (`python.exe deployment_adapter.py ...`). Any lock drift, command drift, missing file, path escape, unknown command shape, or entrypoint digest drift blocks the stage before the adapter is invoked. A minimal lock file looks like:
+The deployment lock must pin every production adapter argv template and every executable/script entrypoint used by those commands. Supported shapes are one pinned executable (`deployment-adapter.exe ...`) or a pinned interpreter plus pinned script (`python.exe deployment_adapter.py ...`). Any lock drift, command drift, missing file, path escape, unknown command shape, entrypoint digest drift, or entrypoint under a `test`, `tests`, `fixture`, `fixtures`, `mock`, `mocks`, `demo`, `demos`, `example`, or `examples` path blocks the stage before the adapter is invoked. A minimal lock file looks like:
 
 ```json
 {

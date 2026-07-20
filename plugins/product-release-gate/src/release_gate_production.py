@@ -48,6 +48,20 @@ REQUIRED_DEPLOYMENT_STAGES = (
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _MESSAGE_ID_PATTERN = re.compile(r"^<[^<>\s@]+@[^<>\s@]+>$")
+_NON_PRODUCTION_ADAPTER_PATH_PARTS = frozenset(
+    {
+        "test",
+        "tests",
+        "fixture",
+        "fixtures",
+        "mock",
+        "mocks",
+        "demo",
+        "demos",
+        "example",
+        "examples",
+    }
+)
 _DEPLOYMENT_LOCKED_COMMAND_IDS = (
     ("deploy", "deploy_command"),
     ("verify", "verify_command"),
@@ -2050,6 +2064,30 @@ class ProductionReleaseController(HardenedReleaseGateController):
             f"deployment adapter command entrypoint is missing for {command_id}: argv[{entrypoint_index}]"
         )
 
+    def _reject_non_production_adapter_path(
+        self,
+        path: Path,
+        *,
+        command_id: str,
+        entrypoint_index: int,
+    ) -> None:
+        if self._allow_unlocked_test_adapters:
+            return
+        path_parts = {part.casefold() for part in path.parts}
+        stem_parts = {
+            part
+            for part in re.split(r"[^a-z0-9]+", path.stem.casefold())
+            if part
+        }
+        disallowed = sorted(
+            (path_parts | stem_parts) & _NON_PRODUCTION_ADAPTER_PATH_PARTS
+        )
+        if disallowed:
+            raise GateError(
+                f"production adapter entrypoint is test-only for {command_id}: "
+                f"argv[{entrypoint_index}] contains {', '.join(disallowed)}"
+            )
+
     def _validate_locked_deployment_command(
         self,
         command_id: str,
@@ -2086,6 +2124,11 @@ class ProductionReleaseController(HardenedReleaseGateController):
             locked_path = self._resolve_locked_adapter_entrypoint(
                 lock_root=lock_root,
                 raw_path=raw_path,
+                command_id=command_id,
+                entrypoint_index=index,
+            )
+            self._reject_non_production_adapter_path(
+                locked_path,
                 command_id=command_id,
                 entrypoint_index=index,
             )

@@ -1182,6 +1182,47 @@ else:
         self.assertFalse(unknown_preflight["ready"])
         self.assertIn("deployment.adapter_lock", unknown_preflight["missing_capabilities"])
 
+    def test_production_preflight_rejects_locked_test_only_adapter_path(self) -> None:
+        config_path = self._write_config()
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        test_dir = self.root / "tests"
+        test_dir.mkdir()
+        test_adapter = test_dir / "adapter.py"
+        test_adapter.write_bytes(self.adapter.read_bytes())
+
+        deployment = config["production"]["deployment"]
+        readback = config["production"]["readback"]
+        command_bindings = {
+            "deploy": deployment["deploy_command"],
+            "verify": deployment["verify_command"],
+            "rollback": deployment["rollback_command"],
+            "rollback_verify": deployment["rollback_verify_command"],
+            "readback": readback["command"],
+        }
+        lock_path = Path(deployment["dependency_lock"])
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        for command_id, command in command_bindings.items():
+            command[1] = str(test_adapter)
+            locked = lock["commands"][command_id]
+            locked["argv_template"][1] = str(test_adapter)
+            script_entrypoint = next(
+                item for item in locked["entrypoints"] if item["argv_index"] == 1
+            )
+            script_entrypoint["path"] = "tests/adapter.py"
+            script_entrypoint["sha256"] = self._sha256(test_adapter)
+        lock_path.write_text(json.dumps(lock, sort_keys=True), encoding="utf-8")
+        deployment["dependency_lock_sha256"] = self._sha256(lock_path)
+        config_path.write_text(json.dumps(config, sort_keys=True), encoding="utf-8")
+
+        controller = ProductionReleaseController(str(config_path))
+        with self.assertRaisesRegex(GateError, "test-only"):
+            controller._validate_locked_deployment_command(
+                "deploy", deployment["deploy_command"]
+            )
+        preflight = controller.production_preflight()
+        self.assertFalse(preflight["ready"])
+        self.assertIn("deployment.adapter_lock", preflight["missing_capabilities"])
+
     def test_lock_drift_after_authorization_blocks_canary_stage(self) -> None:
         controller = ProductionReleaseController(str(self._write_config()))
         self._release_ready(controller, "event-lock-drift")

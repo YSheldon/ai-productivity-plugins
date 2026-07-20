@@ -18,7 +18,7 @@ from release_gate_setup import run_setup_operation
 
 
 SERVER_NAME = "product-release-gate"
-SERVER_VERSION = "0.3.5"
+SERVER_VERSION = "0.3.6"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 _CONTROLLER = ProductionReleaseController()
 

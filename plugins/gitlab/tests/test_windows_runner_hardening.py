@@ -430,6 +430,36 @@ def test_service_attestation_requires_exact_command_account_state_and_dacl(
             module.attest_windows_service(policy, record, require_running=True)
 
 
+def test_service_image_attestation_accepts_runner_18_11_windows_layout(
+    tmp_path: Path,
+) -> None:
+    module = load_module()
+    policy = make_policy(tmp_path, module, install_service=True)
+    record = service_record(
+        policy,
+        path_name=(
+            f'"{policy["binary_path"]}" run '
+            f'--config "{policy["config_path"]}" '
+            f'--service "{policy["service_name"]}" --syslog'
+        ),
+    )
+
+    module.attest_windows_service_image(policy, record)
+
+    for suffix in (' --debug', ' --config "C:\\evil\\config.toml"', ' --syslog'):
+        rejected = dict(record)
+        rejected["path_name"] = str(record["path_name"]) + suffix
+        with pytest.raises(module.ToolError):
+            module.attest_windows_service_image(policy, rejected)
+
+    wrong_config = dict(record)
+    wrong_config["path_name"] = str(record["path_name"]).replace(
+        str(policy["config_path"]), "C:\\evil\\config.toml"
+    )
+    with pytest.raises(module.ToolError):
+        module.attest_windows_service_image(policy, wrong_config)
+
+
 def test_service_account_transition_failure_cleans_and_keeps_runner_paused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

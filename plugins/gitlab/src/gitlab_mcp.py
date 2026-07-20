@@ -20,7 +20,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.2.3"
+SERVER_VERSION = "0.2.4"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -1458,20 +1458,32 @@ def attest_windows_service_image(policy: dict[str, Any], record: Any) -> None:
         raise ToolError("Dedicated Windows Runner service does not exist")
     command_line = str(record.get("path_name") or "").strip()
     argv = windows_command_line_argv(command_line)
-    if len(argv) != 8 or argv[1].casefold() != "run":
+    if len(argv) < 2 or argv[1].casefold() != "run":
         raise ToolError("Dedicated Windows Runner service command line has unexpected arguments")
     if ntpath.normcase(ntpath.normpath(argv[0])) != ntpath.normcase(ntpath.normpath(str(policy["binary_path"]))):
         raise ToolError("Dedicated Windows Runner service executable does not match the protected policy")
-    argument_pairs = list(zip(argv[2::2], argv[3::2]))
-    if len(argument_pairs) != 3 or len({flag.casefold() for flag, _value in argument_pairs}) != 3:
+
+    arguments = argv[2:]
+    has_syslog = bool(arguments and arguments[-1].casefold() == "--syslog")
+    if has_syslog:
+        arguments = arguments[:-1]
+    if len(arguments) % 2 != 0:
+        raise ToolError("Dedicated Windows Runner service command line has unexpected arguments")
+    argument_pairs = list(zip(arguments[::2], arguments[1::2]))
+    if len({flag.casefold() for flag, _value in argument_pairs}) != len(argument_pairs):
         raise ToolError("Dedicated Windows Runner service command line contains duplicate arguments")
     actual = {flag.casefold(): value for flag, value in argument_pairs}
-    if set(actual) != {"--working-directory", "--config", "--service"}:
-        raise ToolError("Dedicated Windows Runner service command line has unexpected arguments")
-    expected_paths = {
-        "--working-directory": str(policy["working_dir"]),
-        "--config": str(policy["config_path"]),
+    layout = (frozenset(actual), has_syslog)
+    supported_layouts = {
+        (frozenset({"--config", "--service"}), True),
+        (frozenset({"--working-directory", "--config", "--service"}), False),
     }
+    if layout not in supported_layouts:
+        raise ToolError("Dedicated Windows Runner service command line has unexpected arguments")
+
+    expected_paths = {"--config": str(policy["config_path"])}
+    if "--working-directory" in actual:
+        expected_paths["--working-directory"] = str(policy["working_dir"])
     for flag, expected in expected_paths.items():
         if ntpath.normcase(ntpath.normpath(actual[flag])) != ntpath.normcase(ntpath.normpath(expected)):
             raise ToolError("Dedicated Windows Runner service command line does not match the protected policy")

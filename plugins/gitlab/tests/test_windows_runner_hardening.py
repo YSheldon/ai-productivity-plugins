@@ -628,3 +628,17 @@ def test_acl_validation_script_rejects_every_untrusted_writer_sid(
     assert "$allowedWriters -notcontains $sid" in script
     assert "untrusted writer ACE rejected" in script
     assert "S-1-5-20" in script
+
+
+def test_acl_validation_uses_primitive_write_rights_without_read_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(module, "run_system_powershell_json", lambda script, payload: captured.update(script=script, payload=payload) or {"ok": True})
+    module.assert_strict_windows_acl(r"C:\ProgramData\CodexGitLab\runner-policies\gate.json", r"C:\ProgramData\CodexGitLab")
+    script = str(captured["script"])
+    assert "$writeCapable = [Security.AccessControl.FileSystemRights]::WriteData" in script
+    assert "[Security.AccessControl.FileSystemRights]::Write -bor" not in script
+    assert "[Security.AccessControl.FileSystemRights]::Modify" not in script
+    assert "[Security.AccessControl.FileSystemRights]::FullControl" not in script

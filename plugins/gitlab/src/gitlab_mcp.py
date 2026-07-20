@@ -20,7 +20,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.2.1"
+SERVER_VERSION = "0.2.2"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -834,15 +834,16 @@ try {
   $allowedWriters += $trustedInstaller
   $allowedOwners += $trustedInstaller
 } catch {}
-$danger = [Security.AccessControl.FileSystemRights]::Write -bor
-  [Security.AccessControl.FileSystemRights]::Modify -bor
-  [Security.AccessControl.FileSystemRights]::FullControl -bor
+# Composite Write/Modify/FullControl values overlap ReadAndExecute through
+# ReadPermissions/Synchronize. Only primitive mutation rights are authoritative.
+$writeCapable = [Security.AccessControl.FileSystemRights]::WriteData -bor
+  [Security.AccessControl.FileSystemRights]::AppendData -bor
+  [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+  [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+  [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
   [Security.AccessControl.FileSystemRights]::Delete -bor
   [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-  [Security.AccessControl.FileSystemRights]::TakeOwnership -bor
-  [Security.AccessControl.FileSystemRights]::CreateFiles -bor
-  [Security.AccessControl.FileSystemRights]::CreateDirectories -bor
-  [Security.AccessControl.FileSystemRights]::AppendData
+  [Security.AccessControl.FileSystemRights]::TakeOwnership
 $cursor = $target
 $serviceWriteOnTarget = $false
 while ($true) {
@@ -859,7 +860,7 @@ while ($true) {
   foreach ($rule in $acl.Access) {
     $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
     if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
-        (($rule.FileSystemRights -band $danger) -ne 0)) {
+        (($rule.FileSystemRights -band $writeCapable) -ne 0)) {
       if ($allowedWriters -notcontains $sid -and -not ($sid -eq $serviceSid -and $serviceWriteAllowedHere)) {
         throw 'untrusted writer ACE rejected'
       }

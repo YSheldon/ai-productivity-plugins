@@ -1,7 +1,9 @@
 # GitLab Codex Plugin
 
 This plugin exposes a local MCP server for GitLab REST API workflows. Version
-`0.2.1` also provides a fail-closed, privileged workflow for provisioning a
+`0.2.2` fixes Windows ACL classification so `ReadAndExecute` is not mistaken
+for a write-capable ACE while primitive mutation rights remain fail-closed.
+Version `0.2.1` introduced a fail-closed, privileged workflow for provisioning a
 dedicated Windows project Runner without exposing its one-time authentication
 token.
 

@@ -1,6 +1,6 @@
 {
   "name": "gitlab",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Operate GitLab workflows and securely provision a dedicated Windows project Runner from Codex.",
   "author": {
     "name": "Sheldon"

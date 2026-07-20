@@ -9,10 +9,15 @@ This checklist does not claim a production deployment.
 ## Verified Evidence (2026-07-18)
 
 - Plugin hardening commits: `64e0a68`, `99d1715`, `cdbb363`, and `4c39493`; the product CI Windows trust-anchor hardening commit is `abaaf9595273da6f7e8948fb0e38af2f4b414034`.
-- Default-branch publication was independently read back: GitHub plugin marketplace `main` at `bb9cfc644a8c09bc43976454ab1ed93c65753e83`; GitLab product CI `main` at `abaaf9595273da6f7e8948fb0e38af2f4b414034`, published with `ci.skip`.
+- Default-branch publication was independently read back: GitHub plugin marketplace `main` at `bb9cfc644a8c09bc43976454ab1ed93c65753e83`; GitLab product CI `main` at `abaaf9595273da6f7e8948fb0e38af2f4b414034`. The `ci.skip` push created pipeline `636` with status `skipped`, zero jobs, and no `live_gate` execution.
+- GitLab runner `2` is online and idle on Linux/amd64 and carries the exact `product-material-gate-protected` tag, but it is associated only with projects `20` and `55`; it cannot accept project `59` jobs and is not a Windows production gate runner.
+- Project `59` is currently associated with runner `1`, which is online and idle on Windows/amd64 with tags `KSign-F1-runner`, `nextsign-windows-protected`, and `windows`. Runner `1` has `run_untagged=true`, `locked=false`, and associations with projects `10`, `11`, `47`, `53`, `57`, and `59`; it is a shared signing runner and must not be reused as the material-gate execution plane.
+- The local `product-material-gate-runner` configuration targets a Windows shell executor, but its registration token is invalid and the runner is not running; it is not an online or provisioned production runner.
+- GitLab project `59` has zero CI variables; no protected scan, SVN retrieval, or deployment variable has been provisioned there.
 - Offline suite: `807` JUnit cases with zero failures, errors, or skips; final JUnit SHA-256: `A846B0FC47AB528CD10D2ABC06D91D761C05855C31B9281FA87D67F7DF4E195C`.
 - Workflow plugin versions under test: `product-release-gate` `0.3.4`, `pre-release` `0.1.4`, and `release-gate` `0.1.4`.
 - Installed GitLab plugin: `gitlab@ai-productivity-plugins` `0.1.5`; runtime source/cache files match `9/9`, MCP initialization and read-only GitLab connection passed, and token, runner-registration, and GitLab CI-variable value redaction were verified.
+- The enterprise mailbox passed IMAP and SMTP login checks; its persisted credential uses Windows CurrentUser DPAPI with no plaintext password field or unexpected non-owner write ACL.
 - Security boundary: GitLab client blocks absolute URLs and redirects, redacts structured sensitive fields, and resolves system PowerShell with Win32 `GetSystemDirectoryW` before using the Schannel fallback; the helper receives credentials only on stdin and fails closed.
 - Base evidence summary: `C:\Work\AI\AutoEMail\artifacts\product-release-gate\production-readiness-verification-2026-07-17.json` (SHA-256 `64FBA5D76322D9CFD6CA43AE2016274BF02539DBFE2BE55CCF84032BF592D039`).
 - Final JUnit evidence: `C:\Work\AI\AutoEMail\artifacts\product-release-gate\plugin-offline-tests-2026-07-18-release-workflow-final.xml` (SHA-256 `A846B0FC47AB528CD10D2ABC06D91D761C05855C31B9281FA87D67F7DF4E195C`).
@@ -20,10 +25,9 @@ This checklist does not claim a production deployment.
 ## Explicitly Deferred
 
 - Real `/api/v1/scans` validation is not executed because that endpoint is not implemented.
-- GitLab `live_gate`, protected production deployment targets, and runner-registration credential rotation remain outside the completed evidence boundary.
-- The enterprise mailbox passed IMAP and SMTP login checks; its persisted credential uses Windows CurrentUser DPAPI with no plaintext password field or unexpected non-owner write ACL.
-- GitLab project 59 currently has zero CI variables, so protected scan/deployment variables are not provisioned and the corresponding production prerequisite remains unchecked.
-- One configured runner matches the exact `live_gate` tag and is active, unpaused, and `ref_protected`; its last verified state was offline, and no pipeline or job was triggered during verification.
+- Provisioning and registering a new Windows production runner that is exclusive to project `59` remain deferred; neither online shared runner is eligible, and the local gate-runner configuration is not operational.
+- Provisioning the protected scan, SVN retrieval, and deployment variables remains deferred.
+- GitLab `live_gate` execution and all protected production deployment stages remain deferred; production deployment is not complete.
 
 ## Architecture Acceptance
 
@@ -89,7 +93,7 @@ This checklist does not claim a production deployment.
 - [x] A real mailbox is provisioned and accessible.
 - [x] Feishu permissions are provisioned and verified.
 - [ ] GitLab protected scan, SVN retrieval, and deployment variables are provisioned.
-- [ ] The protected runner bound to the `live_gate` tag is online and able to accept release jobs.
+- [ ] A new Windows/amd64 runner is registered exclusively to project `59`, bound to the protected `live_gate` tag, and online to accept release jobs.
 - [ ] Any administrator approval required by the environment is complete.
 - [x] Credentials are managed outside the docs and outside the workflow artifacts.
 
@@ -97,10 +101,9 @@ This checklist does not claim a production deployment.
 
 - [x] CA trust can be read back from the local trust store.
 - [ ] The SVN protected credential is bound and auditable without exposing the secret.
-- [x] The GitLab runner selected by the exact `live_gate` tag is protected and matches the release policy.
-- [ ] The selected protected runner is online.
+- [ ] GitLab readback proves the selected gate runner is Windows/amd64, protected, exclusive and locked to project `59`, unable to run untagged work, online/idle, and bound to the exact `live_gate` tag.
 - [x] Repository provenance can be reconstructed from the frozen task, module, version, locator or path, fixed revision, and retrieval instructions.
-- [x] CI pipeline, job, and artifact evidence can be produced and read back.
+- [ ] A non-skipped `live_gate` pipeline has produced job and artifact evidence and that evidence has been read back.
 
 ## Not Accepted
 

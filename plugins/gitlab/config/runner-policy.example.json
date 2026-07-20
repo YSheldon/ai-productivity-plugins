@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "gitlab_url": "https://gitlab.example.com",
+  "project": "group/project",
+  "runner_name": "product-material-gate-windows",
+  "tag_list": [
+    "product-material-gate-protected",
+    "windows-dedicated"
+  ],
+  "runner_binary": "C:\\Program Files\\GitLab-Runner\\gitlab-runner.exe",
+  "runner_binary_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "install_service": true,
+  "service_name": "gitlab-runner-product-material-gate",
+  "service_account": "NetworkService",
+  "timeout_seconds": 120
+}

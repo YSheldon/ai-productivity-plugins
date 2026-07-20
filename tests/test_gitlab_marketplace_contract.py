@@ -25,7 +25,7 @@ def test_gitlab_marketplace_and_privileged_version_contract() -> None:
     manifest = json.loads(
         (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
-    assert manifest["version"] == "0.2.2"
+    assert manifest["version"] == "0.2.3"
     source = (PLUGIN_ROOT / "src" / "gitlab_mcp.py").read_text(encoding="utf-8")
     assignment = next(
         node

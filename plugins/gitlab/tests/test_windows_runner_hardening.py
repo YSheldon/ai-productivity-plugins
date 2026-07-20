@@ -94,6 +94,43 @@ $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid,'ReadAndExec
     }
 
 
+def test_trusted_windows_powershell_drops_parent_psmodulepath(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module()
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured.update(kwargs)
+        return module.subprocess.CompletedProcess(
+            command,
+            0,
+            stdout='{"ok":true}',
+            stderr='',
+        )
+
+    monkeypatch.setattr(module, "system_powershell_path", lambda: Path("powershell.exe"))
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setenv("PSModulePath", r"C:\Program Files\PowerShell\7\Modules")
+
+    assert module.run_system_powershell_json("ignored", {}) == {"ok": True}
+    child_environment = captured["env"]
+    assert isinstance(child_environment, dict)
+    assert all(key.casefold() != "psmodulepath" for key in child_environment)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows trusted path ACL behavior")
+def test_strict_acl_walks_from_file_to_parent_directory() -> None:
+    module = load_module()
+    powershell = module.system_powershell_path()
+    assert powershell is not None
+
+    module.assert_strict_windows_acl(
+        str(powershell),
+        str(powershell.parent),
+    )
+
+
 def test_identity_receipt_acl_is_exact_protected_and_uses_constructed_read_rights(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

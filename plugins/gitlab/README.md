@@ -1,7 +1,11 @@
 # GitLab Codex Plugin
 
 This plugin exposes a local MCP server for GitLab REST API workflows. Version
-`0.2.2` fixes Windows ACL classification so `ReadAndExecute` is not mistaken
+`0.2.3` isolates Windows PowerShell 5.1 from incompatible PowerShell 7 module
+paths, correctly traverses from a protected file to its parent directory, and
+resolves identities only for write-capable allow ACEs so untranslatable
+read-only application-package identities do not block a trusted path. Version
+`0.2.2` fixed Windows ACL classification so `ReadAndExecute` is not mistaken
 for a write-capable ACE while primitive mutation rights remain fail-closed.
 Version `0.2.1` introduced a fail-closed, privileged workflow for provisioning a
 dedicated Windows project Runner without exposing its one-time authentication

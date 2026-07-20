@@ -20,7 +20,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.2.2"
+SERVER_VERSION = "0.2.3"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -742,6 +742,12 @@ def run_system_powershell_json(script: str, payload: dict[str, Any]) -> dict[str
     powershell = system_powershell_path()
     if powershell is None:
         raise ToolError("Trusted Windows PowerShell is unavailable; Runner provisioning failed closed")
+    # PowerShell 7 module paths can shadow incompatible Windows PowerShell 5.1
+    # modules such as Microsoft.PowerShell.Security. Let 5.1 build its defaults.
+    powershell_environment = {
+        key: value for key, value in runner_child_environment().items()
+        if key.casefold() != "psmodulepath"
+    }
     command = [
         str(powershell),
         "-NoLogo",
@@ -758,7 +764,7 @@ def run_system_powershell_json(script: str, payload: dict[str, Any]) -> dict[str
         text=True,
         timeout=30,
         check=False,
-        env=runner_child_environment(),
+        env=powershell_environment,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if completed.returncode != 0:
@@ -858,19 +864,24 @@ while ($true) {
     $serviceWriteAllowedHere = $cursorPrefix.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
   }
   foreach ($rule in $acl.Access) {
+    if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        (($rule.FileSystemRights -band $writeCapable) -eq 0)) {
+      continue
+    }
     $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-    if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
-        (($rule.FileSystemRights -band $writeCapable) -ne 0)) {
-      if ($allowedWriters -notcontains $sid -and -not ($sid -eq $serviceSid -and $serviceWriteAllowedHere)) {
-        throw 'untrusted writer ACE rejected'
-      }
-      if ([StringComparer]::OrdinalIgnoreCase.Equals($cursor.FullName, $target.FullName) -and $sid -eq $serviceSid) {
-        $serviceWriteOnTarget = $true
-      }
+    if ($allowedWriters -notcontains $sid -and -not ($sid -eq $serviceSid -and $serviceWriteAllowedHere)) {
+      throw 'untrusted writer ACE rejected'
+    }
+    if ([StringComparer]::OrdinalIgnoreCase.Equals($cursor.FullName, $target.FullName) -and $sid -eq $serviceSid) {
+      $serviceWriteOnTarget = $true
     }
   }
   if ([StringComparer]::OrdinalIgnoreCase.Equals($cursor.FullName, $stop.FullName)) { break }
-  $cursor = $cursor.Parent
+  if ($cursor -is [IO.FileInfo]) {
+    $cursor = $cursor.Directory
+  } else {
+    $cursor = $cursor.Parent
+  }
   if ($null -eq $cursor) { throw 'path escaped trusted root' }
 }
 if ([bool]$payload.require_service_write -and -not $serviceWriteOnTarget) { throw 'service write ACE missing' }

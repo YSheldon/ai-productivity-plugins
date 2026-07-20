@@ -443,6 +443,17 @@ def test_service_image_attestation_accepts_runner_18_11_windows_layout(
             f'--service "{policy["service_name"]}" --syslog'
         ),
     )
+    module.attest_windows_service_image(policy, record)
+
+    record = service_record(
+        policy,
+        path_name=(
+            f'"{policy["binary_path"]}" run '
+            f'--config "{policy["config_path"]}" '
+            f'--working-directory "{policy["working_dir"]}" '
+            f'--service "{policy["service_name"]}" --syslog'
+        ),
+    )
 
     module.attest_windows_service_image(policy, record)
 

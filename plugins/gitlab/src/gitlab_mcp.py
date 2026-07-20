@@ -20,7 +20,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.2.4"
+SERVER_VERSION = "0.2.5"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -1477,6 +1477,7 @@ def attest_windows_service_image(policy: dict[str, Any], record: Any) -> None:
     supported_layouts = {
         (frozenset({"--config", "--service"}), True),
         (frozenset({"--working-directory", "--config", "--service"}), False),
+        (frozenset({"--working-directory", "--config", "--service"}), True),
     }
     if layout not in supported_layouts:
         raise ToolError("Dedicated Windows Runner service command line has unexpected arguments")

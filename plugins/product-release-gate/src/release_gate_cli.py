@@ -52,6 +52,7 @@ CONTROLLER_OPERATIONS = (
     "run_deployment_stage",
     "run_production_readback",
     "generate_production_report",
+    "deliver_production_report",
     "verify_control_event_chain",
 )
 
@@ -205,6 +206,8 @@ def invoke_controller(
         return controller.run_production_readback(payload["event_id"])
     if operation == "generate_production_report":
         return controller.generate_production_report(payload["event_id"])
+    if operation == "deliver_production_report":
+        return controller.deliver_production_report(payload["event_id"])
     if operation == "verify_control_event_chain":
         return controller.verify_control_event_chain(payload["event_id"])
     raise CliUsageError(f"unsupported controller operation: {operation}")

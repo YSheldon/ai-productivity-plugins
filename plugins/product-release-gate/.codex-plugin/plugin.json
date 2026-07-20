@@ -1,6 +1,6 @@
 {
   "name": "product-release-gate",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Create verifiable product-material gates and authorized phased production releases.",
   "author": {
     "name": "Sheldon"
@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Product Release Gate",
     "shortDescription": "Gate and authorize phased product releases",
-    "longDescription": "Create immutable manifests, execute fail-closed submission and release checks, validate external approvals, issue scoped authorization credentials, deploy through pre-production, canary, and full stages, and retain HMAC-signed evidence with automatic rollback.",
+    "longDescription": "Create immutable manifests, execute fail-closed submission and release checks, validate external approvals, issue scoped authorization credentials, deploy through pre-production, canary, and full stages, retain HMAC-signed evidence with automatic rollback, verify production readback, and deliver a sealed report with exact mail readback.",
     "developerName": "Sheldon",
     "category": "Developer Tools",
     "capabilities": [

@@ -106,6 +106,47 @@ class ApprovalMailTests(unittest.TestCase):
             json.loads(str(calls[0]["input"])),
         )
 
+    def test_gateway_exposes_validated_search_and_authenticated_readback(self) -> None:
+        calls: list[str] = []
+
+        def runner(*args, **kwargs):
+            request = json.loads(str(kwargs["input"]))
+            calls.append(request["tool"])
+            if request["tool"] == "search_messages":
+                result = {"messages": [{"uid": "42", "message_id": "<report@example.com>"}]}
+            elif request["tool"] == "test_connection":
+                result = {"checks": {"imap": "ok", "smtp": "ok"}}
+            else:
+                result = {
+                    "uid": "42",
+                    "message_id": "<report@example.com>",
+                    "evidence": {
+                        "message_id": "<report@example.com>",
+                        "raw_headers_sha256": "a" * 64,
+                    },
+                    "release_workflow_headers": {"event_id": "event-1"},
+                }
+            return subprocess.CompletedProcess(
+                args[0],
+                0,
+                json.dumps({"ok": True, "result": result}),
+                "",
+            )
+
+        gateway = ImapSmtpMailCliGateway(["mail"], runner=runner)
+        connection = gateway.test_connection(
+            {"account": "release-bot", "check_imap": True, "check_smtp": True}
+        )
+        search = gateway.search_messages({"account": "release-bot"})
+        message = gateway.read_message(
+            {"account": "release-bot", "mailbox": "INBOX", "uid": "42"}
+        )
+
+        self.assertEqual("ok", connection["checks"]["imap"])
+        self.assertEqual("42", search["messages"][0]["uid"])
+        self.assertEqual("<report@example.com>", message["message_id"])
+        self.assertEqual(["test_connection", "search_messages", "read_message"], calls)
+
     def test_gateway_rejects_unsafe_command_or_timeout(self) -> None:
         cases = [
             ("python mail.py", 30),

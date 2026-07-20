@@ -31,6 +31,13 @@ class FakeController:
         self.calls: list[tuple[str, str]] = []
         self.authorization_requests: list[str] = []
         self.authorization_finalizations: list[str] = []
+        self.deployment_stages: list[tuple[str, str]] = []
+        self.production_readbacks: list[str] = []
+        self.production_reports: list[str] = []
+        self.production_deliveries: list[str] = []
+        self.block_stage: str | None = None
+        self.capabilities_ready = True
+        self.production_ready = True
 
     def _event_path(self, event_id: str) -> Path:
         return self.storage_dir / event_id / "event.json"
@@ -70,6 +77,87 @@ class FakeController:
         )
         self.authorization_finalizations.append(event_id)
         return {"status": event["status"]}
+
+    def ensure_deployment_capabilities(self, event_id: str) -> dict:
+        event = self.get_event(event_id)
+        if not self.capabilities_ready:
+            event["status"] = "CAPABILITY_BLOCKED"
+            self._event_path(event_id).write_text(json.dumps(event), encoding="utf-8")
+        return {
+            "ready": self.capabilities_ready,
+            "status": event["status"],
+            "missing_capabilities": [] if self.capabilities_ready else ["deployment.adapter"],
+        }
+
+    def run_deployment_stage(self, event_id: str, stage: str) -> dict:
+        event = self.get_event(event_id)
+        self.deployment_stages.append((event_id, stage))
+        if not self.capabilities_ready:
+            event["status"] = "CAPABILITY_BLOCKED"
+            self._event_path(event_id).write_text(json.dumps(event), encoding="utf-8")
+            return {
+                "ready": False,
+                "status": "CAPABILITY_BLOCKED",
+                "missing_capabilities": ["deployment.adapter"],
+            }
+        if stage == self.block_stage:
+            event["status"] = "ROLLED_BACK"
+            result = "BLOCKED"
+        else:
+            event["status"] = {
+                "preproduction": "PREPRODUCTION_VERIFIED",
+                "production_canary": "CANARY_VERIFIED",
+                "production_full": "PRODUCTION_DEPLOYED",
+            }[stage]
+            result = "PASS"
+        self._event_path(event_id).write_text(json.dumps(event), encoding="utf-8")
+        return {"status": event["status"], "result": result}
+
+    def run_production_readback(self, event_id: str) -> dict:
+        event = self.get_event(event_id)
+        self.production_readbacks.append(event_id)
+        event["status"] = "PRODUCTION_VERIFIED"
+        self._event_path(event_id).write_text(json.dumps(event), encoding="utf-8")
+        return {"status": event["status"], "result": "PASS"}
+
+    def generate_production_report(self, event_id: str) -> dict:
+        path = self.storage_dir / event_id / "production-report.md"
+        if path.is_file():
+            return {
+                "event_id": event_id,
+                "status": "PRODUCTION_VERIFIED",
+                "report_path": str(path),
+                "idempotent": True,
+            }
+        self.production_reports.append(event_id)
+        path.write_text("production report\n", encoding="utf-8")
+        event = self.get_event(event_id)
+        event["production_report"] = {"report_path": str(path)}
+        self._event_path(event_id).write_text(json.dumps(event), encoding="utf-8")
+        return {
+            "event_id": event_id,
+            "status": "PRODUCTION_VERIFIED",
+            "report_path": str(path),
+            "idempotent": False,
+        }
+
+    def deliver_production_report(self, event_id: str) -> dict:
+        path = self.storage_dir / event_id / "production-report-delivery.json"
+        if path.is_file():
+            return {"event_id": event_id, "status": "DELIVERED", "idempotent": True}
+        self.production_deliveries.append(event_id)
+        path.write_text("{}\n", encoding="utf-8")
+        event = self.get_event(event_id)
+        event["production_report_delivery"] = {"receipt_path": str(path)}
+        self._event_path(event_id).write_text(json.dumps(event), encoding="utf-8")
+        return {"event_id": event_id, "status": "DELIVERED", "idempotent": False}
+
+    def production_preflight(self) -> dict:
+        return {
+            "ready": self.production_ready,
+            "status": "ready" if self.production_ready else "CAPABILITY_BLOCKED",
+            "missing_capabilities": [] if self.production_ready else ["deployment.adapter"],
+        }
 
     def record_unified_release_approval(self, event_id: str, verification_ref: str) -> dict:
         self.calls.append((event_id, verification_ref))
@@ -160,6 +248,165 @@ class RuntimeTests(unittest.TestCase):
             "RELEASE_AUTHORIZED",
             self.controller.get_event("event-auto")["status"],
         )
+
+    def test_explicit_auto_deploy_advances_all_stages_readback_and_report_once(self) -> None:
+        self.controller.config["runtime"].update(
+            {
+                "auto_deploy_authorized_releases": True,
+                "auto_generate_production_report": True,
+                "auto_deliver_production_report": True,
+            }
+        )
+        event_dir = self.controller.storage_dir / "event-deploy"
+        event_dir.mkdir(parents=True)
+        (event_dir / "event.json").write_text(
+            json.dumps({"event_id": "event-deploy", "status": "RELEASE_AUTHORIZED"}),
+            encoding="utf-8",
+        )
+        runtime = ReleaseGateWorkflowRuntime(
+            self.controller,
+            self.root / "config.json",
+        )
+
+        result = runtime.run_once()
+        repeated = runtime.run_once()
+
+        self.assertEqual("ready", result["status"])
+        self.assertEqual(3, result["deployment_stages_completed"])
+        self.assertEqual(1, result["production_readbacks_completed"])
+        self.assertEqual(1, result["production_reports_generated"])
+        self.assertEqual(1, result["production_reports_delivered"])
+        self.assertEqual(
+            [
+                ("event-deploy", "preproduction"),
+                ("event-deploy", "production_canary"),
+                ("event-deploy", "production_full"),
+            ],
+            self.controller.deployment_stages,
+        )
+        self.assertEqual(["event-deploy"], self.controller.production_readbacks)
+        self.assertEqual(["event-deploy"], self.controller.production_reports)
+        self.assertEqual(["event-deploy"], self.controller.production_deliveries)
+        self.assertEqual(0, repeated["deployment_stages_completed"])
+        self.assertEqual(0, repeated["production_readbacks_completed"])
+        self.assertEqual(0, repeated["production_reports_generated"])
+        self.assertEqual(0, repeated["production_reports_delivered"])
+
+    def test_auto_deploy_stops_after_stage_failure_and_never_runs_later_actions(self) -> None:
+        self.controller.config["runtime"].update(
+            {
+                "auto_deploy_authorized_releases": True,
+                "auto_generate_production_report": True,
+                "auto_deliver_production_report": True,
+            }
+        )
+        self.controller.block_stage = "production_canary"
+        event_dir = self.controller.storage_dir / "event-rollback"
+        event_dir.mkdir(parents=True)
+        (event_dir / "event.json").write_text(
+            json.dumps({"event_id": "event-rollback", "status": "RELEASE_AUTHORIZED"}),
+            encoding="utf-8",
+        )
+        runtime = ReleaseGateWorkflowRuntime(
+            self.controller,
+            self.root / "config.json",
+        )
+
+        result = runtime.run_once()
+
+        self.assertEqual("CAPABILITY_BLOCKED", result["status"])
+        self.assertEqual(1, result["deployment_failures"])
+        self.assertEqual(
+            [
+                ("event-rollback", "preproduction"),
+                ("event-rollback", "production_canary"),
+            ],
+            self.controller.deployment_stages,
+        )
+        self.assertEqual([], self.controller.production_readbacks)
+        self.assertEqual([], self.controller.production_reports)
+        self.assertEqual([], self.controller.production_deliveries)
+        self.assertEqual(
+            "ROLLED_BACK",
+            self.controller.get_event("event-rollback")["status"],
+        )
+
+    def test_report_delivery_exception_is_not_misclassified_as_deployment_failure(self) -> None:
+        self.controller.config["runtime"].update(
+            {
+                "auto_deploy_authorized_releases": True,
+                "auto_generate_production_report": True,
+                "auto_deliver_production_report": True,
+            }
+        )
+        event_dir = self.controller.storage_dir / "event-delivery-failure"
+        event_dir.mkdir(parents=True)
+        (event_dir / "event.json").write_text(
+            json.dumps(
+                {"event_id": "event-delivery-failure", "status": "PRODUCTION_VERIFIED"}
+            ),
+            encoding="utf-8",
+        )
+        self.controller.deliver_production_report = lambda _event_id: (_ for _ in ()).throw(
+            OSError("mail unavailable")
+        )
+        runtime = ReleaseGateWorkflowRuntime(self.controller, self.root / "config.json")
+
+        result = runtime.run_once()
+
+        self.assertEqual("CAPABILITY_BLOCKED", result["status"])
+        self.assertEqual(1, result["report_delivery_failures"])
+        self.assertEqual(0, result["deployment_failures"])
+
+    def test_missing_deployment_capability_is_blocked_not_counted_as_failed_stage(self) -> None:
+        self.controller.config["runtime"].update(
+            {
+                "auto_deploy_authorized_releases": True,
+                "auto_generate_production_report": True,
+                "auto_deliver_production_report": True,
+            }
+        )
+        self.controller.capabilities_ready = False
+        event_dir = self.controller.storage_dir / "event-capability"
+        event_dir.mkdir(parents=True)
+        (event_dir / "event.json").write_text(
+            json.dumps({"event_id": "event-capability", "status": "RELEASE_AUTHORIZED"}),
+            encoding="utf-8",
+        )
+        runtime = ReleaseGateWorkflowRuntime(self.controller, self.root / "config.json")
+
+        result = runtime.run_once()
+
+        self.assertEqual("CAPABILITY_BLOCKED", result["status"])
+        self.assertEqual(1, result["deployment_blocked"])
+        self.assertEqual(0, result["deployment_failures"])
+        self.assertEqual([], self.controller.production_readbacks)
+
+    def test_doctor_requires_production_preflight_when_auto_deploy_is_enabled(self) -> None:
+        self.controller.config["runtime"].update(
+            {
+                "auto_deploy_authorized_releases": True,
+                "auto_generate_production_report": True,
+                "auto_deliver_production_report": True,
+            }
+        )
+        self.controller.production_ready = False
+        runtime = ReleaseGateWorkflowRuntime(self.controller, self.root / "config.json")
+
+        doctor = runtime.doctor()
+
+        self.assertFalse(doctor["ready"])
+        self.assertEqual("CAPABILITY_BLOCKED", doctor["production"]["status"])
+
+    def test_report_automation_flags_fail_closed_when_dependencies_are_missing(self) -> None:
+        self.controller.config["runtime"].update(
+            {
+                "auto_deploy_authorized_releases": False,
+                "auto_generate_production_report": True,
+            }
+        )
+        with self.assertRaisesRegex(Exception, "requires auto_deploy"):
+            ReleaseGateWorkflowRuntime(self.controller, self.root / "config.json")
 
     def test_kernel_lock_rejects_overlap_before_queue_read_or_side_effect(self) -> None:
         self.runtime.enqueue_handoff("event-2", "receipt:2")

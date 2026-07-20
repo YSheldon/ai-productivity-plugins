@@ -46,6 +46,8 @@ REQUIRED_DEPLOYMENT_STAGES = (
     "production_full",
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_MESSAGE_ID_PATTERN = re.compile(r"^<[^<>\s@]+@[^<>\s@]+>$")
 _DEPLOYMENT_LOCKED_COMMAND_IDS = (
     ("deploy", "deploy_command"),
     ("verify", "verify_command"),
@@ -62,10 +64,16 @@ class ProductionReleaseController(HardenedReleaseGateController):
         config_path: str | None = None,
         *,
         approval_mail_gateway: Any | None = None,
+        report_mail_gateway: Any | None = None,
         allow_unlocked_test_adapters: bool = False,
     ) -> None:
         super().__init__(config_path)
         self._approval_mail_gateway_override = approval_mail_gateway
+        self._report_mail_gateway_override = (
+            report_mail_gateway
+            if report_mail_gateway is not None
+            else approval_mail_gateway
+        )
         self._allow_unlocked_test_adapters = allow_unlocked_test_adapters
 
     def _production_config(self) -> dict[str, Any]:
@@ -343,7 +351,9 @@ class ProductionReleaseController(HardenedReleaseGateController):
         )
         return record
 
-    def production_preflight(self) -> dict[str, Any]:
+    def production_preflight(
+        self, *, include_report_delivery: bool = True
+    ) -> dict[str, Any]:
         production = self._production_config()
         authorization = production.get("authorization") or {}
         deployment = production.get("deployment") or {}
@@ -422,6 +432,20 @@ class ProductionReleaseController(HardenedReleaseGateController):
                 "configured": self._valid_command(readback.get("command")),
             },
         ]
+        runtime = self.config.get("runtime") or {}
+        delivery = production.get("report_delivery") or {}
+        if include_report_delivery and (
+            runtime.get("auto_deliver_production_report") is True
+            or (isinstance(delivery, dict) and delivery.get("enabled") is True)
+        ):
+            delivery_check = self._production_report_delivery_preflight()
+            checks.append(
+                {
+                    "name": "report_delivery",
+                    "configured": delivery_check["ready"],
+                    "detail": delivery_check,
+                }
+            )
         missing = [check["name"] for check in checks if not check["configured"]]
         return {"ready": not missing, "missing_capabilities": missing, "checks": checks}
 
@@ -437,7 +461,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
             raise GateError(
                 f"Deployment capabilities cannot be checked from status {event.get('status')}"
             )
-        preflight = self.production_preflight()
+        preflight = self.production_preflight(include_report_delivery=False)
         if preflight["ready"]:
             if event.get("status") == "CAPABILITY_BLOCKED":
                 block = event.get("capability_block") or {}
@@ -2694,9 +2718,766 @@ class ProductionReleaseController(HardenedReleaseGateController):
             "rollback": rollback,
         }
 
+    def _has_control_event(
+        self,
+        event_id: str,
+        event_type: str,
+        required_payload: dict[str, Any],
+    ) -> bool:
+        chain = self.verify_control_event_chain(event_id)
+        if not chain.get("valid"):
+            raise GateError(
+                "control event chain is invalid: " + str(chain.get("error") or "unknown error")
+            )
+        path = self._control_event_path(event_id)
+        if not path.is_file():
+            return False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise GateError("control event ledger contains invalid JSON") from exc
+            payload = record.get("payload")
+            if (
+                record.get("event_type") == event_type
+                and isinstance(payload, dict)
+                and all(payload.get(key) == value for key, value in required_payload.items())
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _production_report_delivery_metadata(
+        intent_path: Path,
+        smtp_path: Path,
+        receipt_path: Path,
+        intent: dict[str, Any],
+        receipt: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "intent_path": str(intent_path),
+            "smtp_receipt_path": str(smtp_path) if smtp_path.exists() else None,
+            "delivery_receipt_path": str(receipt_path),
+            "delivery_receipt_digest": object_digest(receipt),
+            "message_id": intent["message_id"],
+            "recipients": intent["recipients"],
+        }
+
+    def _reconcile_production_report_delivery_metadata(
+        self,
+        event: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> None:
+        existing = event.get("production_report_delivery")
+        if existing is not None and existing != metadata:
+            raise GateError("production report delivery event metadata drift was detected")
+        event_payload = {
+            "message_id": metadata["message_id"],
+            "recipients": metadata["recipients"],
+            "delivery_receipt_digest": metadata["delivery_receipt_digest"],
+        }
+        changed = existing is None
+        if not self._has_control_event(
+            event["event_id"], "PRODUCTION_REPORT_DELIVERED", event_payload
+        ):
+            self._append_control_event(event, "PRODUCTION_REPORT_DELIVERED", event_payload)
+            changed = True
+        if changed:
+            event["production_report_delivery"] = metadata
+            self._save_event(event)
+
+    @staticmethod
+    def _safe_report_mail_label(value: Any, label: str) -> str:
+        text = str(value or "").strip()
+        if (
+            not text
+            or len(text) > 120
+            or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in text)
+        ):
+            raise GateError(f"{label} is required and must be a safe single-line value")
+        return text
+
+    def _production_report_delivery_config(self) -> dict[str, Any]:
+        production = self._production_config()
+        delivery = production.get("report_delivery")
+        if not isinstance(delivery, dict) or delivery.get("enabled") is not True:
+            raise GateError("production.report_delivery.enabled must be true")
+        profile = self._safe_report_mail_label(
+            delivery.get("profile"), "production.report_delivery.profile"
+        )
+        sender_email = str(delivery.get("sender_email") or "").strip().lower()
+        if not _EMAIL_PATTERN.fullmatch(sender_email):
+            raise GateError("production.report_delivery.sender_email must be an email")
+        raw_recipients = delivery.get("recipients")
+        if not isinstance(raw_recipients, list) or not raw_recipients:
+            raise GateError("production.report_delivery.recipients must be a non-empty array")
+        recipients: list[str] = []
+        seen: set[str] = set()
+        for value in raw_recipients:
+            email = str(value or "").strip().lower()
+            if not _EMAIL_PATTERN.fullmatch(email):
+                raise GateError("production.report_delivery.recipients contains an invalid email")
+            if email not in seen:
+                recipients.append(email)
+                seen.add(email)
+        module = self._safe_report_mail_label(
+            delivery.get("module") or "all", "production.report_delivery.module"
+        )
+        mailbox = self._safe_report_mail_label(
+            delivery.get("mailbox") or "INBOX", "production.report_delivery.mailbox"
+        )
+        timeout_seconds = int(delivery.get("timeout_seconds") or 120)
+        if timeout_seconds < 1 or timeout_seconds > 600:
+            raise GateError("production.report_delivery.timeout_seconds must be between 1 and 600")
+        readback_timeout_seconds = int(
+            delivery.get("readback_timeout_seconds") or 86400
+        )
+        if readback_timeout_seconds < 60 or readback_timeout_seconds > 604800:
+            raise GateError(
+                "production.report_delivery.readback_timeout_seconds must be between 60 and 604800"
+            )
+        return {
+            **delivery,
+            "profile": profile,
+            "sender_email": sender_email,
+            "recipients": recipients,
+            "module": module,
+            "mailbox": mailbox,
+            "timeout_seconds": timeout_seconds,
+            "readback_timeout_seconds": readback_timeout_seconds,
+        }
+
+    def _production_report_mail_gateway(self, delivery: dict[str, Any]) -> Any:
+        if self._report_mail_gateway_override is not None:
+            return self._report_mail_gateway_override
+        try:
+            if self._allow_unlocked_test_adapters:
+                command = delivery.get("command")
+                if not self._valid_command(command):
+                    raise GateError("production.report_delivery.command is required")
+                return ImapSmtpMailCliGateway(
+                    command,
+                    timeout_seconds=int(delivery["timeout_seconds"]),
+                )
+            return LockedImapSmtpMailCliGateway(
+                str(delivery.get("dependency_lock") or ""),
+                dependency_lock_sha256=str(
+                    delivery.get("dependency_lock_sha256") or ""
+                ),
+                timeout_seconds=int(delivery["timeout_seconds"]),
+            )
+        except ApprovalMailError as exc:
+            raise GateError(str(exc)) from exc
+
+    def _production_report_delivery_preflight(self) -> dict[str, Any]:
+        try:
+            delivery = self._production_report_delivery_config()
+            gateway = self._production_report_mail_gateway(delivery)
+            accounts = gateway.list_accounts()
+            matching = [
+                account
+                for account in accounts
+                if isinstance(account, dict)
+                and str(account.get("name") or "").strip() == delivery["profile"]
+                and str(account.get("email") or "").strip().lower()
+                == delivery["sender_email"]
+            ]
+            if len(matching) != 1:
+                raise GateError(
+                    "production report mail profile and sender email were not found exactly once"
+                )
+            connection = gateway.test_connection(
+                {
+                    "account": delivery["profile"],
+                    "mailbox": delivery["mailbox"],
+                    "check_imap": True,
+                    "check_smtp": True,
+                }
+            )
+            connection_checks = connection.get("checks")
+            if (
+                not isinstance(connection_checks, dict)
+                or connection_checks.get("imap") != "ok"
+                or connection_checks.get("smtp") != "ok"
+            ):
+                raise GateError(
+                    "production report mail requires live IMAP and SMTP connectivity"
+                )
+            return {
+                "ready": True,
+                "status": "ready",
+                "profile": delivery["profile"],
+                "sender_email": delivery["sender_email"],
+                "recipients": delivery["recipients"],
+                "mailbox": delivery["mailbox"],
+                "connection": {"imap": "ok", "smtp": "ok"},
+            }
+        except (ApprovalMailError, GateError, TypeError, ValueError, OSError) as exc:
+            return {
+                "ready": False,
+                "status": "CAPABILITY_BLOCKED",
+                "reason": str(exc),
+            }
+
+    @staticmethod
+    def _report_mail_addresses(value: Any) -> set[str]:
+        if not isinstance(value, list):
+            return set()
+        addresses: set[str] = set()
+        for item in value:
+            if isinstance(item, dict):
+                candidate = item.get("email")
+            else:
+                candidate = item
+            email = str(candidate or "").strip().lower()
+            if _EMAIL_PATTERN.fullmatch(email):
+                addresses.add(email)
+        return addresses
+
+    @staticmethod
+    def _report_delivery_timestamp(value: Any) -> str:
+        digits = re.sub(r"[^0-9]", "", str(value or ""))
+        if len(digits) < 14:
+            raise GateError("production report generated_at is invalid")
+        return digits[:14]
+
+    def _production_report_delivery_contract(
+        self,
+        event: dict[str, Any],
+        report_receipt: dict[str, Any],
+        delivery: dict[str, Any],
+        *,
+        frozen_chain: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        approval = event.get("unified_release_approval") or {}
+        task = self._safe_report_mail_label(
+            approval.get("task") or event.get("task_id") or event["event_id"],
+            "production report task",
+        )
+        module = self._safe_report_mail_label(
+            delivery.get("module") or approval.get("module") or "all",
+            "production report module",
+        )
+        stamp = self._report_delivery_timestamp(report_receipt.get("generated_at"))
+        subject = f"【发布完成】{task}-{module}-{stamp}"
+        message_id_digest = object_digest(
+            {
+                "event_id": event["event_id"],
+                "report_sha256": report_receipt["report_sha256"],
+                "recipients": delivery["recipients"],
+            }
+        )
+        domain = delivery["sender_email"].rsplit("@", 1)[1]
+        message_id = f"<production-report-{message_id_digest[:32]}@{domain}>"
+        if _MESSAGE_ID_PATTERN.fullmatch(message_id) is None:
+            raise GateError("production report Message-ID is invalid")
+        current_chain = self.verify_control_event_chain(event["event_id"])
+        if not current_chain.get("valid") or not current_chain.get("last_hash"):
+            raise GateError("production report delivery requires a valid control event chain")
+        chain = frozen_chain or current_chain
+        if (
+            not isinstance(chain.get("event_count"), int)
+            or int(chain["event_count"]) < 1
+            or _SHA256_PATTERN.fullmatch(str(chain.get("last_hash") or "")) is None
+            or int(current_chain.get("event_count") or 0) < int(chain["event_count"])
+        ):
+            raise GateError("production report delivery chain snapshot is invalid")
+        body_lines = [
+            "【发布完成】",
+            f"任务：{task}",
+            f"模块：{module}",
+            "状态：PRODUCTION_VERIFIED",
+            f"Manifest-S：{event['manifest_s_digest']}",
+            f"Manifest-R：{event['manifest_r_digest']}",
+            "发布阶段：预生产、生产灰度、生产全量均已验证",
+            f"生产证据链：VALID（{chain['event_count']} 条）",
+            f"生产报告 SHA-256：{report_receipt['report_sha256']}",
+            f"发布事件：{event['event_id']}",
+            "说明：本邮件不包含本地路径、密钥或内部适配器参数。",
+        ]
+        body_text = "\n".join(body_lines)
+        core = {
+            "schema": "ProductionReleaseReportDeliveryIntent/v1",
+            "event_id": event["event_id"],
+            "status": "PRODUCTION_VERIFIED",
+            "task": task,
+            "module": module,
+            "manifest_s_digest": event["manifest_s_digest"],
+            "manifest_r_digest": event["manifest_r_digest"],
+            "report_sha256": report_receipt["report_sha256"],
+            "control_event_count": int(chain["event_count"]),
+            "control_event_last_hash": str(chain["last_hash"]),
+            "profile": delivery["profile"],
+            "sender_email": delivery["sender_email"],
+            "recipients": list(delivery["recipients"]),
+            "mailbox": delivery["mailbox"],
+            "subject": subject,
+            "message_id": message_id,
+            "body_text": body_text,
+        }
+        core["request_digest"] = "sha256:" + object_digest(core)
+        return core
+
+    def _validate_report_delivery_intent(
+        self,
+        event: dict[str, Any],
+        expected: dict[str, Any],
+        intent: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(intent, dict) or not self._verify_receipt_seal(intent):
+            raise GateError("production report delivery intent signature is invalid")
+        candidate = dict(intent)
+        candidate.pop("receipt_algorithm", None)
+        candidate.pop("receipt_hmac", None)
+        if candidate != expected:
+            raise GateError("production report delivery intent drift was detected")
+        if intent.get("event_id") != event.get("event_id"):
+            raise GateError("production report delivery intent is not bound to the event")
+        return intent
+
+    def _validate_report_smtp_receipt(
+        self,
+        intent: dict[str, Any],
+        receipt: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(receipt, dict) or not self._verify_receipt_seal(receipt):
+            raise GateError("production report SMTP receipt signature is invalid")
+        valid = (
+            receipt.get("schema") == "ProductionReleaseReportSmtpReceipt/v1"
+            and receipt.get("event_id") == intent.get("event_id")
+            and receipt.get("status") == "accepted"
+            and receipt.get("message_id") == intent.get("message_id")
+            and receipt.get("request_digest") == intent.get("request_digest")
+            and receipt.get("report_sha256") == intent.get("report_sha256")
+            and receipt.get("recipients") == intent.get("recipients")
+            and receipt.get("refused") == {}
+            and bool(str(receipt.get("accepted_at") or "").strip())
+        )
+        if not valid:
+            raise GateError("production report SMTP receipt is not bound to the intent")
+        return receipt
+
+    def _validate_report_delivery_receipt(
+        self,
+        intent: dict[str, Any],
+        receipt: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(receipt, dict) or not self._verify_receipt_seal(receipt):
+            raise GateError("production report delivery receipt signature is invalid")
+        valid = (
+            receipt.get("schema") == "ProductionReleaseReportDeliveryReceipt/v1"
+            and receipt.get("event_id") == intent.get("event_id")
+            and receipt.get("status") == "DELIVERED"
+            and receipt.get("message_id") == intent.get("message_id")
+            and receipt.get("request_digest") == intent.get("request_digest")
+            and receipt.get("report_sha256") == intent.get("report_sha256")
+            and receipt.get("recipients") == intent.get("recipients")
+            and receipt.get("profile") == intent.get("profile")
+            and receipt.get("mailbox") == intent.get("mailbox")
+            and bool(re.fullmatch(r"[0-9]+", str(receipt.get("uid") or "")))
+            and bool(re.fullmatch(r"[0-9]+", str(receipt.get("uidvalidity") or "")))
+            and _SHA256_PATTERN.fullmatch(
+                str(receipt.get("raw_headers_sha256") or "").lower()
+            )
+            is not None
+        )
+        if not valid:
+            raise GateError("production report delivery receipt is not bound to the intent")
+        return receipt
+
+    def _readback_production_report_delivery(
+        self,
+        gateway: Any,
+        intent: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        generated = datetime.fromisoformat(
+            str(intent["created_at"]).replace("Z", "+00:00")
+        )
+        search = gateway.search_messages(
+            {
+                "account": intent["profile"],
+                "mailbox": intent["mailbox"],
+                "query": {
+                    "subject": intent["subject"],
+                    "since": (generated - timedelta(days=1)).date().isoformat(),
+                },
+                "limit": 50,
+                "scan_limit": 500,
+            }
+        )
+        matches = [
+            summary
+            for summary in search.get("messages") or []
+            if isinstance(summary, dict)
+            and str(summary.get("message_id") or "").strip()
+            == intent["message_id"]
+        ]
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise GateError("production report readback found duplicate Message-ID values")
+        uid = str(matches[0].get("uid") or "").strip()
+        if not re.fullmatch(r"[0-9]+", uid):
+            raise GateError("production report readback summary has an invalid uid")
+        message = gateway.read_message(
+            {
+                "account": intent["profile"],
+                "mailbox": intent["mailbox"],
+                "uid": uid,
+            }
+        )
+        evidence = message.get("evidence")
+        headers = message.get("release_workflow_headers")
+        raw_headers_sha256 = str(
+            (evidence or {}).get("raw_headers_sha256") or ""
+        ).strip().lower()
+        expected_headers = {
+            "contract": "rd.production-report.v1",
+            "event_id": intent["event_id"],
+            "task": intent["task"],
+            "module": intent["module"],
+            "manifest_s_digest": intent["manifest_s_digest"],
+            "manifest_r_digest": intent["manifest_r_digest"],
+            "manifest_digest": "sha256:" + intent["manifest_r_digest"],
+            "request_digest": intent["request_digest"],
+        }
+        valid = (
+            str(message.get("message_id") or "").strip() == intent["message_id"]
+            and isinstance(evidence, dict)
+            and str(evidence.get("message_id") or "").strip()
+            == intent["message_id"]
+            and _SHA256_PATTERN.fullmatch(raw_headers_sha256) is not None
+            and isinstance(headers, dict)
+            and headers == expected_headers
+            and str(message.get("subject") or "").strip() == intent["subject"]
+            and intent["sender_email"] in self._report_mail_addresses(message.get("from"))
+            and set(intent["recipients"]).issubset(
+                self._report_mail_addresses(message.get("to"))
+                | self._report_mail_addresses(message.get("cc"))
+            )
+            and re.fullmatch(r"[0-9]+", str(message.get("uidvalidity") or ""))
+        )
+        if not valid:
+            raise GateError("production report IMAP readback is not bound to the delivery intent")
+        return {
+            "uid": uid,
+            "uidvalidity": str(message["uidvalidity"]),
+            "raw_headers_sha256": raw_headers_sha256,
+        }
+
+    def deliver_production_report(self, event_id: str) -> dict[str, Any]:
+        report = self.generate_production_report(event_id)
+        event = self._load_event(event_id)
+        delivery = self._production_report_delivery_config()
+        gateway = self._production_report_mail_gateway(delivery)
+        report_receipt = read_json(Path(report["receipt_path"]))
+        event_dir = self._event_dir(event_id)
+        intent_path = event_dir / "production-report-delivery-intent.json"
+        receipt_path = event_dir / "production-report-delivery.json"
+        smtp_path = event_dir / "production-report-smtp.json"
+        attempt_path = event_dir / "production-report-send-attempt.json"
+        if not any(
+            path.exists() for path in (intent_path, receipt_path, smtp_path, attempt_path)
+        ):
+            preflight = self._production_report_delivery_preflight()
+            if preflight.get("ready") is not True:
+                raise GateError(
+                    "production report delivery preflight failed: "
+                    + str(preflight.get("reason") or "unknown capability")
+                )
+        frozen_intent: dict[str, Any] | None = None
+        if intent_path.exists():
+            candidate = read_json(intent_path)
+            if not isinstance(candidate, dict) or not self._verify_receipt_seal(candidate):
+                raise GateError("production report delivery intent signature is invalid")
+            frozen_intent = candidate
+        expected_intent = self._production_report_delivery_contract(
+            event,
+            report_receipt,
+            delivery,
+            frozen_chain=(
+                {
+                    "event_count": frozen_intent.get("control_event_count"),
+                    "last_hash": frozen_intent.get("control_event_last_hash"),
+                }
+                if frozen_intent is not None
+                else None
+            ),
+        )
+        expected_intent["created_at"] = str(
+            report_receipt.get("generated_at") or ""
+        )
+        if frozen_intent is not None:
+            intent = self._validate_report_delivery_intent(
+                event, expected_intent, frozen_intent
+            )
+        else:
+            intent = self._seal_receipt(expected_intent)
+            write_json(intent_path, intent)
+        if receipt_path.exists():
+            receipt = self._validate_report_delivery_receipt(
+                intent, read_json(receipt_path)
+            )
+            metadata = self._production_report_delivery_metadata(
+                intent_path, smtp_path, receipt_path, intent, receipt
+            )
+            self._reconcile_production_report_delivery_metadata(event, metadata)
+            return {
+                "event_id": event_id,
+                "status": "DELIVERED",
+                "message_id": intent["message_id"],
+                "recipients": intent["recipients"],
+                "receipt_path": str(receipt_path),
+                "receipt_digest": object_digest(receipt),
+                "idempotent": True,
+            }
+
+        smtp_receipt: dict[str, Any] | None = None
+        if smtp_path.exists():
+            smtp_receipt = self._validate_report_smtp_receipt(
+                intent, read_json(smtp_path)
+            )
+        elif attempt_path.exists():
+            attempt = read_json(attempt_path)
+            if not isinstance(attempt, dict) or not self._verify_receipt_seal(attempt):
+                raise GateError("production report send-attempt signature is invalid")
+            if (
+                attempt.get("event_id") != intent["event_id"]
+                or attempt.get("message_id") != intent["message_id"]
+                or attempt.get("request_digest") != intent["request_digest"]
+            ):
+                raise GateError("production report send-attempt is not bound to the intent")
+        else:
+            attempt = self._seal_receipt(
+                {
+                    "schema": "ProductionReleaseReportSendAttempt/v1",
+                    "event_id": event_id,
+                    "message_id": intent["message_id"],
+                    "request_digest": intent["request_digest"],
+                    "attempted_at": utc_now(),
+                }
+            )
+            write_json(attempt_path, attempt)
+            payload = {
+                "account": intent["profile"],
+                "to": intent["recipients"],
+                "subject": intent["subject"],
+                "text": intent["body_text"],
+                "message_id": intent["message_id"],
+                "headers": {
+                    "X-RD-Contract": "rd.production-report.v1",
+                    "X-RD-Event-Id": intent["event_id"],
+                    "X-RD-Task": intent["task"],
+                    "X-RD-Module": intent["module"],
+                    "X-RD-Manifest-S-Digest": intent["manifest_s_digest"],
+                    "X-RD-Manifest-R-Digest": intent["manifest_r_digest"],
+                    "X-RD-Manifest-Digest": "sha256:" + intent["manifest_r_digest"],
+                    "X-RD-Request-Digest": intent["request_digest"],
+                },
+                "dry_run": False,
+            }
+            try:
+                sent = gateway.send_email(payload)
+            except (ApprovalMailError, OSError, RuntimeError) as exc:
+                raise GateError(
+                    "production report SMTP outcome is unknown; exact Message-ID readback is required before retry: "
+                    + str(exc)
+                ) from exc
+            refused = sent.get("refused")
+            accepted = (
+                sent.get("sent") is True
+                and isinstance(refused, dict)
+                and not refused
+                and str(sent.get("message_id") or "") == intent["message_id"]
+            )
+            if not accepted:
+                raise GateError(
+                    "production report SMTP delivery was not fully accepted; automatic resend is disabled"
+                )
+            smtp_receipt = self._seal_receipt(
+                {
+                    "schema": "ProductionReleaseReportSmtpReceipt/v1",
+                    "event_id": event_id,
+                    "status": "accepted",
+                    "message_id": intent["message_id"],
+                    "request_digest": intent["request_digest"],
+                    "report_sha256": intent["report_sha256"],
+                    "recipients": intent["recipients"],
+                    "refused": {},
+                    "accepted_at": utc_now(),
+                }
+            )
+            write_json(smtp_path, smtp_receipt)
+
+        readback = self._readback_production_report_delivery(gateway, intent)
+        if readback is None:
+            accepted_at = str(
+                (smtp_receipt or {}).get("accepted_at")
+                or (read_json(attempt_path) or {}).get("attempted_at")
+                or ""
+            )
+            try:
+                start = datetime.fromisoformat(accepted_at.replace("Z", "+00:00"))
+                expired = datetime.now(timezone.utc) - start > timedelta(
+                    seconds=int(delivery["readback_timeout_seconds"])
+                )
+            except (TypeError, ValueError):
+                expired = True
+            return {
+                "event_id": event_id,
+                "status": "READBACK_TIMEOUT" if expired else "READBACK_PENDING",
+                "message_id": intent["message_id"],
+                "recipients": intent["recipients"],
+                "smtp_accepted": smtp_receipt is not None,
+                "idempotent": True,
+            }
+
+        receipt = self._seal_receipt(
+            {
+                "schema": "ProductionReleaseReportDeliveryReceipt/v1",
+                "event_id": event_id,
+                "status": "DELIVERED",
+                "message_id": intent["message_id"],
+                "request_digest": intent["request_digest"],
+                "report_sha256": intent["report_sha256"],
+                "recipients": intent["recipients"],
+                "profile": intent["profile"],
+                "mailbox": intent["mailbox"],
+                **readback,
+                "readback_at": utc_now(),
+            }
+        )
+        write_json(receipt_path, receipt)
+        metadata = self._production_report_delivery_metadata(
+            intent_path, smtp_path, receipt_path, intent, receipt
+        )
+        event = self._load_event(event_id)
+        self._reconcile_production_report_delivery_metadata(event, metadata)
+        return {
+            "event_id": event_id,
+            "status": "DELIVERED",
+            "message_id": intent["message_id"],
+            "recipients": intent["recipients"],
+            "receipt_path": str(receipt_path),
+            "receipt_digest": metadata["delivery_receipt_digest"],
+            "idempotent": False,
+        }
+    def _validate_production_report_receipt(
+        self,
+        event: dict[str, Any],
+        report_path: Path,
+        receipt: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(receipt, dict) or not self._verify_receipt_seal(receipt):
+            raise GateError("production report receipt signature is invalid")
+        report_sha256 = str(receipt.get("report_sha256") or "")
+        valid = (
+            receipt.get("schema") == "ProductionReleaseReportReceipt/v1"
+            and receipt.get("event_id") == event.get("event_id")
+            and receipt.get("status") == "PRODUCTION_VERIFIED"
+            and receipt.get("manifest_s_digest") == event.get("manifest_s_digest")
+            and receipt.get("manifest_r_digest") == event.get("manifest_r_digest")
+            and _SHA256_PATTERN.fullmatch(report_sha256) is not None
+            and isinstance(receipt.get("control_event_count"), int)
+            and int(receipt["control_event_count"]) >= 1
+            and bool(str(receipt.get("control_event_last_hash") or "").strip())
+        )
+        if not valid:
+            raise GateError("production report receipt is not bound to the release")
+        if not report_path.is_file() or sha256_file(report_path) != report_sha256:
+            raise GateError("production report content drift was detected")
+        return receipt
+
+    def _verify_completed_release_evidence(
+        self,
+        event: dict[str, Any],
+    ) -> dict[str, Any]:
+        if event.get("status") != "PRODUCTION_VERIFIED":
+            raise GateError(
+                "production report requires status PRODUCTION_VERIFIED"
+            )
+        self._verify_frozen_final_material(event)
+        for stage in REQUIRED_DEPLOYMENT_STAGES:
+            context = self._deployment_context(event, stage)
+            receipt_path = (
+                self._event_dir(event["event_id"])
+                / "deployments"
+                / f"{stage}.json"
+            )
+            if not receipt_path.is_file():
+                raise GateError(f"production report is missing {stage} receipt")
+            self._validate_stage_receipt(
+                event,
+                stage,
+                context,
+                read_json(receipt_path),
+            )
+        readback_path = self._event_dir(event["event_id"]) / "production-readback.json"
+        if not readback_path.is_file():
+            raise GateError("production report is missing production readback receipt")
+        self._validate_production_readback_receipt(
+            event,
+            self._deployment_context(event, "production_full"),
+            read_json(readback_path),
+        )
+        chain = self.verify_control_event_chain(event["event_id"])
+        if not chain.get("valid"):
+            raise GateError(
+                "production report requires a valid control event chain: "
+                + str(chain.get("error") or "unknown error")
+            )
+        if int(chain.get("event_count") or 0) < 1 or not chain.get("last_hash"):
+            raise GateError("production report requires non-empty control evidence")
+        return chain
+
     def generate_production_report(self, event_id: str) -> dict[str, Any]:
         event = self._load_event(event_id)
-        chain = self.verify_control_event_chain(event_id)
+        chain = self._verify_completed_release_evidence(event)
+        event_dir = self._event_dir(event_id)
+        report_path = event_dir / "production-report.md"
+        receipt_path = event_dir / "production-report-receipt.json"
+        if report_path.exists() or receipt_path.exists():
+            if not report_path.is_file() or not receipt_path.is_file():
+                raise GateError("production report artifact set is incomplete")
+            receipt = self._validate_production_report_receipt(
+                event,
+                report_path,
+                read_json(receipt_path),
+            )
+            metadata = event.get("production_report")
+            expected_metadata = {
+                "report_path": str(report_path),
+                "receipt_path": str(receipt_path),
+                "report_sha256": receipt["report_sha256"],
+                "receipt_digest": object_digest(receipt),
+            }
+            if metadata is not None and metadata != expected_metadata:
+                raise GateError("production report event metadata drift was detected")
+            report_event_payload = {
+                "report_sha256": receipt["report_sha256"],
+                "receipt_digest": expected_metadata["receipt_digest"],
+            }
+            changed = metadata is None
+            if not self._has_control_event(
+                event_id, "PRODUCTION_REPORT_GENERATED", report_event_payload
+            ):
+                self._append_control_event(
+                    event, "PRODUCTION_REPORT_GENERATED", report_event_payload
+                )
+                changed = True
+            if changed:
+                event["production_report"] = expected_metadata
+                self._save_event(event)
+            return {
+                "event_id": event_id,
+                "status": event["status"],
+                **expected_metadata,
+                "report": report_path.read_text(encoding="utf-8"),
+                "idempotent": True,
+            }
+
         authorization = event.get("release_authorization") or {}
         stages = (event.get("deployment") or {}).get("stages") or {}
         lines = [
@@ -2709,7 +3490,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
             f"- Manifest-R: {event.get('manifest_r_digest')}",
             f"- Approval: {authorization.get('approval_ref') or 'not recorded'}",
             f"- Authorization credential digest: {authorization.get('credential_digest') or 'not issued'}",
-            f"- Control event chain: {'VALID' if chain.get('valid') else 'INVALID'} ({chain.get('event_count')} records)",
+            f"- Control event chain: VALID ({chain.get('event_count')} records)",
             "",
             "## Rollout",
             "",
@@ -2722,12 +3503,48 @@ class ProductionReleaseController(HardenedReleaseGateController):
                 "",
                 "## Evidence",
                 "",
-                f"- Event directory: {self._event_dir(event_id)}",
+                f"- Event directory: {event_dir}",
                 f"- Production readback: {event.get('production_readback_path') or 'not recorded'}",
                 f"- Control ledger: {self._control_event_path(event_id)}",
             ]
         )
         report = "\n".join(lines) + "\n"
-        path = self._event_dir(event_id) / "production-report.md"
-        path.write_text(report, encoding="utf-8")
-        return {"event_id": event_id, "status": event.get("status"), "report_path": str(path), "report": report}
+        report_path.write_text(report, encoding="utf-8")
+        report_sha256 = sha256_file(report_path)
+        receipt = self._seal_receipt(
+            {
+                "schema": "ProductionReleaseReportReceipt/v1",
+                "event_id": event_id,
+                "status": "PRODUCTION_VERIFIED",
+                "manifest_s_digest": event["manifest_s_digest"],
+                "manifest_r_digest": event["manifest_r_digest"],
+                "report_sha256": report_sha256,
+                "control_event_count": int(chain["event_count"]),
+                "control_event_last_hash": str(chain["last_hash"]),
+                "generated_at": utc_now(),
+            }
+        )
+        write_json(receipt_path, receipt)
+        metadata = {
+            "report_path": str(report_path),
+            "receipt_path": str(receipt_path),
+            "report_sha256": report_sha256,
+            "receipt_digest": object_digest(receipt),
+        }
+        event["production_report"] = metadata
+        self._append_control_event(
+            event,
+            "PRODUCTION_REPORT_GENERATED",
+            {
+                "report_sha256": report_sha256,
+                "receipt_digest": metadata["receipt_digest"],
+            },
+        )
+        self._save_event(event)
+        return {
+            "event_id": event_id,
+            "status": event["status"],
+            **metadata,
+            "report": report,
+            "idempotent": False,
+        }

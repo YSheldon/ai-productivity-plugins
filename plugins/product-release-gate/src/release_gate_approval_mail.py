@@ -154,8 +154,43 @@ class ImapSmtpMailCliGateway:
             raise ApprovalMailError("mail CLI list_accounts result is invalid.")
         return [dict(item) for item in accounts]
 
+    def test_connection(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        result = self._invoke("test_connection", payload)
+        checks = result.get("checks")
+        if not isinstance(checks, Mapping):
+            raise ApprovalMailError(
+                "mail CLI test_connection result is missing the checks object."
+            )
+        return result
+
     def send_email(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self._invoke("send_email", payload)
+
+    def search_messages(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        result = self._invoke("search_messages", payload)
+        messages = result.get("messages")
+        if not isinstance(messages, list) or not all(
+            isinstance(item, Mapping) for item in messages
+        ):
+            raise ApprovalMailError(
+                "mail CLI search_messages result is missing a valid messages array."
+            )
+        return result
+
+    def read_message(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        result = self._invoke("read_message", payload)
+        message_id = str(result.get("message_id") or "").strip()
+        evidence = result.get("evidence")
+        workflow_headers = result.get("release_workflow_headers")
+        if (
+            not message_id
+            or not isinstance(evidence, Mapping)
+            or not isinstance(workflow_headers, Mapping)
+        ):
+            raise ApprovalMailError(
+                "mail CLI read_message result is missing authenticated readback fields."
+            )
+        return result
 
 
 class LockedImapSmtpMailCliGateway(ImapSmtpMailCliGateway):

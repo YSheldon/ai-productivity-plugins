@@ -273,6 +273,9 @@ class ReleaseGateSetup:
             "poll_minutes": 60,
             "scheduler_mode": scheduler_mode,
             "auto_authorize_verified_pre_release": True,
+            "auto_deploy_authorized_releases": False,
+            "auto_generate_production_report": False,
+            "auto_deliver_production_report": False,
             "authorization_requester": "rd-flywheel",
         }
         production = config.setdefault("production", {})
@@ -283,6 +286,13 @@ class ReleaseGateSetup:
             dependency_lock_sha256=dependency_lock_sha256,
             verifier_config_path=verifier_config_path,
             verify_command=verify_command,
+            mail_command=mail_command,
+            verifier=verifier,
+            module=module,
+        )
+        production["report_delivery"] = self._report_delivery_binding(
+            dependency_lock=dependency_lock,
+            dependency_lock_sha256=dependency_lock_sha256,
             mail_command=mail_command,
             verifier=verifier,
             module=module,
@@ -316,6 +326,19 @@ class ReleaseGateSetup:
             verifier=verifier,
             module=module,
         )
+        managed_delivery = self._report_delivery_binding(
+            dependency_lock=dependency_lock,
+            dependency_lock_sha256=dependency_lock_sha256,
+            mail_command=mail_command,
+            verifier=verifier,
+            module=module,
+        )
+        delivery = production.setdefault("report_delivery", {})
+        for key, value in managed_delivery.items():
+            if key in {"dependency_lock", "dependency_lock_sha256", "command"}:
+                delivery[key] = value
+            else:
+                delivery.setdefault(key, value)
         runtime = config.setdefault("runtime", {})
         runtime.setdefault(
             "state_dir",
@@ -326,6 +349,9 @@ class ReleaseGateSetup:
             runtime.get("scheduler_mode") or scheduler_mode
         )
         runtime["auto_authorize_verified_pre_release"] = True
+        runtime.setdefault("auto_deploy_authorized_releases", False)
+        runtime.setdefault("auto_generate_production_report", False)
+        runtime.setdefault("auto_deliver_production_report", False)
         runtime.setdefault("authorization_requester", "rd-flywheel")
         return config
 
@@ -356,6 +382,29 @@ class ReleaseGateSetup:
                 "command": mail_command,
                 "timeout_seconds": 120,
             },
+        }
+
+    @staticmethod
+    def _report_delivery_binding(
+        *,
+        dependency_lock: Path,
+        dependency_lock_sha256: str,
+        mail_command: list[str],
+        verifier: Mapping[str, str],
+        module: str,
+    ) -> dict[str, Any]:
+        return {
+            "enabled": False,
+            "profile": verifier["profile"],
+            "sender_email": verifier["email"],
+            "recipients": [verifier["release_group"]],
+            "module": module,
+            "mailbox": "INBOX",
+            "dependency_lock": str(dependency_lock),
+            "dependency_lock_sha256": dependency_lock_sha256,
+            "command": mail_command,
+            "timeout_seconds": 120,
+            "readback_timeout_seconds": 86400,
         }
 
     def _provided_verifier_config(self, values: Mapping[str, Any]) -> Path:

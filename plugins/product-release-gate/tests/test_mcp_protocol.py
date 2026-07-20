@@ -207,6 +207,10 @@ class McpProtocolTests(unittest.TestCase):
         self.assertEqual(0, completed.returncode, completed.stderr)
         responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
         tools = responses[0]["result"]["tools"]
+        self.assertIn(
+            "release_gate_deliver_production_report",
+            {tool["name"] for tool in tools},
+        )
         self.assertTrue(
             all("config_path" not in tool["inputSchema"].get("properties", {}) for tool in tools)
         )

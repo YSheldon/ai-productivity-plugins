@@ -102,6 +102,10 @@ class ConfigContractTests(unittest.TestCase):
             config["production"]["approval_workflow"]["mode"],
         )
         self.assertEqual(60, config["runtime"]["poll_minutes"])
+        self.assertFalse(config["runtime"]["auto_deploy_authorized_releases"])
+        self.assertFalse(config["runtime"]["auto_generate_production_report"])
+        self.assertFalse(config["runtime"]["auto_deliver_production_report"])
+        self.assertFalse(config["production"]["report_delivery"]["enabled"])
 
     def test_example_config_matches_runtime_preflight_contract(self) -> None:
         previous_auth = os.environ.get("PRODUCT_RELEASE_GATE_AUTH_KEY")

@@ -37,6 +37,23 @@ class ReleaseGateWorkflowRuntime:
         self.auto_authorize_verified_pre_release = (
             runtime.get("auto_authorize_verified_pre_release") is True
         )
+        self.auto_deploy_authorized_releases = (
+            runtime.get("auto_deploy_authorized_releases") is True
+        )
+        self.auto_generate_production_report = (
+            runtime.get("auto_generate_production_report") is True
+        )
+        self.auto_deliver_production_report = (
+            runtime.get("auto_deliver_production_report") is True
+        )
+        if self.auto_generate_production_report and not self.auto_deploy_authorized_releases:
+            raise GateError(
+                "runtime.auto_generate_production_report requires auto_deploy_authorized_releases"
+            )
+        if self.auto_deliver_production_report and not self.auto_generate_production_report:
+            raise GateError(
+                "runtime.auto_deliver_production_report requires auto_generate_production_report"
+            )
         self.authorization_requester = str(
             runtime.get("authorization_requester") or "rd-flywheel"
         ).strip()
@@ -127,12 +144,18 @@ class ReleaseGateWorkflowRuntime:
                 self._request_pending_pre_releases()
             )
             failed += authorization_request_failed
+            deployment = self._advance_authorized_deployments()
+            failed += deployment["deployment_failures"]
+            failed += deployment["deployment_blocked"]
+            failed += deployment["report_delivery_pending"]
+            failed += deployment["report_delivery_failures"]
             result = {
                 "status": "ready" if failed == 0 else "CAPABILITY_BLOCKED",
                 "processed": processed,
                 "failed": failed,
                 "authorization_requested": authorization_requested,
                 "authorization_finalized": authorization_finalized,
+                **deployment,
                 "pending_events": self._pending_event_count(),
             }
             self._append_audit("run_once_completed", result)
@@ -225,6 +248,126 @@ class ReleaseGateWorkflowRuntime:
                 )
         return requested, failed
 
+    def _advance_authorized_deployments(self) -> dict[str, int]:
+        counters = {
+            "deployment_stages_completed": 0,
+            "production_readbacks_completed": 0,
+            "production_reports_generated": 0,
+            "production_reports_delivered": 0,
+            "report_delivery_pending": 0,
+            "report_delivery_failures": 0,
+            "deployment_blocked": 0,
+            "deployment_failures": 0,
+        }
+        if not self.auto_deploy_authorized_releases:
+            return counters
+
+        stage_by_status = {
+            "RELEASE_AUTHORIZED": "preproduction",
+            "PREPRODUCTION_VERIFIED": "production_canary",
+            "CANARY_VERIFIED": "production_full",
+        }
+        terminal_failures = {
+            "RELEASE_BLOCKED",
+            "ROLLED_BACK",
+            "ROLLBACK_FAILED",
+        }
+        for summary in self.list_events()["events"]:
+            event_id = str(summary.get("event_id") or "")
+            if not event_id:
+                continue
+            for _step in range(6):
+                try:
+                    event = self._load_event_state(event_id)
+                    status = str(event.get("status") or "")
+                    if status in terminal_failures:
+                        break
+                    if status == "CAPABILITY_BLOCKED":
+                        capability = self.controller.ensure_deployment_capabilities(
+                            event_id
+                        )
+                        if capability.get("ready") is not True:
+                            counters["deployment_blocked"] += 1
+                            break
+                        continue
+                    stage = stage_by_status.get(status)
+                    if stage:
+                        result = self.controller.run_deployment_stage(
+                            event_id,
+                            stage,
+                        )
+                        if (
+                            result.get("status") == "CAPABILITY_BLOCKED"
+                            or result.get("ready") is False
+                        ):
+                            counters["deployment_blocked"] += 1
+                            break
+                        if (
+                            result.get("result") != "PASS"
+                            or result.get("status")
+                            not in {
+                                "PREPRODUCTION_VERIFIED",
+                                "CANARY_VERIFIED",
+                                "PRODUCTION_DEPLOYED",
+                            }
+                        ):
+                            counters["deployment_failures"] += 1
+                            break
+                        counters["deployment_stages_completed"] += 1
+                        continue
+                    if status == "PRODUCTION_DEPLOYED":
+                        result = self.controller.run_production_readback(event_id)
+                        if (
+                            result.get("result") != "PASS"
+                            or result.get("status") != "PRODUCTION_VERIFIED"
+                        ):
+                            counters["deployment_failures"] += 1
+                            break
+                        counters["production_readbacks_completed"] += 1
+                        continue
+                    if status == "PRODUCTION_VERIFIED":
+                        if self.auto_generate_production_report:
+                            report = self.controller.generate_production_report(event_id)
+                            if report.get("status") != "PRODUCTION_VERIFIED":
+                                counters["deployment_failures"] += 1
+                                break
+                            if report.get("idempotent") is not True:
+                                counters["production_reports_generated"] += 1
+                        if self.auto_deliver_production_report:
+                            try:
+                                delivered = self.controller.deliver_production_report(event_id)
+                                delivery_status = str(delivered.get("status") or "")
+                                if delivery_status == "DELIVERED":
+                                    if delivered.get("idempotent") is not True:
+                                        counters["production_reports_delivered"] += 1
+                                elif delivery_status in {
+                                    "READBACK_PENDING",
+                                    "SMTP_OUTCOME_UNKNOWN",
+                                }:
+                                    counters["report_delivery_pending"] += 1
+                                else:
+                                    counters["report_delivery_failures"] += 1
+                            except (GateError, KeyError, TypeError, ValueError, OSError) as exc:
+                                counters["report_delivery_failures"] += 1
+                                self._append_audit(
+                                    "production_report_delivery_failed",
+                                    {"event_id": event_id, "error": str(exc)},
+                                )
+                            break
+                        break
+                    break
+                except (GateError, KeyError, TypeError, ValueError, OSError) as exc:
+                    counters["deployment_failures"] += 1
+                    self._append_audit(
+                        "deployment_advance_failed",
+                        {
+                            "event_id": event_id,
+                            "error": str(exc),
+                        },
+                    )
+                    break
+        return counters
+
     def status(self) -> dict[str, Any]:
         queued = 0
         processed = 0
@@ -244,15 +387,33 @@ class ReleaseGateWorkflowRuntime:
             "state_dir": str(self.state_dir),
             "queued_handoffs": queued,
             "processed_handoffs": processed,
+            "auto_authorize_verified_pre_release": self.auto_authorize_verified_pre_release,
+            "auto_deploy_authorized_releases": self.auto_deploy_authorized_releases,
+            "auto_generate_production_report": self.auto_generate_production_report,
+            "auto_deliver_production_report": self.auto_deliver_production_report,
             "pending_events": self._pending_event_count(),
         }
 
     def doctor(self) -> dict[str, Any]:
         workflow = self.controller.unified_approval_preflight()
+        production: dict[str, Any] | None = None
+        production_ready = True
+        if self.auto_deploy_authorized_releases:
+            try:
+                production = self.controller.production_preflight()
+                production_ready = bool(production.get("ready"))
+            except (GateError, TypeError, ValueError, OSError) as exc:
+                production = {
+                    "ready": False,
+                    "status": "CAPABILITY_BLOCKED",
+                    "reason": str(exc),
+                }
+                production_ready = False
         return {
-            "ready": bool(workflow.get("ready")),
+            "ready": bool(workflow.get("ready")) and production_ready,
             "config_path": str(self.config_path),
             "workflow": workflow,
+            "production": production,
             "runtime": self.status(),
         }
 
@@ -270,6 +431,12 @@ class ReleaseGateWorkflowRuntime:
                             "event_id": event.get("event_id"),
                             "status": event.get("status"),
                             "round_id": (event.get("unified_release_approval") or {}).get("round_id"),
+                            "production_report_generated": isinstance(
+                                event.get("production_report"), dict
+                            ),
+                            "production_report_delivered": isinstance(
+                                event.get("production_report_delivery"), dict
+                            ),
                         }
                     )
         return {"events": events, "count": len(events)}
@@ -281,7 +448,32 @@ class ReleaseGateWorkflowRuntime:
             "PRE_RELEASE_REQUESTED",
             "RELEASE_AUTHORIZATION_REQUIRED",
         }
-        return sum(1 for event in self.list_events()["events"] if event.get("status") in pending)
+        if self.auto_deploy_authorized_releases:
+            pending.update(
+                {
+                    "RELEASE_AUTHORIZED",
+                    "PREPRODUCTION_VERIFIED",
+                    "CANARY_VERIFIED",
+                    "PRODUCTION_DEPLOYED",
+                    "CAPABILITY_BLOCKED",
+                }
+            )
+        count = 0
+        for event in self.list_events()["events"]:
+            if event.get("status") in pending:
+                count += 1
+                continue
+            if event.get("status") != "PRODUCTION_VERIFIED":
+                continue
+            if (
+                self.auto_generate_production_report
+                and not event.get("production_report_generated")
+            ) or (
+                self.auto_deliver_production_report
+                and not event.get("production_report_delivered")
+            ):
+                count += 1
+        return count
 
     def _append_audit(self, event_type: str, payload: dict[str, Any]) -> None:
         record = {

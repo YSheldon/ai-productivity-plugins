@@ -3,7 +3,12 @@
   "runtime": {
     "state_dir": "%LOCALAPPDATA%\\product-release-gate\\state",
     "poll_minutes": 60,
-    "scheduler_mode": "auto"
+    "scheduler_mode": "auto",
+    "auto_authorize_verified_pre_release": false,
+    "auto_deploy_authorized_releases": false,
+    "auto_generate_production_report": false,
+    "auto_deliver_production_report": false,
+    "authorization_requester": "rd-flywheel"
   },
   "policy": {
     "allowed_extensions": [
@@ -160,6 +165,24 @@
         "--json"
       ],
       "timeout_seconds": 180
+    },
+    "report_delivery": {
+      "enabled": false,
+      "profile": "release-mail",
+      "sender_email": "release-bot@example.com",
+      "recipients": [
+        "release-report-group@example.com"
+      ],
+      "module": "all",
+      "mailbox": "INBOX",
+      "dependency_lock": "C:\\path\\to\\dependency-lock.product-release-gate.json",
+      "dependency_lock_sha256": "REPLACE_WITH_64_HEX_SHA256_OF_PLUGIN_DEPENDENCY_LOCK",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "C:\\path\\to\\plugins\\imap-smtp-mail\\src\\imap_smtp_mail_cli.py"
+      ],
+      "timeout_seconds": 120,
+      "readback_timeout_seconds": 86400
     }
   }
 }

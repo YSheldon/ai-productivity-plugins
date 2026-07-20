@@ -17,6 +17,69 @@ from release_gate_core import GateError, canonical_json
 from release_gate_production import ProductionReleaseController
 
 
+class FakeReportMailGateway:
+    def __init__(self, *, visible: bool = True, connected: bool = True) -> None:
+        self.visible = visible
+        self.connected = connected
+        self.sent_payloads: list[dict] = []
+
+    def list_accounts(self) -> list[dict[str, str]]:
+        return [{"name": "release-mail", "email": "release-bot@example.com"}]
+
+    def test_connection(self, _payload: dict) -> dict:
+        return {
+            "checks": {
+                "imap": "ok" if self.connected else "failed",
+                "smtp": "ok" if self.connected else "failed",
+            }
+        }
+
+    def send_email(self, payload: dict) -> dict:
+        self.sent_payloads.append(dict(payload))
+        return {
+            "sent": True,
+            "message_id": payload["message_id"],
+            "refused": {},
+        }
+
+    def search_messages(self, _payload: dict) -> dict:
+        if not self.visible or not self.sent_payloads:
+            return {"messages": []}
+        payload = self.sent_payloads[0]
+        return {
+            "messages": [
+                {"uid": "42", "message_id": payload["message_id"]}
+            ]
+        }
+
+    def read_message(self, _payload: dict) -> dict:
+        payload = self.sent_payloads[0]
+        headers = payload["headers"]
+        return {
+            "uid": "42",
+            "uidvalidity": "101",
+            "subject": payload["subject"],
+            "message_id": payload["message_id"],
+            "from": [{"email": "release-bot@example.com"}],
+            "to": [{"email": item} for item in payload["to"]],
+            "cc": [],
+            "evidence": {
+                "message_id": payload["message_id"],
+                "raw_headers_sha256": "a" * 64,
+            },
+            "release_workflow_headers": {
+                "contract": headers["X-RD-Contract"],
+                "event_id": headers["X-RD-Event-Id"],
+                "task": headers["X-RD-Task"],
+                "module": headers["X-RD-Module"],
+                "manifest_s_digest": headers["X-RD-Manifest-S-Digest"],
+                "manifest_r_digest": headers["X-RD-Manifest-R-Digest"],
+                "manifest_digest": headers["X-RD-Manifest-Digest"],
+                "request_digest": headers["X-RD-Request-Digest"],
+            },
+        }
+
+
 class ProductionReleaseControllerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -286,6 +349,34 @@ else:
         )
         return path
 
+    def _report_delivery_config(self) -> Path:
+        path = self._write_config()
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["production"]["report_delivery"] = {
+            "enabled": True,
+            "profile": "release-mail",
+            "sender_email": "release-bot@example.com",
+            "recipients": ["release-group@example.com"],
+            "module": "client",
+            "mailbox": "INBOX",
+            "timeout_seconds": 30,
+            "readback_timeout_seconds": 3600,
+        }
+        path.write_text(json.dumps(config), encoding="utf-8")
+        return path
+
+    def _production_verified(
+        self,
+        controller: ProductionReleaseController,
+        event_id: str,
+    ) -> None:
+        self._release_ready(controller, event_id)
+        self._authorize(controller, event_id)
+        controller.run_deployment_stage(event_id, "preproduction")
+        controller.run_deployment_stage(event_id, "production_canary")
+        controller.run_deployment_stage(event_id, "production_full")
+        controller.run_production_readback(event_id)
+
     def _release_ready(self, controller: ProductionReleaseController, event_id: str) -> None:
         controller.create_submission(
             event_id=event_id,
@@ -455,6 +546,148 @@ else:
         readback = controller.run_production_readback("event-stages")
         self.assertEqual("PRODUCTION_VERIFIED", readback["status"])
         self.assertEqual("PASS", readback["result"])
+
+    def test_report_delivery_preflight_requires_live_imap_and_smtp(self) -> None:
+        gateway = FakeReportMailGateway(connected=False)
+        controller = ProductionReleaseController(
+            str(self._report_delivery_config()), report_mail_gateway=gateway
+        )
+
+        preflight = controller.production_preflight()
+
+        self.assertFalse(preflight["ready"])
+        self.assertIn("report_delivery", preflight["missing_capabilities"])
+
+    def test_failed_first_send_preflight_does_not_freeze_delivery_intent(self) -> None:
+        gateway = FakeReportMailGateway(connected=False)
+        controller = ProductionReleaseController(
+            str(self._report_delivery_config()), report_mail_gateway=gateway
+        )
+        event_id = "event-report-preflight-retry"
+        self._production_verified(controller, event_id)
+        intent_path = controller._event_dir(event_id) / "production-report-delivery-intent.json"
+
+        with self.assertRaisesRegex(GateError, "delivery preflight failed"):
+            controller.deliver_production_report(event_id)
+        self.assertFalse(intent_path.exists())
+
+        gateway.connected = True
+        delivered = controller.deliver_production_report(event_id)
+
+        self.assertEqual("DELIVERED", delivered["status"])
+        self.assertTrue(intent_path.is_file())
+        self.assertEqual(1, len(gateway.sent_payloads))
+
+    def test_production_report_delivery_is_exactly_once_and_readback_bound(self) -> None:
+        gateway = FakeReportMailGateway()
+        controller = ProductionReleaseController(
+            str(self._report_delivery_config()), report_mail_gateway=gateway
+        )
+        self._production_verified(controller, "event-report-delivery")
+
+        first = controller.deliver_production_report("event-report-delivery")
+        repeated = controller.deliver_production_report("event-report-delivery")
+
+        self.assertEqual("DELIVERED", first["status"])
+        self.assertFalse(first["idempotent"])
+        self.assertTrue(repeated["idempotent"])
+        self.assertEqual(1, len(gateway.sent_payloads))
+        self.assertTrue(
+            gateway.sent_payloads[0]["subject"].startswith(
+                "【发布完成】TASK-PRODUCTION-1-client-"
+            )
+        )
+        self.assertNotIn(str(self.root), gateway.sent_payloads[0]["text"])
+        event = controller.get_event("event-report-delivery")["event"]
+        self.assertEqual(
+            first["message_id"],
+            event["production_report_delivery"]["message_id"],
+        )
+
+    def test_report_delivery_receipt_repairs_interrupted_event_commit_without_resend(self) -> None:
+        gateway = FakeReportMailGateway()
+        controller = ProductionReleaseController(
+            str(self._report_delivery_config()), report_mail_gateway=gateway
+        )
+        event_id = "event-report-delivery-repair"
+        self._production_verified(controller, event_id)
+        delivered = controller.deliver_production_report(event_id)
+        chain_before = controller.verify_control_event_chain(event_id)
+        event_path = controller._event_path(event_id)
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+        event.pop("production_report_delivery")
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+
+        repaired = controller.deliver_production_report(event_id)
+        chain_after = controller.verify_control_event_chain(event_id)
+
+        self.assertTrue(repaired["idempotent"])
+        self.assertEqual(delivered["message_id"], repaired["message_id"])
+        self.assertEqual(1, len(gateway.sent_payloads))
+        self.assertEqual(chain_before["event_count"], chain_after["event_count"])
+        repaired_event = controller.get_event(event_id)["event"]
+        self.assertEqual(
+            delivered["message_id"],
+            repaired_event["production_report_delivery"]["message_id"],
+        )
+
+    def test_report_readback_pending_never_resends_smtp(self) -> None:
+        gateway = FakeReportMailGateway(visible=False)
+        controller = ProductionReleaseController(
+            str(self._report_delivery_config()), report_mail_gateway=gateway
+        )
+        self._production_verified(controller, "event-report-pending")
+
+        pending = controller.deliver_production_report("event-report-pending")
+        repeated = controller.deliver_production_report("event-report-pending")
+        gateway.visible = True
+        delivered = controller.deliver_production_report("event-report-pending")
+
+        self.assertEqual("READBACK_PENDING", pending["status"])
+        self.assertEqual("READBACK_PENDING", repeated["status"])
+        self.assertEqual("DELIVERED", delivered["status"])
+        self.assertEqual(1, len(gateway.sent_payloads))
+
+    def test_report_delivery_receipt_tamper_is_rejected(self) -> None:
+        gateway = FakeReportMailGateway()
+        controller = ProductionReleaseController(
+            str(self._report_delivery_config()), report_mail_gateway=gateway
+        )
+        self._production_verified(controller, "event-report-delivery-tamper")
+        delivered = controller.deliver_production_report(
+            "event-report-delivery-tamper"
+        )
+        receipt_path = Path(delivered["receipt_path"])
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["uid"] = "99"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+        with self.assertRaisesRegex(GateError, "delivery receipt signature"):
+            controller.deliver_production_report("event-report-delivery-tamper")
+
+    def test_production_report_requires_verified_state_and_is_tamper_evident(self) -> None:
+        controller = ProductionReleaseController(str(self._write_config()))
+        self._release_ready(controller, "event-report")
+        self._authorize(controller, "event-report")
+
+        with self.assertRaises(GateError):
+            controller.generate_production_report("event-report")
+
+        controller.run_deployment_stage("event-report", "preproduction")
+        controller.run_deployment_stage("event-report", "production_canary")
+        controller.run_deployment_stage("event-report", "production_full")
+        controller.run_production_readback("event-report")
+
+        first = controller.generate_production_report("event-report")
+        repeated = controller.generate_production_report("event-report")
+
+        self.assertFalse(first["idempotent"])
+        self.assertTrue(repeated["idempotent"])
+        self.assertEqual(first["report_sha256"], repeated["report_sha256"])
+        self.assertTrue(Path(first["receipt_path"]).is_file())
+        Path(first["report_path"]).write_text("tampered\n", encoding="utf-8")
+        with self.assertRaises(GateError):
+            controller.generate_production_report("event-report")
 
     def test_authorization_scope_is_enforced_for_each_stage(self) -> None:
         controller = ProductionReleaseController(str(self._write_config()))

@@ -4,7 +4,7 @@ This Codex plugin implements a fail-closed product-material and production-relea
 
 Codex is optional. The same controller is exposed through MCP, Skill, `release_gate_cli.py`, and an unattended OS scheduler. Run `py -3 src/release_gate_cli.py setup`, then use `preflight`, `run-once`, `status`, `doctor`, and `scheduler status`; setup creates the shared configuration without manual JSON editing.
 
-The unified multi-role approval branch stops at `PRE_RELEASE_REQUESTED`; it never mints a production authorization credential. The compatible legacy branch below remains available for the later, independent production authorization and staged deployment workflow.
+The unified multi-role verifier first stops at `PRE_RELEASE_REQUESTED`. The independent product-release-gate runtime must re-read that frozen receipt before requesting and issuing a scoped production credential. Production automation is opt-in: `runtime.auto_authorize_verified_pre_release`, `runtime.auto_deploy_authorized_releases`, `runtime.auto_generate_production_report`, and `runtime.auto_deliver_production_report` are independently visible and deployment/report flags default to `false`.
 
 ```text
 submission -> submission gate -> test -> test approval -> final material
@@ -14,6 +14,8 @@ submission -> submission gate -> test -> test approval -> final material
 ```
 
 `RELEASE_READY` is an intermediate gate result. It is not production authorization and does not prove deployment.
+
+When all four production automation switches are explicitly enabled, one locked `run-once` may re-verify the independent approval, issue the scoped credential, advance `preproduction -> production_canary -> production_full`, perform final target readback, generate the HMAC-sealed production report, send it once, and require exact IMAP readback. Every stage uses the controller's existing idempotency, adapter lock, receipt verification, approval-revocation checks, and rollback path. Any blocked capability, adapter error, receipt mismatch, readback failure, or report-integrity failure stops later actions and returns `CAPABILITY_BLOCKED`.
 
 ## Configuration
 
@@ -26,6 +28,8 @@ $env:PRODUCT_RELEASE_GATE_AUDIT_KEY = "<different secret from the credential man
 ```
 
 Both keys must be at least 32 bytes and must be different. Configure an exact 40-hex Authenticode certificate thumbprint allowlist; a merely valid signature is not sufficient. Set `production.enabled=true` only after every production adapter is configured. `production.deployment.dependency_lock` and `production.deployment.dependency_lock_sha256` bind the deploy, verify, rollback, rollback-verify, and readback argv templates to one locked adapter manifest. Adapter commands execute as argument arrays without a shell, and the controller re-verifies the lock digest plus every pinned executable/script SHA-256 immediately before each invocation.
+
+`production.report_delivery` is disabled by default. Before enabling it, review the locked mail profile, exact sender account, report recipients, module, mailbox, dependency-lock digest, and readback timeout. The report subject is `【发布完成】任务-模块-时间`. Delivery uses a deterministic Message-ID, writes a sealed send intent before SMTP, records the accepted SMTP outcome (including an empty refused map), and requires one exact authenticated IMAP readback. If the process loses the SMTP outcome, it will not resend automatically.
 
 The MCP process reads `PRODUCT_RELEASE_GATE_CONFIG` once at startup. Tool calls cannot override `config_path`; restart the server to load an approved configuration change.
 
@@ -42,7 +46,7 @@ The MCP process reads `PRODUCT_RELEASE_GATE_CONFIG` once at startup. Tool calls 
 9. Run `release_gate_ensure_deployment_capabilities`. A missing capability creates a replayable request and state `CAPABILITY_BLOCKED`; it is never waived.
 10. Run `preproduction`, `production_canary`, and `production_full` in order with `release_gate_run_deployment_stage`.
 11. Run `release_gate_run_production_readback` and require the target to report the exact authorized Manifest-R digest.
-12. Generate the production report and verify the HMAC-signed control-event chain.
+12. Generate the production report, verify the HMAC-signed control-event chain, then call `release_gate_deliver_production_report`. Completion requires its sealed SMTP and exact IMAP readback receipt; a pending readback never causes an automatic resend.
 
 The existing test result is the first stage of the four-stage rollout. The deployment controller executes the remaining pre-production, canary, and full-production stages.
 

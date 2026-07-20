@@ -18,7 +18,7 @@ from release_gate_setup import run_setup_operation
 
 
 SERVER_NAME = "product-release-gate"
-SERVER_VERSION = "0.3.4"
+SERVER_VERSION = "0.3.5"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 _CONTROLLER = ProductionReleaseController()
 
@@ -260,6 +260,10 @@ def run_production_readback(args: dict[str, Any]) -> dict[str, Any]:
 
 def generate_production_report(args: dict[str, Any]) -> dict[str, Any]:
     return controller(args).generate_production_report(args["event_id"])
+
+
+def deliver_production_report(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).deliver_production_report(args["event_id"])
 
 
 def verify_control_event_chain(args: dict[str, Any]) -> dict[str, Any]:
@@ -659,6 +663,11 @@ TOOLS: dict[str, dict[str, Any]] = {
         "description": "Generate a production report covering authorization, rollout, rollback, readback, and event-chain evidence.",
         "inputSchema": event_schema(),
         "handler": generate_production_report,
+    },
+    "release_gate_deliver_production_report": {
+        "description": "Send the sealed production report once and require exact authenticated IMAP readback before claiming delivery.",
+        "inputSchema": event_schema(),
+        "handler": deliver_production_report,
     },
     "release_gate_verify_control_event_chain": {
         "description": "Verify the append-only hash chain for production control events.",

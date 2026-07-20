@@ -22,7 +22,7 @@ Run `py -3 src/release_gate_cli.py setup` for zero manual JSON editing. A setup 
 9. Check deployment capabilities. If state becomes `CAPABILITY_BLOCKED`, preserve the origin checkpoint, build and merge the missing adapter through the approved repository workflow, deploy it, then replay the checkpoint. Required detectors cannot be waived.
 10. Execute `preproduction`, `production_canary`, and `production_full` in order. The credential must authorize the current stage, and deploy/verify receipts must bind the configured target and exact authorized Manifest-R digest.
 11. On deployment or verification failure, allow the controller to run rollback plus an independent rollback-verification adapter. Never advance after `ROLLED_BACK` or `ROLLBACK_FAILED`.
-12. Run production readback. A mismatch must roll back full production. Generate the production report and verify the HMAC-signed event chain. Send notifications only after the report exists; notification success is not production truth.
+12. Run production readback. A mismatch must roll back full production. Generate the production report, verify the HMAC-signed event chain, then call `release_gate_deliver_production_report`. The `【发布完成】任务-模块-时间` message must have a sealed SMTP receipt and exact authenticated IMAP readback. Pending or unknown SMTP outcomes never permit automatic resend and never count as completion; notification success is not production truth.
 
 ## Authority Boundaries
 

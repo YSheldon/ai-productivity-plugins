@@ -22,6 +22,9 @@ class FakeController:
     def request_unified_release_approval(self, **values: object) -> dict:
         return {"status": "APPROVAL_COLLECTING", "received": values}
 
+    def deliver_production_report(self, event_id: str) -> dict:
+        return {"status": "DELIVERED", "event_id": event_id, "idempotent": True}
+
 
 class FakeRuntime:
     def run_once(self) -> dict:
@@ -86,6 +89,21 @@ class CliProtocolTests(unittest.TestCase):
         self.assertEqual(EXIT_OK, code)
         self.assertEqual("APPROVAL_COLLECTING", payload["result"]["status"])
         self.assertEqual(request, payload["result"]["received"])
+
+    def test_call_routes_production_report_delivery_without_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            code, payload = self._run(
+                [
+                    "--config",
+                    str(Path(temporary) / "config.json"),
+                    "call",
+                    "deliver_production_report",
+                    "--input",
+                    json.dumps({"event_id": "event-report"}),
+                ]
+            )
+        self.assertEqual(EXIT_OK, code)
+        self.assertEqual("DELIVERED", payload["result"]["status"])
 
     def test_scheduler_policy_cannot_be_overridden_per_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

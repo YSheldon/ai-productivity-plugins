@@ -9,7 +9,7 @@ This repository is a local Codex plugin marketplace maintained by Sheldon. The m
 - `imap-smtp-mail`: an IMAP/SMTP mail plugin adapted from the original `imap-smtp-email` skill by [gzlicanyi](https://github.com/gzlicanyi). Original source: [openclaw/skills: skills/gzlicanyi/imap-smtp-email](https://github.com/openclaw/skills/tree/main/skills/gzlicanyi/imap-smtp-email). This local adaptation supports QQ Mail, NetEase 163/126/yeah, Tencent Exmail, Ali Mail, 139 Mail, and custom IMAP/SMTP mailboxes.
 - `lark-cli`: a Lark/Feishu CLI plugin packaged and maintained by Sheldon. It bundles the existing `lark-*` skills and uses the locally installed `lark-cli` to work with docs, wikis, calendars, messages, Base tables, sheets, and related workflows.
 - `gitlab`: a GitLab REST API plugin for Codex. It supports project discovery, merge requests, issues, pipelines, decoded API calls, and policy-bound atomic provisioning of a dedicated Windows project Runner with paused-first activation, token-safe child-process registration, Authenticode/SHA256/ACL validation, API attestation, and rollback.
-- `product-release-gate`: a fail-closed product material gate for immutable submission manifests, submission checks, test evidence and approval, final-material generation, release checks, and auditable reports.
+- `product-release-gate`: a fail-closed product material gate for immutable submission manifests, submission checks, test evidence and approval, final-material generation, release checks, scoped production authorization, four-stage deployment/rollback, production readback, and auditable report delivery.
 - `test-submission`: a submitter-side product material role plugin that freezes one explicit module submission, previews the request through the locked shared gate, and sends `【提测】` mail through the locked IMAP/SMTP CLI.
 - `submission-gate`: a service-side role plugin that scans signed `【提测】` mail, executes the authoritative submission gate through the locked shared gate, and sends pass or blocked notices.
 - `pre-release`: a tester-side role plugin that records one final `PASS` or `FAIL`, builds `Manifest-R` through the locked shared gate, and sends `【发布门禁检查】` mail.
@@ -70,10 +70,13 @@ Run `release_gate_preflight` before creating a release event. The plugin exposes
 
 ```text
 submission -> submission gate -> test evidence -> approval
--> final material -> release gate -> RELEASE_READY -> report
+-> final material -> release gate -> RELEASE_READY
+-> unified approval -> RELEASE_AUTHORIZED
+-> pre-production -> canary -> full deployment -> production readback
+-> PRODUCTION_VERIFIED -> sealed report -> SMTP delivery + exact IMAP readback
 ```
 
-The cloud-scan and automated-test commands are local adapter contracts and must return JSON. Missing adapters, invalid signatures, non-clean scan results, failed tests, missing files, extra files, or SHA1 drift block the event. `RELEASE_READY` proves gate completion only; deployment credentials and production deployment remain outside the plugin.
+The cloud-scan, automated-test, deployment, rollback, and production-readback commands are locked local adapter contracts and must return schema-bound JSON. Missing adapters, invalid signatures, non-clean scan results, failed tests, missing files, extra files, SHA1 drift, approval drift, deployment evidence drift, or production readback mismatch block the event. `RELEASE_READY` proves gate completion only. The independent production controller then requires unified approval, issues an expiring stage-scoped credential, executes the configured stages, verifies production state, and can deliver the sealed completion report with deterministic Message-ID and exact IMAP readback. All production automation and report delivery remain explicit opt-ins and default to disabled.
 
 The four product-material role plugins are moving to one build-embedded shared `release_workflow_core` copy per plugin so they no longer depend on a runtime `product-release-gate` bridge, while still keeping submitter, gate, tester, and release-mailbox responsibilities separate:
 

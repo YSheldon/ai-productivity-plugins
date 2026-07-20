@@ -35,7 +35,8 @@ EXPECTED_RELEASE_WORKFLOW_HEADERS = {
 
 
 def load_fixture_message() -> tuple[email.message.EmailMessage, bytes, bytes]:
-    raw = FIXTURE_PATH.read_bytes()
+    # Git may materialize text fixtures with CRLF on Windows; canonicalize before parsing.
+    raw = FIXTURE_PATH.read_bytes().replace(b"\r\n", b"\n")
     raw_headers, separator, _body = raw.partition(b"\n\n")
     assert separator == b"\n\n"
     raw_headers = raw_headers.replace(b"\n", b"\r\n") + b"\r\n\r\n"

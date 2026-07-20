@@ -274,6 +274,7 @@ else:
 
     def test_unified_request_smtp_failure_keeps_release_ready_and_retry_reuses_message_id(self) -> None:
         controller = self._controller()
+        expires_at = self._expires_at()
         self.mail.result = {
             "sent": False,
             "message_id": None,
@@ -281,14 +282,14 @@ else:
         }
 
         with self.assertRaisesRegex(GateError, "SMTP delivery was not accepted"):
-            self._request(controller)
+            self._request(controller, expires_at=expires_at)
 
         event = controller._load_event("event-unified")
         self.assertEqual("RELEASE_READY", event["status"])
         first_message_id = self.mail.payloads[0]["message_id"]
         self.mail.result = {"sent": True, "message_id": None, "refused": {}}
 
-        retried = self._request(controller)
+        retried = self._request(controller, expires_at=expires_at)
 
         self.assertEqual("APPROVAL_COLLECTING", retried["status"])
         self.assertEqual(first_message_id, self.mail.payloads[1]["message_id"])

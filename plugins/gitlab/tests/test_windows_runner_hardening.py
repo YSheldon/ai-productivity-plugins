@@ -349,6 +349,8 @@ def test_service_dacl_hardening_is_fixed_nonsecret_and_protected(
     assert "D:P(" in harden_script
     assert ";;;SY)" in harden_script
     assert ";;;BA)" in harden_script
+    assert "(A;;0x00000005;;;NS)" in harden_script
+    assert "(A;;0x00000005;;;AU)" not in harden_script
     assert "password" not in harden_script.casefold()
     assert "token" not in harden_script.casefold()
     inspect_script, _payload = captured[1]

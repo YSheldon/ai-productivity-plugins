@@ -20,7 +20,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.2.7"
+SERVER_VERSION = "0.2.8"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -1378,7 +1378,7 @@ $ErrorActionPreference = 'Stop'
 $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $scPath = Join-Path ([Environment]::SystemDirectory) 'sc.exe'
 if (-not (Test-Path -LiteralPath $scPath -PathType Leaf)) { throw 'trusted sc.exe unavailable' }
-$sddl = 'D:P(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)'
+$sddl = 'D:P(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;0x00000005;;;NS)'
 $null = & $scPath sdset ([string]$payload.service_name) $sddl 2>$null
 if ($LASTEXITCODE -ne 0) { throw 'service descriptor update failed' }
 [pscustomobject]@{ ok = $true } | ConvertTo-Json -Compress

@@ -1,8 +1,10 @@
 # GitLab Codex Plugin
 
 This plugin exposes a local MCP server for GitLab REST API workflows. Version
-`0.2.7` honors GitLab 18's explicit `online` boolean for paused Runners while
-failing closed when it is false. Version `0.2.6` uses the unambiguous string
+`0.2.8` grants the dedicated NetworkService Runner only `SERVICE_QUERY_CONFIG`
+and `SERVICE_QUERY_STATUS` on its own protected service so native runtime
+attestation does not need WMI. Version `0.2.7` honors GitLab 18's explicit
+`online` boolean for paused Runners while failing closed when it is false. Version `0.2.6` uses the unambiguous string
 SDDL constructor when attesting a hardened
 Windows service DACL. Version `0.2.5` accepts the exact Windows service command
 emitted by GitLab Runner

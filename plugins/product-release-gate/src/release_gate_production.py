@@ -29,6 +29,13 @@ REQUIRED_DEPLOYMENT_STAGES = (
     "production_full",
 )
 
+# Compatibility fixtures must never be executable as production adapters.
+_NON_PRODUCTION_ADAPTER_PATH = re.compile(
+    r"(?:^|[\\/])(?:tests?|fixtures?|compat(?:ibility)?|mocks?|stubs?|demos?|fakes?)(?:[\\/]|$)"
+    r"|first[_-]?practice[_-]?adapter[_-]?compat",
+    re.IGNORECASE,
+)
+
 
 class ProductionReleaseController(HardenedReleaseGateController):
     """Fail-closed production authorization and phased deployment controller."""
@@ -45,6 +52,17 @@ class ProductionReleaseController(HardenedReleaseGateController):
             isinstance(value, list)
             and bool(value)
             and all(isinstance(item, str) and bool(item) for item in value)
+        )
+
+    @classmethod
+    def _valid_production_command(cls, value: Any) -> bool:
+        """Validate an adapter command and reject known test-only paths."""
+        if not cls._valid_command(value):
+            return False
+        return not any(
+            _NON_PRODUCTION_ADAPTER_PATH.search(item)
+            for item in value
+            if isinstance(item, str)
         )
 
     def _authorization_key(self) -> bytes:
@@ -320,6 +338,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
                 "configured": bool(
                     str(authorization.get("key_env") or "").strip()
                     and os.environ.get(str(authorization.get("key_env") or ""), "")
+                    and len(os.environ.get(str(authorization.get("key_env") or ""), "").encode("utf-8")) >= 32
                 ),
             },
             {
@@ -336,7 +355,33 @@ class ProductionReleaseController(HardenedReleaseGateController):
             },
             {
                 "name": "authorization.verify_command",
-                "configured": self._valid_command(authorization.get("verify_command")),
+                "configured": self._valid_production_command(authorization.get("verify_command")),
+            },
+            {
+                "name": "policy.require_signature",
+                "configured": bool((self.config.get("policy") or {}).get("require_signature")),
+            },
+            {
+                "name": "signature.expected_thumbprints",
+                "configured": bool(
+                    isinstance((self.config.get("signature") or {}).get("expected_thumbprints"), list)
+                    and (self.config.get("signature") or {}).get("expected_thumbprints")
+                    and all(
+                        isinstance(value, str)
+                        and re.fullmatch(r"[0-9A-Fa-f]{40}", re.sub(r"[^0-9A-Fa-f]", "", value))
+                        for value in (self.config.get("signature") or {}).get("expected_thumbprints")
+                    )
+                ),
+            },
+            {
+                "name": "policy.require_cloud_scan",
+                "configured": bool((self.config.get("policy") or {}).get("require_cloud_scan")),
+            },
+            {
+                "name": "cloud_scan.command",
+                "configured": self._valid_production_command(
+                    (self.config.get("cloud_scan") or {}).get("command")
+                ),
             },
             {
                 "name": "deployment_stages",
@@ -349,23 +394,23 @@ class ProductionReleaseController(HardenedReleaseGateController):
             },
             {
                 "name": "deployment.deploy_command",
-                "configured": self._valid_command(deployment.get("deploy_command")),
+                "configured": self._valid_production_command(deployment.get("deploy_command")),
             },
             {
                 "name": "deployment.verify_command",
-                "configured": self._valid_command(deployment.get("verify_command")),
+                "configured": self._valid_production_command(deployment.get("verify_command")),
             },
             {
                 "name": "deployment.rollback_command",
-                "configured": self._valid_command(deployment.get("rollback_command")),
+                "configured": self._valid_production_command(deployment.get("rollback_command")),
             },
             {
                 "name": "deployment.rollback_verify_command",
-                "configured": self._valid_command(deployment.get("rollback_verify_command")),
+                "configured": self._valid_production_command(deployment.get("rollback_verify_command")),
             },
             {
                 "name": "readback.command",
-                "configured": self._valid_command(readback.get("command")),
+                "configured": self._valid_production_command(readback.get("command")),
             },
         ]
         missing = [check["name"] for check in checks if not check["configured"]]

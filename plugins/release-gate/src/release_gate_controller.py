@@ -61,7 +61,13 @@ class ReleaseGateController:
         self.audit = AuditChain(self.state_dir, config.shared_hmac_secret_path)
 
     def coordination_lock_path(self) -> Path:
-        """Return the host-level lock shared by duplicate mailbox configurations."""
+        """Return the host-level lock shared by duplicate configurations.
+
+        A host-level singleton is the safe default: duplicate mailbox or task
+        registrations must not fan out into concurrent IMAP and gate scans.
+        Set RELEASE_GATE_COORDINATION_SCOPE=mailbox only when deliberate
+        per-mailbox parallelism is provisioned and capacity-tested.
+        """
         root_value = str(os.environ.get("RELEASE_GATE_COORDINATION_DIR") or "").strip()
         if root_value:
             root = Path(os.path.expandvars(root_value)).expanduser()
@@ -69,17 +75,16 @@ class ReleaseGateController:
             root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "ProductMaterialGate" / "locks"
         else:
             root = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") / "product-material-gate" / "locks"
-        scope = json.dumps(
-            {
-                "host": socket.gethostname(),
-                "mailbox": self.config.mailbox,
-                "release_gate_group": self.config.release_gate_group,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        scope_mode = str(os.environ.get("RELEASE_GATE_COORDINATION_SCOPE") or "host").strip().lower()
+        if scope_mode not in {"host", "mailbox"}:
+            scope_mode = "host"
+        scope_payload: dict[str, str] = {"host": socket.gethostname()}
+        if scope_mode == "mailbox":
+            scope_payload.update({"mailbox": self.config.mailbox, "release_gate_group": self.config.release_gate_group})
+        scope = json.dumps(scope_payload, sort_keys=True, separators=(",", ":"))
+        suffix = "host" if scope_mode == "host" else "mailbox"
         digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:32]
-        return (root / f"release-gate-{digest}.lock").resolve(strict=False)
+        return (root / f"release-gate-{suffix}-{digest}.lock").resolve(strict=False)
 
     def verify_audit(self) -> dict[str, Any]:
         return self.audit.verify()

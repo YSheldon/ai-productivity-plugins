@@ -396,6 +396,44 @@ else:
         controller.record_test_result(event_id, "PASS", "test:production-v1")
         controller.build_final_release(event_id, str(self.root / f"final-{event_id}"))
         self.assertEqual("RELEASE_READY", controller.run_release_gate(event_id)["status"])
+        # Submission tests intentionally use unsigned local fixtures. Once the
+        # event is release-ready, switch the in-memory policy to the production
+        # contract so deployment tests exercise the hardened preflight.
+        controller.config["policy"]["require_signature"] = True
+        controller.config["policy"]["require_cloud_scan"] = True
+        controller.config["signature"]["expected_thumbprints"] = ["A" * 40]
+        controller.config["cloud_scan"]["command"] = [
+            sys.executable,
+            "-c",
+            "print('{\"verdict\":\"CLEAN\"}')",
+        ]
+
+    def test_production_preflight_rejects_disabled_integrity_policy(self) -> None:
+        controller = ProductionReleaseController(str(self._write_config()))
+        preflight = controller.production_preflight()
+        self.assertFalse(preflight["ready"])
+        self.assertIn("policy.require_signature", preflight["missing_capabilities"])
+        self.assertIn("signature.expected_thumbprints", preflight["missing_capabilities"])
+        self.assertIn("policy.require_cloud_scan", preflight["missing_capabilities"])
+        self.assertIn("cloud_scan.command", preflight["missing_capabilities"])
+
+    def test_production_preflight_rejects_compatibility_adapter_path(self) -> None:
+        config_path = self._write_config()
+        import json
+
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["policy"]["require_signature"] = True
+        config["policy"]["require_cloud_scan"] = True
+        config.setdefault("signature", {})["expected_thumbprints"] = ["A" * 40]
+        config.setdefault("cloud_scan", {})["command"] = [sys.executable, "-c", "print('{}')"]
+        config["production"]["deployment"]["deploy_command"] = [
+            sys.executable,
+            r"C:\\repo\\tests\\first_practice_adapter_compat.py",
+        ]
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        preflight = ProductionReleaseController(str(config_path)).production_preflight()
+        self.assertFalse(preflight["ready"])
+        self.assertIn("deployment.deploy_command", preflight["missing_capabilities"])
 
     def _authorize(self, controller: ProductionReleaseController, event_id: str) -> dict:
         event = controller.get_event(event_id)["event"]

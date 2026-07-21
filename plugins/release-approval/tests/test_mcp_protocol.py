@@ -28,7 +28,7 @@ def test_task6_mcp_server_and_inventory_are_registered() -> None:
     module = _load_module()
 
     assert module.SERVER_NAME == "release-approval"
-    assert module.SERVER_VERSION == "0.2.5"
+    assert module.SERVER_VERSION == "0.2.6"
     assert module.DEFAULT_PROTOCOL_VERSION == "2024-11-05"
 
     expected_tools = [

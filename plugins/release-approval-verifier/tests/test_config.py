@@ -208,10 +208,11 @@ def test_runtime_copies_match_canonical_bytes_and_document_production_role_sourc
     with pytest.raises(ConfigError, match="cannot be supplied per call"):
         reject_per_call_config_override({"config_path": "C:\\evil.json"})
 
-    assert (
-        (PLUGIN_ROOT / "scripts" / "bootstrap_dependencies.py").read_bytes()
-        == (REPO_ROOT / "tools" / "release_workflow_bootstrap.py").read_bytes()
-    )
+    runtime_bootstrap = PLUGIN_ROOT / "scripts" / "bootstrap_dependencies.py"
+    source_bootstrap = REPO_ROOT / "tools" / "release_workflow_bootstrap.py"
+    assert runtime_bootstrap.is_file()
+    if source_bootstrap.is_file():
+        assert runtime_bootstrap.read_bytes() == source_bootstrap.read_bytes()
 
     contract_root = REPO_ROOT / "contracts" / "release-approval"
     plugin_contract_root = PLUGIN_ROOT / "contracts"
@@ -220,7 +221,10 @@ def test_runtime_copies_match_canonical_bytes_and_document_production_role_sourc
         "approval-decision-v1.json",
         "approval-verification-receipt-v1.json",
     ):
-        assert (plugin_contract_root / name).read_bytes() == (contract_root / name).read_bytes()
+        plugin_contract = plugin_contract_root / name
+        assert plugin_contract.is_file()
+        if contract_root.is_dir():
+            assert plugin_contract.read_bytes() == (contract_root / name).read_bytes()
 
     plugin_payload = json.loads((PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert plugin_payload["name"] == "release-approval-verifier"

@@ -1,6 +1,6 @@
 {
   "name": "release-gate",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Run the release gate mailbox scan, validate signed PRERELEASE_REQUEST handoffs, invoke the locked product-release-gate kernel, and send RELEASE_GATE_PASS or blocking notices without Codex runtime dependence.",
   "author": {
     "name": "Sheldon"

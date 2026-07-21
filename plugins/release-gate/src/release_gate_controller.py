@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -59,6 +60,27 @@ class ReleaseGateController:
         self.lock_path = self.state_dir / "run-once.lock"
         self.audit = AuditChain(self.state_dir, config.shared_hmac_secret_path)
 
+    def coordination_lock_path(self) -> Path:
+        """Return the host-level lock shared by duplicate mailbox configurations."""
+        root_value = str(os.environ.get("RELEASE_GATE_COORDINATION_DIR") or "").strip()
+        if root_value:
+            root = Path(os.path.expandvars(root_value)).expanduser()
+        elif os.name == "nt":
+            root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "ProductMaterialGate" / "locks"
+        else:
+            root = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") / "product-material-gate" / "locks"
+        scope = json.dumps(
+            {
+                "host": socket.gethostname(),
+                "mailbox": self.config.mailbox,
+                "release_gate_group": self.config.release_gate_group,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:32]
+        return (root / f"release-gate-{digest}.lock").resolve(strict=False)
+
     def verify_audit(self) -> dict[str, Any]:
         return self.audit.verify()
 
@@ -85,10 +107,15 @@ class ReleaseGateController:
             return {"status": "CAPABILITY_BLOCKED", "reason": "audit_chain_invalid", "audit": audit}
         if not self._policy_valid():
             return {"status": "CAPABILITY_BLOCKED", "reason": "gate_policy_invalid", "audit": audit}
+        coordination_lock = RunOnceLock(self.coordination_lock_path())
+        coordination_acquired = coordination_lock.acquire()
+        if coordination_acquired["status"] != "acquired":
+            return {"status": "RUN_ALREADY_ACTIVE", "busy": True, "scope": "mailbox"}
         lock = RunOnceLock(self.lock_path)
         acquired = lock.acquire()
         if acquired["status"] != "acquired":
-            return {"status": "RUN_ALREADY_ACTIVE", "busy": True}
+            coordination_lock.release()
+            return {"status": "RUN_ALREADY_ACTIVE", "busy": True, "scope": "configuration"}
         processed = 0
         blocked = 0
         retried = 0
@@ -108,6 +135,7 @@ class ReleaseGateController:
             return {"status": "ready", "processed": processed, "blocked": blocked, "retried": retried, "audit": self.verify_audit()}
         finally:
             lock.release()
+            coordination_lock.release()
 
     def status(self) -> dict[str, Any]:
         audit = self.verify_audit()

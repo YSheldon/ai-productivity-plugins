@@ -1,6 +1,6 @@
 {
   "name": "release-approval-verifier",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Independent multi-role release verifier with MCP, Skill, standalone CLI, signed receipts, and unattended scheduling.",
   "author": {
     "name": "Sheldon"

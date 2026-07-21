@@ -41,7 +41,7 @@ class FakeController:
 def test_mcp_inventory_and_setup_schema_are_complete() -> None:
     module = _load_module()
     assert module.SERVER_NAME == "release-approval-verifier"
-    assert module.SERVER_VERSION == "0.2.4"
+    assert module.SERVER_VERSION == "0.2.5"
     assert list(module.TOOLS) == [
         "release_approval_verifier_preflight",
         "release_approval_verifier_start_setup",

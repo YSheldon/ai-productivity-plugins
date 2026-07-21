@@ -17,7 +17,7 @@ from verifier_setup import SetupError, run_setup_operation
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SERVER_NAME = "release-approval-verifier"
-SERVER_VERSION = "0.2.4"
+SERVER_VERSION = "0.2.5"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 
 

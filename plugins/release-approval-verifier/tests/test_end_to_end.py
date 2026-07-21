@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pytest
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
@@ -13,7 +14,25 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VERIFIER_ROOT = Path(__file__).resolve().parents[1]
-PRODUCT_ROOT = REPO_ROOT / "plugins" / "product-release-gate"
+
+
+def _resolve_plugin_root(plugin_name: str) -> Path | None:
+    source_root = REPO_ROOT / "plugins" / plugin_name
+    if (source_root / "src").is_dir():
+        return source_root
+    cache_root = REPO_ROOT / plugin_name
+    if not cache_root.is_dir():
+        return None
+    candidates = sorted(
+        (child for child in cache_root.iterdir() if (child / "src").is_dir()),
+        key=lambda child: child.name,
+    )
+    return candidates[-1] if candidates else None
+
+
+PRODUCT_ROOT = _resolve_plugin_root("product-release-gate")
+if PRODUCT_ROOT is None:
+    pytest.skip("product-release-gate sibling package is unavailable", allow_module_level=True)
 sys.path.insert(0, str(VERIFIER_ROOT / "src"))
 sys.path.insert(0, str(PRODUCT_ROOT / "src"))
 
@@ -95,11 +114,15 @@ def _copy_runtime(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
         "release-approval-verifier",
         "imap-smtp-mail",
     ):
-        source = REPO_ROOT / "plugins" / plugin_name / "src"
+        source_root = _resolve_plugin_root(plugin_name)
+        assert source_root is not None
+        source = source_root / "src"
         target = runtime_root / "plugins" / plugin_name / "src"
         shutil.copytree(source, target)
+    product_root = _resolve_plugin_root("product-release-gate")
+    assert product_root is not None
     shutil.copytree(
-        REPO_ROOT / "plugins/product-release-gate/scripts",
+        product_root / "scripts",
         runtime_root / "plugins/product-release-gate/scripts",
     )
     copied["product_mcp"] = (

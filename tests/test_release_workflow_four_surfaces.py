@@ -74,7 +74,7 @@ class WorkflowPlugin:
 WORKFLOW_PLUGINS = (
     WorkflowPlugin(
         name="release-approval",
-        version="0.2.3",
+        version="0.2.4",
         mcp_script="release_approval_mcp.py",
         mcp_server_name="release-approval",
         mcp_common_tools=(
@@ -94,7 +94,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="release-approval-verifier",
-        version="0.2.3",
+        version="0.2.4",
         mcp_script="release_approval_verifier_mcp.py",
         mcp_server_name="release-approval-verifier",
         mcp_common_tools=(

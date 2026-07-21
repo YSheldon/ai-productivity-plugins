@@ -7,6 +7,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from lark_cli_command import resolve_lark_cli_command
+
 
 SUPPORTED_EVENT_TYPES = frozenset(
     {
@@ -167,7 +169,7 @@ def render_audit_markdown(record: AuditRecord) -> str:
 
 def build_lark_update_args(document_url: str, markdown: str) -> list[str]:
     return [
-        "lark-cli",
+        *resolve_lark_cli_command(),
         "docs",
         "+update",
         "--api-version",
@@ -187,7 +189,7 @@ def build_lark_update_args(document_url: str, markdown: str) -> list[str]:
 
 def build_lark_fetch_args(document_url: str, payload_digest: str) -> list[str]:
     return [
-        "lark-cli",
+        *resolve_lark_cli_command(),
         "docs",
         "+fetch",
         "--api-version",

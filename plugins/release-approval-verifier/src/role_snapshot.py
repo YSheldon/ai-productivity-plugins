@@ -7,9 +7,11 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
+from lark_cli_command import resolve_lark_cli_command
 
 _MARKDOWN_TABLE_LINE_PATTERN = re.compile(r"^\s*\|.*\|\s*$")
 _HEADING_PATTERN = re.compile(r"^\s*##\s+")
+_EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _BOOLEAN_TRUE = {"true", "yes", "1", "y"}
 _BOOLEAN_FALSE = {"false", "no", "0", "n"}
 
@@ -42,18 +44,25 @@ def canonical_json(payload: object) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-def build_lark_fetch_args(document_url: str) -> list[str]:
+def build_lark_fetch_args(
+    document_url: str,
+    *,
+    command_prefix: Sequence[str] | None = None,
+) -> list[str]:
     return [
-        "lark-cli",
+        *(command_prefix or resolve_lark_cli_command()),
         "docs",
         "+fetch",
+        "--api-version",
+        "v2",
+        "--doc",
         document_url,
         "--doc-format",
         "markdown",
-        "--scope",
-        "content",
         "--as",
         "user",
+        "--format",
+        "pretty",
     ]
 
 
@@ -63,8 +72,9 @@ def fetch_role_snapshot(
     heading: str,
     timeout_seconds: float = 30.0,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    command_prefix: Sequence[str] | None = None,
 ) -> RoleSnapshot:
-    args = build_lark_fetch_args(document_url)
+    args = build_lark_fetch_args(document_url, command_prefix=command_prefix)
     try:
         result = runner(
             args,
@@ -139,6 +149,7 @@ def _parse_role_table(lines: Sequence[str]) -> tuple[RoleRecord, ...]:
         )
 
     roles: list[RoleRecord] = []
+    enabled_role_ids: set[str] = set()
     enabled_emails: set[str] = set()
     for raw_line in lines[2:]:
         cells = _parse_row(raw_line)
@@ -148,10 +159,17 @@ def _parse_role_table(lines: Sequence[str]) -> tuple[RoleRecord, ...]:
         email = cells[1].strip().lower()
         required = _parse_bool(cells[2], field_name="required")
         enabled = _parse_bool(cells[3], field_name="enabled")
-        if not role_id or not email:
-            raise CapabilityBlockedError("CAPABILITY_BLOCKED: role_id and email must be non-empty.")
+        if not role_id:
+            raise CapabilityBlockedError("CAPABILITY_BLOCKED: role_id must be non-empty.")
         if not enabled:
             continue
+        if not email or not _EMAIL_PATTERN.fullmatch(email):
+            raise CapabilityBlockedError(
+                "CAPABILITY_BLOCKED: enabled role email must be a valid email address."
+            )
+        if role_id in enabled_role_ids:
+            raise CapabilityBlockedError("CAPABILITY_BLOCKED: duplicate role_id found in enabled role rows.")
+        enabled_role_ids.add(role_id)
         if email in enabled_emails:
             raise CapabilityBlockedError("CAPABILITY_BLOCKED: duplicate email found in enabled role rows.")
         enabled_emails.add(email)

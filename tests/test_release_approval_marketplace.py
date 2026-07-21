@@ -28,10 +28,10 @@ class MarketplacePlugin:
 
 
 PLUGINS = (
-    MarketplacePlugin("release-approval", "0.2.3", "release_approval_mcp.py", "release_approval_cli.py"),
+    MarketplacePlugin("release-approval", "0.2.4", "release_approval_mcp.py", "release_approval_cli.py"),
     MarketplacePlugin(
         "release-approval-verifier",
-        "0.2.3",
+        "0.2.4",
         "release_approval_verifier_mcp.py",
         "verifier_cli.py",
     ),

@@ -10,6 +10,7 @@ import pytest
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 MODULE_PATH = PLUGIN_ROOT / "src" / "lark_audit.py"
 MODULE_NAME = "release_approval_verifier_lark_audit"
 SPEC = importlib.util.spec_from_file_location(MODULE_NAME, MODULE_PATH)
@@ -53,12 +54,16 @@ def _readback(markdown: str) -> str:
     )
 
 
+def _operation(args: list[str]) -> str:
+    return args[args.index("docs") + 1]
+
+
 def test_write_uses_argument_arrays_then_fetches_and_verifies_all_bindings() -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
 
     def fake_runner(args, **kwargs):
         calls.append((args, kwargs))
-        if args[2] == "+update":
+        if _operation(args) == "+update":
             return CompletedProcess(args, 0, stdout='{"ok":true}', stderr="")
         markdown = calls[0][0][calls[0][0].index("--content") + 1]
         return CompletedProcess(args, 0, stdout=_readback(markdown), stderr="")
@@ -76,10 +81,13 @@ def test_write_uses_argument_arrays_then_fetches_and_verifies_all_bindings() -> 
     update_args, update_kwargs = calls[0]
     fetch_args, fetch_kwargs = calls[1]
     assert isinstance(update_args, list)
-    assert update_args[:3] == ["lark-cli", "docs", "+update"]
+    docs_index = update_args.index("docs")
+    assert update_args[docs_index : docs_index + 2] == ["docs", "+update"]
     assert "append" in update_args
     assert isinstance(fetch_args, list)
-    assert fetch_args[:3] == ["lark-cli", "docs", "+fetch"]
+    docs_index = fetch_args.index("docs")
+    assert fetch_args[docs_index : docs_index + 2] == ["docs", "+fetch"]
+    assert "cmd.exe" not in update_args + fetch_args
     assert result.audit_payload_digest in fetch_args
     assert update_kwargs["shell"] is False
     assert fetch_kwargs["shell"] is False
@@ -106,7 +114,7 @@ def test_exit_zero_without_cloud_readback_blocks_required_audit() -> None:
         runner=fake_runner,
     ).write(_record())
 
-    assert [args[2] for args in calls] == ["+update", "+fetch"]
+    assert [_operation(args) for args in calls] == ["+update", "+fetch"]
     assert result.status == "CAPABILITY_BLOCKED"
     assert result.state_advance_allowed is False
     assert result.cloud_readback_verified is False
@@ -132,7 +140,7 @@ def test_privacy_minimization_excludes_secrets_names_local_keys_and_raw_authenti
     captured: dict[str, str] = {}
 
     def fake_runner(args, **kwargs):
-        if args[2] == "+update":
+        if _operation(args) == "+update":
             captured["markdown"] = args[args.index("--content") + 1]
             return CompletedProcess(args, 0, stdout='{"ok":true}', stderr="")
         return CompletedProcess(args, 0, stdout=_readback(captured["markdown"]), stderr="")
@@ -197,7 +205,7 @@ def test_readback_bindings_cannot_be_assembled_from_different_audit_entries() ->
 """
 
     def fake_runner(args, **kwargs):
-        if args[2] == "+update":
+        if _operation(args) == "+update":
             return CompletedProcess(args, 0, stdout='{"ok":true}', stderr="")
         return CompletedProcess(args, 0, stdout=cloud_text, stderr="")
 

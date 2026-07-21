@@ -16,6 +16,7 @@ from test_release_gate_controller import FakeMailGateway, FakeProductGate, _conf
 def test_duplicate_mailbox_configs_share_host_coordination_lock(tmp_path: Path, monkeypatch) -> None:
     coordination_root = tmp_path / "coordination"
     monkeypatch.setenv("RELEASE_GATE_COORDINATION_DIR", str(coordination_root))
+    monkeypatch.delenv("RELEASE_GATE_COORDINATION_SCOPE", raising=False)
     first = ReleaseGateController(
         _config(tmp_path / "first"),
         mail_gateway=FakeMailGateway([]),
@@ -33,7 +34,7 @@ def test_duplicate_mailbox_configs_share_host_coordination_lock(tmp_path: Path, 
         result = second.run_once()
     finally:
         lock.release()
-    assert result == {"status": "RUN_ALREADY_ACTIVE", "busy": True, "scope": "mailbox"}
+    assert result == {"status": "RUN_ALREADY_ACTIVE", "busy": True, "scope": "host"}
 
 
 def test_host_coordination_lock_is_default_even_for_distinct_mailboxes(tmp_path: Path, monkeypatch) -> None:
@@ -50,6 +51,7 @@ def test_host_coordination_lock_is_default_even_for_distinct_mailboxes(tmp_path:
 def test_mailbox_coordination_scope_is_explicit_opt_in(tmp_path: Path, monkeypatch) -> None:
     coordination_root = tmp_path / "coordination"
     monkeypatch.setenv("RELEASE_GATE_COORDINATION_DIR", str(coordination_root))
+    monkeypatch.delenv("RELEASE_GATE_COORDINATION_SCOPE", raising=False)
     monkeypatch.setenv("RELEASE_GATE_COORDINATION_SCOPE", "mailbox")
     first = ReleaseGateController(_config(tmp_path / "first"), mail_gateway=FakeMailGateway([]), product_gate=FakeProductGate())
     second_config = _config(tmp_path / "second")

@@ -115,7 +115,10 @@ class ReleaseGateController:
         coordination_lock = RunOnceLock(self.coordination_lock_path())
         coordination_acquired = coordination_lock.acquire()
         if coordination_acquired["status"] != "acquired":
-            return {"status": "RUN_ALREADY_ACTIVE", "busy": True, "scope": "mailbox"}
+            scope_mode = str(os.environ.get("RELEASE_GATE_COORDINATION_SCOPE") or "host").strip().lower()
+            if scope_mode not in {"host", "mailbox"}:
+                scope_mode = "host"
+            return {"status": "RUN_ALREADY_ACTIVE", "busy": True, "scope": scope_mode}
         lock = RunOnceLock(self.lock_path)
         acquired = lock.acquire()
         if acquired["status"] != "acquired":

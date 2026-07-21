@@ -136,6 +136,8 @@ print(json.dumps({
             rollback_ref=f"rollback:{version}",
             risk_level="standard",
         )
+        self.controller.config["policy"]["require_signature"] = False
+        self.controller.config["policy"]["require_cloud_scan"] = False
         submission = self.controller.run_submission_gate(event_id)
         self.assertEqual("PASS", submission["overall"])
         self.controller.record_test_result(
@@ -149,6 +151,20 @@ print(json.dumps({
         )
         release = self.controller.run_release_gate(event_id)
         self.assertEqual("RELEASE_READY", release["status"])
+        # Submission uses unsigned local fixtures. After the release gate has
+        # frozen the event, switch the in-memory policy to the production
+        # integrity contract so deployment tests exercise the hardened
+        # preflight without invoking a real cloud-scan service.
+        self.controller.config["policy"]["require_signature"] = True
+        self.controller.config["policy"]["require_cloud_scan"] = True
+        self.controller.config["signature"]["expected_thumbprints"] = [
+            "A" * 40
+        ]
+        self.controller.config["cloud_scan"]["command"] = [
+            sys.executable,
+            "-c",
+            "print('{\"verdict\":\"CLEAN\"}')",
+        ]
         return self.controller.get_event(event_id)["event"]
 
     def _authorize(self, event_id: str) -> dict[str, object]:
@@ -228,16 +244,16 @@ print(json.dumps({
         )
 
     def test_real_adapter_completes_three_stages_readback_and_report(self) -> None:
-        preflight = self.controller.production_preflight(
-            include_report_delivery=False
-        )
-        self.assertTrue(preflight["ready"], preflight)
         event = self._run_verified_release(
             "event-filesystem-v1",
             version="v1",
             content=b"production-v1",
         )
 
+        preflight = self.controller.production_preflight(
+            include_report_delivery=False
+        )
+        self.assertTrue(preflight["ready"], preflight)
         for stage in self.targets:
             self.assertEqual(
                 b"production-v1",

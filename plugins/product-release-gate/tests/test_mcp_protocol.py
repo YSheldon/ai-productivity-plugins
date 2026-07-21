@@ -44,7 +44,7 @@ class McpProtocolTests(unittest.TestCase):
 
         tools = responses[1]["result"]["tools"]
         tool_names = {item["name"] for item in tools}
-        self.assertEqual(18, len(tools))
+        self.assertEqual(19, len(tools))
         self.assertIn("release_gate_run_release_gate", tool_names)
         self.assertIn("release_gate_request_release_authorization", tool_names)
         self.assertIn("release_gate_record_release_authorization", tool_names)

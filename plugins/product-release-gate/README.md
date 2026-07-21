@@ -32,15 +32,20 @@ The MCP process reads `PRODUCT_RELEASE_GATE_CONFIG` once at startup. Tool calls 
 3. Run the submission gate and automated tests.
 4. Record the auditable test approval when policy requires it.
 5. Build Manifest-R only from the approved Manifest-S and run the release gate.
-6. Run `release_gate_production_preflight`; missing required adapters remain fail-closed.
-7. Freeze an approval request with `release_gate_request_release_authorization`.
-8. Read back the external approval and call `release_gate_record_release_authorization` only when its event, actor, decision, Manifest-S, and Manifest-R fields match.
-9. Run `release_gate_ensure_deployment_capabilities`. A missing capability creates a replayable request and state `CAPABILITY_BLOCKED`; it is never waived.
-10. Run `preproduction`, `production_canary`, and `production_full` in order with `release_gate_run_deployment_stage`.
-11. Run `release_gate_run_production_readback` and require the target to report the exact authorized Manifest-R digest.
-12. Generate the production report and verify the HMAC-signed control-event chain.
+6. When the event is `RELEASE_READY`, call `release_gate_build_live_handoff` with explicit SVN coordinates, fixed revision, material-to-SVN mappings, pre-release report SHA-256, source message id and an output path. The tool binds the handoff to Manifest-R and records an audit receipt; it does not call `/api/v1/scans` or deploy.
+7. Run `release_gate_production_preflight`; missing required adapters remain fail-closed.
+8. Freeze an approval request with `release_gate_request_release_authorization`.
+9. Read back the external approval and call `release_gate_record_release_authorization` only when its event, actor, decision, Manifest-S, and Manifest-R fields match.
+10. Run `release_gate_ensure_deployment_capabilities`. A missing capability creates a replayable request and state `CAPABILITY_BLOCKED`; it is never waived.
+11. Run `preproduction`, `production_canary`, and `production_full` in order with `release_gate_run_deployment_stage`.
+12. Run `release_gate_run_production_readback` and require the target to report the exact authorized Manifest-R digest.
+13. Generate the production report and verify the HMAC-signed control-event chain.
 
 The existing test result is the first stage of the four-stage rollout. The deployment controller executes the remaining pre-production, canary, and full-production stages.
+
+## GitLab live-gate handoff
+
+`release_gate_build_live_handoff` produces the exact `ProductMaterialWorkflow/v1` envelope consumed by the protected GitLab promoter. The caller must provide `request_id`, `pipeline_nonce`, product name/version, an HTTPS SVN repository root, a positive fixed revision, and a complete list of relative `path`/`svn_path` mappings. The plugin derives `manifest_sha256` from the already verified Manifest-R and requires a separate pre-release report digest and source message id. It rejects non-`RELEASE_READY` events, digest drift, unsafe paths, credential-bearing SVN URLs and non-PASS evidence. The resulting file is staged or explicitly triggered only by the separate trusted promoter; no network scan or deployment is hidden inside this tool.
 
 ## Adapter Contracts
 

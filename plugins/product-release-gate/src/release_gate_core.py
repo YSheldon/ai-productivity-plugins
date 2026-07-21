@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from release_gate_handoff import build_handoff, sha256_json, write_handoff
+
 
 RESULT_PASS = "PASS"
 RESULT_FAIL = "FAIL"
@@ -867,6 +869,44 @@ class ReleaseGateController:
             "overall": overall,
             "execution": execution,
             "next_action": next_action,
+        }
+
+    def build_live_handoff(
+        self,
+        event_id: str,
+        request: dict[str, Any],
+        pre_release_report_sha256: str,
+        source_message_id: str,
+        output_path: str,
+    ) -> dict[str, Any]:
+        """Bind a RELEASE_READY event to an explicit GitLab live-gate request."""
+        event = self._load_event(event_id)
+        manifest_r = self._load_manifest(event_id, "manifest-r.json")
+        handoff = build_handoff(
+            event=event,
+            manifest_r=manifest_r,
+            request=request,
+            pre_release_report_sha256=pre_release_report_sha256,
+            source_message_id=source_message_id,
+        )
+        path = write_handoff(output_path, handoff)
+        event["live_handoff_path"] = path
+        event["live_handoff_digest"] = sha256_json(handoff)
+        event.setdefault("history", []).append(
+            {
+                "at": utc_now(),
+                "from": event.get("status"),
+                "to": event.get("status"),
+                "reason": "ProductMaterialWorkflow/v1 live handoff built",
+            }
+        )
+        self._save_event(event)
+        return {
+            "event_id": event_id,
+            "status": event.get("status"),
+            "handoff_path": path,
+            "handoff": handoff,
+            "next_action": "pass the handoff to the trusted GitLab promoter; no scanner or deployment was invoked",
         }
 
     def _render_report(

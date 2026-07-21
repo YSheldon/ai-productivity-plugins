@@ -90,6 +90,16 @@ def build_final_release(args: dict[str, Any]) -> dict[str, Any]:
     return controller(args).build_final_release(args["event_id"], args["output_dir"])
 
 
+def build_live_handoff(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).build_live_handoff(
+        args["event_id"],
+        args["request"],
+        args["pre_release_report_sha256"],
+        args["source_message_id"],
+        args["output_path"],
+    )
+
+
 def run_release_gate(args: dict[str, Any]) -> dict[str, Any]:
     return controller(args).run_release_gate(args["event_id"])
 
@@ -275,6 +285,53 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": build_final_release,
+    },
+    "release_gate_build_live_handoff": {
+        "description": "Bind a RELEASE_READY Manifest-R to an explicit ProductMaterialWorkflow/v1 request for the trusted GitLab promoter. No scanner or deployment is invoked.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "request": {
+                    "type": "object",
+                    "properties": {
+                        "request_id": {"type": "string"},
+                        "pipeline_nonce": {"type": "string"},
+                        "product": {
+                            "type": "object",
+                            "properties": {"name": {"type": "string"}, "version": {"type": "string"}},
+                            "required": ["name", "version"],
+                            "additionalProperties": False,
+                        },
+                        "svn": {
+                            "type": "object",
+                            "properties": {"repository_root": {"type": "string"}, "fixed_revision": {"type": "integer", "minimum": 1}},
+                            "required": ["repository_root", "fixed_revision"],
+                            "additionalProperties": False,
+                        },
+                        "release_materials": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {"id": {"type": "string"}, "path": {"type": "string"}, "svn_path": {"type": "string"}},
+                                "required": ["id", "path", "svn_path"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["request_id", "pipeline_nonce", "product", "svn", "release_materials"],
+                    "additionalProperties": False,
+                },
+                "pre_release_report_sha256": {"type": "string"},
+                "source_message_id": {"type": "string"},
+                "output_path": {"type": "string"},
+                **CONFIG_PROPERTY,
+            },
+            "required": ["event_id", "request", "pre_release_report_sha256", "source_message_id", "output_path"],
+            "additionalProperties": False,
+        },
+        "handler": build_live_handoff,
     },
     "release_gate_run_release_gate": {
         "description": "Execute every R-gate rule, including physical directory omissions/extras, SHA1, signature, cloud scan, test approval, and rollback evidence.",

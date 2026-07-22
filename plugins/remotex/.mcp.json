@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "remotex": {
+      "command": "node",
+      "args": [
+        "./scripts/launch_remotex.mjs"
+      ],
+      "cwd": "."
+    }
+  }
+}

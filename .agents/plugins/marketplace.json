@@ -1,7 +1,7 @@
 {
   "name": "ai-productivity-plugins",
   "interface": {
-    "displayName": "AI 生产力插件集"
+    "displayName": "AI Productivity Plugins"
   },
   "plugins": [
     {
@@ -59,8 +59,8 @@
         "path": "./plugins/ssh"
       },
       "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
+        "installation": "NOT_AVAILABLE",
+        "authentication": "ON_USE"
       },
       "category": "Developer Tools"
     },
@@ -171,6 +171,18 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Productivity"
+    },
+    {
+      "name": "remotex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/remotex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Developer Tools"
     }
   ]
 }

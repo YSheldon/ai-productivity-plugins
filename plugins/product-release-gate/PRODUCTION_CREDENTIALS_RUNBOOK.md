@@ -41,8 +41,19 @@ PRODUCT_RELEASE_GATE_AUDIT_KEY  # a different secret, at least 32 random bytes
 PMG_CLOUD_SCAN_TOKEN             # protected and masked; only for the live scan adapter
 ```
 
+For the normal Windows installation, run setup under the final scheduled-task identity:
 
-After the disabled deployment configuration has been generated, initialize the two
+```powershell
+py -3 src/release_gate_cli.py `
+  --config C:\ProgramData\ProductReleaseGate\config.json setup
+```
+
+Setup invokes the safe credential initializer before it installs the scheduler, returns
+only non-secret boolean/count evidence, and blocks if identity binding or credential
+separation is not proven. It does not enable deployment or report automation.
+
+If setup is intentionally not used after generating a disabled deployment
+configuration, initialize the two
 per-user credentials from a shell running as the final scheduler identity:
 
 ```powershell

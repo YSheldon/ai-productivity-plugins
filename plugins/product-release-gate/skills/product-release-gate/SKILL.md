@@ -7,7 +7,7 @@ description: Create and execute fail-closed product material gates, bound releas
 
 Use this plugin for submission, testing, final-material production, release authorization, staged deployment, rollback, and durable production reports.
 
-Run `py -3 src/release_gate_cli.py setup` for zero manual JSON editing. A setup rerun reuses the same configuration with zero prompts. MCP, this Skill, the standalone CLI, and the OS scheduler all use the same controller; Codex is optional.
+Run `py -3 src/release_gate_cli.py setup` as the final scheduler identity for zero manual JSON editing. Setup safely initializes or reuses the separate authorization/audit credentials, binds the runtime identity, installs one scheduler only after credential and unified-approval preflight, and returns the remaining production-preflight gaps without enabling deployment or report automation. A setup rerun reuses the same configuration and credentials with zero prompts and no rotation. MCP, this Skill, the standalone CLI, and the OS scheduler all use the same controller; Codex is optional.
 
 ## Filesystem Production Bootstrap
 
@@ -23,11 +23,14 @@ Do not enable the generated config until external approval, separate authorizati
 
 ## Unattended Credentials
 
-On Windows, run `scripts/provision_windows_credentials.py status` and then `init` under
-the exact account that will run the release scheduler. The command creates only missing
-authorization/audit keys in that account's Windows Credential Manager, writes only
-non-secret target references to config, never prints values, and never rotates existing
-keys. It also stores only a SHA-256 fingerprint of the process-token SID. Require
+On Windows, the preferred `setup` command automatically runs the safe `init` operation
+under the exact account that will run the release scheduler. Use
+`scripts/provision_windows_credentials.py status` for independent audit; use manual
+`init` only for a bootstrap configuration when setup is intentionally not used. The
+initializer creates only missing authorization/audit keys in that account's Windows
+Credential Manager, writes only non-secret target references to config, never prints
+values, and never rotates existing keys. It also stores only a SHA-256 fingerprint of
+the process-token SID. Require
 `runtime_identity_bound=true`, `runtime_identity_matches=true`,
 `principal_values_returned=false`, and `ready=true`. Normal `init` must reject an
 identity change. An approved service-account migration uses `rebind` with

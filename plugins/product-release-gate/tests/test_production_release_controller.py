@@ -14,6 +14,8 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from release_gate_core import GateError, canonical_json
+from release_gate_credentials import runtime_principal_sha256
+from release_gate_credentials import current_runtime_principal
 from release_gate_production import ProductionReleaseController
 
 
@@ -309,6 +311,14 @@ else:
             json.dumps(
                 {
                     "storage_dir": str(self.root / f"events-{mode}-{include_deploy}"),
+                    "runtime": {
+                        "identity_binding": {
+                            "required": True,
+                            "principal_sha256": runtime_principal_sha256(
+                                current_runtime_principal()
+                            ),
+                        }
+                    },
                     "policy": {
                         "allowed_extensions": [".bin"],
                         "require_source_ref": True,
@@ -407,6 +417,118 @@ else:
             "-c",
             "print('{\"verdict\":\"CLEAN\"}')",
         ]
+
+    def test_production_enabled_requires_runtime_identity_binding(self) -> None:
+        config_path = self._write_config()
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["runtime"].pop("identity_binding")
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        controller = ProductionReleaseController(str(config_path))
+
+        preflight = controller.production_preflight()
+
+        self.assertFalse(preflight["ready"])
+        self.assertIn(
+            "runtime.identity_binding",
+            preflight["missing_capabilities"],
+        )
+        with self.assertRaisesRegex(GateError, "runtime identity differs"):
+            controller._authorization_key()
+        with self.assertRaisesRegex(GateError, "runtime identity differs"):
+            controller.create_submission(
+                event_id="event-unbound-runtime",
+                task_id="TASK-UNBOUND-RUNTIME",
+                artifacts=[
+                    {
+                        "logical_name": "product.bin",
+                        "file_path": str(self.artifact),
+                        "source_ref": "commit:unbound-runtime",
+                    }
+                ],
+                source_ref="commit:unbound-runtime",
+                rollback_ref="rollback:stable",
+                risk_level="standard",
+            )
+        self.assertFalse(
+            (controller.storage_dir / "event-unbound-runtime" / "event.json").exists()
+        )
+
+
+    def test_runtime_identity_mismatch_blocks_secret_use_and_preflight(self) -> None:
+        principal_a = "windows-sid:S-1-5-21-production-runtime-a"
+        principal_b = "windows-sid:S-1-5-21-production-runtime-b"
+        config_path = self._write_config()
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["runtime"] = {
+            "identity_binding": {
+                "required": True,
+                "principal_sha256": runtime_principal_sha256(principal_a),
+            }
+        }
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        controller = ProductionReleaseController(
+            str(config_path),
+            runtime_principal_provider=lambda: principal_b,
+        )
+
+        preflight = controller.production_preflight()
+        identity_check = next(
+            check
+            for check in preflight["checks"]
+            if check["name"] == "runtime.identity_binding"
+        )
+
+        self.assertFalse(preflight["ready"])
+        self.assertIn(
+            "runtime.identity_binding",
+            preflight["missing_capabilities"],
+        )
+        self.assertTrue(identity_check["required"])
+        self.assertFalse(identity_check["configured"])
+        self.assertEqual(
+            {
+                "required": True,
+                "ready": False,
+                "identity_bound": True,
+                "identity_matches": False,
+                "principal_values_returned": False,
+            },
+            identity_check["detail"],
+        )
+        serialized = json.dumps(identity_check, sort_keys=True)
+        self.assertNotIn(principal_a, serialized)
+        self.assertNotIn(principal_b, serialized)
+        with self.assertRaisesRegex(GateError, "runtime identity differs"):
+            controller._authorization_key()
+
+    def test_matching_runtime_identity_allows_secret_use(self) -> None:
+        principal = "windows-sid:S-1-5-21-production-runtime-a"
+        config_path = self._write_config()
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["runtime"] = {
+            "identity_binding": {
+                "required": True,
+                "principal_sha256": runtime_principal_sha256(principal),
+            }
+        }
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        controller = ProductionReleaseController(
+            str(config_path),
+            runtime_principal_provider=lambda: principal,
+        )
+
+        preflight = controller.production_preflight()
+        identity_check = next(
+            check
+            for check in preflight["checks"]
+            if check["name"] == "runtime.identity_binding"
+        )
+        self.assertTrue(identity_check["configured"])
+        self.assertNotIn("runtime.identity_binding", preflight["missing_capabilities"])
+        self.assertEqual(
+            os.environ["TEST_RELEASE_AUTH_KEY"].encode("utf-8"),
+            controller._authorization_key(),
+        )
 
     def test_production_preflight_rejects_disabled_integrity_policy(self) -> None:
         controller = ProductionReleaseController(str(self._write_config()))

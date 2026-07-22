@@ -9,8 +9,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+
+
+sys.path.insert(0, str(PLUGIN_ROOT / "src"))
+
+from release_gate_credentials import (
+    current_runtime_principal,
+    runtime_principal_sha256,
+)
 
 
 class McpProtocolTests(unittest.TestCase):
@@ -142,6 +149,14 @@ class McpProtocolTests(unittest.TestCase):
                 json.dumps(
                     {
                         "storage_dir": str(root / "events"),
+                        "runtime": {
+                            "identity_binding": {
+                                "required": True,
+                                "principal_sha256": runtime_principal_sha256(
+                                    current_runtime_principal()
+                                ),
+                            }
+                        },
                         "policy": {
                             "require_signature": True,
                             "require_cloud_scan": True,

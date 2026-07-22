@@ -4,6 +4,10 @@
     "state_dir": "%LOCALAPPDATA%\\product-release-gate\\state",
     "poll_minutes": 60,
     "scheduler_mode": "auto",
+    "identity_binding": {
+      "required": true,
+      "principal_sha256": ""
+    },
     "auto_authorize_verified_pre_release": false,
     "auto_deploy_authorized_releases": false,
     "auto_generate_production_report": false,

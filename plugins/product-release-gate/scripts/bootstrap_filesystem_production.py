@@ -359,6 +359,15 @@ def _build_config(
             "auto_deliver_production_report": False,
         }
     )
+    identity_binding = runtime.setdefault("identity_binding", {})
+    if not isinstance(identity_binding, dict):
+        raise BootstrapError(
+            "runtime.identity_binding configuration must be an object"
+        )
+    identity_binding["required"] = True
+    identity_binding["principal_sha256"] = str(
+        identity_binding.get("principal_sha256") or ""
+    ).strip().lower()
     production = config.setdefault("production", {})
     production["enabled"] = False
     authorization = production.setdefault("authorization", {})

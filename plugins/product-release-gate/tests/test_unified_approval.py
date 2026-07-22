@@ -14,8 +14,10 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from release_gate_core import GateError
+from release_gate_credentials import runtime_principal_sha256
 from release_gate_production import ProductionReleaseController
 
+RUNTIME_PRINCIPAL = "windows-sid:S-1-5-21-unified-approval-runtime"
 
 class FakeApprovalMailGateway:
     def __init__(self) -> None:
@@ -84,6 +86,14 @@ else:
         path = self.root / f"config-{workflow_mode}-{aggregate_status}.json"
         path.write_text(json.dumps({
             "storage_dir": str(self.root / f"events-{workflow_mode}-{aggregate_status}"),
+            "runtime": {
+                "identity_binding": {
+                    "required": True,
+                    "principal_sha256": runtime_principal_sha256(
+                        RUNTIME_PRINCIPAL
+                    ),
+                }
+            },
             "policy": {"allowed_extensions": [".bin"], "require_source_ref": False,
                 "require_signature": False, "require_cloud_scan": False,
                 "auto_approve_risk_levels": ["standard"]},
@@ -112,6 +122,7 @@ else:
         controller = ProductionReleaseController(
             str(self._write_config(workflow_mode, aggregate_status)),
             approval_mail_gateway=self.mail,
+            runtime_principal_provider=lambda: RUNTIME_PRINCIPAL,
             allow_unlocked_test_adapters=True,
         )
         controller._save_event({"event_id": "event-unified", "task_id": "TASK-UNIFIED-1",

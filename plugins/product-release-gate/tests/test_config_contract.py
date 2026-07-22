@@ -13,6 +13,10 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from release_gate_core import default_config
+from release_gate_credentials import (
+    current_runtime_principal,
+    runtime_principal_sha256,
+)
 from release_gate_production import ProductionReleaseController
 
 
@@ -138,6 +142,9 @@ class ConfigContractTests(unittest.TestCase):
                 config["storage_dir"] = str(Path(temporary) / "events")
                 config["signature"]["expected_thumbprints"] = ["A" * 40]
                 config["production"]["enabled"] = True
+                config["runtime"]["identity_binding"]["principal_sha256"] = (
+                    runtime_principal_sha256(current_runtime_principal())
+                )
                 deployment_binding, readback_command = self._write_example_deployment_binding(
                     Path(temporary)
                 )

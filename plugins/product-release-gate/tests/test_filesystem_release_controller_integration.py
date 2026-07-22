@@ -14,6 +14,7 @@ sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from bootstrap_filesystem_production import bootstrap_filesystem_production
 from filesystem_release_adapter import FilesystemReleaseAdapter
+from release_gate_credentials import runtime_principal_sha256
 from release_gate_production import ProductionReleaseController
 
 
@@ -23,6 +24,7 @@ AUTH_KEY = "controller-filesystem-authorization-key-32-bytes"
 AUDIT_KEY = "controller-filesystem-audit-key-at-least-32-bytes"
 AUTH_TARGET = "ProductReleaseGate/test-authorization/v1"
 AUDIT_TARGET = "ProductReleaseGate/test-audit/v1"
+RUNTIME_PRINCIPAL = "windows-sid:S-1-5-21-filesystem-controller"
 
 
 class FilesystemReleaseControllerIntegrationTests(unittest.TestCase):
@@ -102,6 +104,9 @@ print(json.dumps({
             "key_env": AUDIT_ENV,
             "credential_target": AUDIT_TARGET,
         }
+        config["runtime"]["identity_binding"]["principal_sha256"] = (
+            runtime_principal_sha256(RUNTIME_PRINCIPAL)
+        )
         self.config_path.write_text(
             json.dumps(config, indent=2) + "\n",
             encoding="utf-8",
@@ -116,6 +121,7 @@ print(json.dumps({
             str(self.config_path),
             credential_reader=self.credentials.get,
             environ={},
+            runtime_principal_provider=lambda: RUNTIME_PRINCIPAL,
         )
 
     def tearDown(self) -> None:

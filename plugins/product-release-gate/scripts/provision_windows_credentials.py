@@ -10,7 +10,7 @@ import sys
 import uuid
 from ctypes import wintypes
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -21,7 +21,10 @@ from release_gate_credentials import (
     CredentialProviderError,
     DEFAULT_AUDIT_CREDENTIAL_TARGET,
     DEFAULT_AUTHORIZATION_CREDENTIAL_TARGET,
+    current_runtime_principal,
     read_windows_generic_credential,
+    runtime_identity_binding_status,
+    runtime_principal_sha256,
 )
 
 
@@ -176,10 +179,30 @@ def _credential_bindings(config: dict[str, Any]) -> tuple[dict[str, Any], dict[s
     return authorization, audit
 
 
+def _identity_binding(config: dict[str, Any]) -> dict[str, Any]:
+    runtime = config.setdefault("runtime", {})
+    if not isinstance(runtime, dict):
+        raise ProvisioningError("runtime configuration must be an object")
+    binding = runtime.setdefault("identity_binding", {})
+    if not isinstance(binding, dict):
+        raise ProvisioningError(
+            "runtime.identity_binding configuration must be an object"
+        )
+    expected = str(binding.get("principal_sha256") or "").strip().lower()
+    if expected and not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise ProvisioningError(
+            "runtime identity principal_sha256 is invalid"
+        )
+    binding["required"] = True
+    binding["principal_sha256"] = expected
+    return binding
+
+
 def credential_status(
     config_path: str | Path,
     *,
     store: CredentialStore | None = None,
+    principal_provider: Callable[[], str] | None = None,
 ) -> dict[str, Any]:
     path = Path(config_path).expanduser().resolve(strict=False)
     config = _load_config(path)
@@ -187,12 +210,18 @@ def credential_status(
     provider = store or WindowsCredentialStore()
     authorization_value = provider.read(str(authorization["credential_target"]))
     audit_value = provider.read(str(audit["credential_target"]))
+    identity = runtime_identity_binding_status(
+        _identity_binding(config),
+        required=True,
+        principal_provider=principal_provider,
+    )
     ready = bool(
         authorization_value
         and audit_value
         and len(authorization_value.encode("utf-8")) >= 32
         and len(audit_value.encode("utf-8")) >= 32
         and not secrets.compare_digest(authorization_value, audit_value)
+        and identity["ready"] is True
     )
     return {
         "status": "ready" if ready else "CAPABILITY_BLOCKED",
@@ -205,6 +234,10 @@ def credential_status(
             and not secrets.compare_digest(authorization_value, audit_value)
         ),
         "secret_values_returned": False,
+        "runtime_identity_required": identity["required"],
+        "runtime_identity_bound": identity["identity_bound"],
+        "runtime_identity_matches": identity["identity_matches"],
+        "principal_values_returned": identity["principal_values_returned"],
         "config_path": str(path),
     }
 
@@ -213,6 +246,8 @@ def provision_credentials(
     config_path: str | Path,
     *,
     store: CredentialStore | None = None,
+    principal_provider: Callable[[], str] | None = None,
+    allow_identity_rebind: bool = False,
 ) -> dict[str, Any]:
     path = Path(config_path).expanduser().resolve(strict=False)
     config = _load_config(path)
@@ -222,6 +257,25 @@ def provision_credentials(
         str(authorization["credential_target"]),
         str(audit["credential_target"]),
     )
+    binding = _identity_binding(config)
+    identity_provider = principal_provider or current_runtime_principal
+    try:
+        principal = identity_provider()
+        principal_digest = runtime_principal_sha256(principal)
+    except CredentialProviderError as exc:
+        raise ProvisioningError(
+            "current runtime identity is unavailable"
+        ) from exc
+    expected_digest = str(binding.get("principal_sha256") or "")
+    identity_rebound = bool(
+        expected_digest
+        and not secrets.compare_digest(expected_digest, principal_digest)
+    )
+    if identity_rebound and not allow_identity_rebind:
+        raise ProvisioningError(
+            "current runtime identity differs from the configured binding"
+        )
+    binding["principal_sha256"] = principal_digest
     values = [provider.read(target) for target in targets]
     created = 0
     for index, value in enumerate(values):
@@ -239,13 +293,19 @@ def provision_credentials(
     if secrets.compare_digest(values[0], values[1]):
         raise ProvisioningError("authorization and audit credentials must be different")
     _write_config(path, config)
-    result = credential_status(path, store=provider)
+    result = credential_status(
+        path,
+        store=provider,
+        principal_provider=lambda: principal,
+    )
     result.update(
         {
             "credentials_created": created,
             "credentials_reused": 2 - created,
             "credential_values_printed": False,
             "rotation_supported_by_this_command": False,
+            "runtime_identity_rebound": identity_rebound,
+            "runtime_identity_rebind_authorized": bool(allow_identity_rebind),
         }
     )
     return result
@@ -259,18 +319,33 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--config", default=str(default_config_path()))
-    parser.add_argument("action", choices=("init", "status"))
+    parser.add_argument("action", choices=("init", "status", "rebind"))
+    parser.add_argument(
+        "--confirm-runtime-identity-rebind",
+        action="store_true",
+        help="explicitly authorize rebinding the config to this process identity",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        result = (
-            provision_credentials(args.config)
-            if args.action == "init"
-            else credential_status(args.config)
-        )
+        if args.action == "rebind" and not args.confirm_runtime_identity_rebind:
+            raise ProvisioningError(
+                "rebind requires --confirm-runtime-identity-rebind"
+            )
+        if args.action != "rebind" and args.confirm_runtime_identity_rebind:
+            raise ProvisioningError(
+                "--confirm-runtime-identity-rebind is valid only with rebind"
+            )
+        if args.action == "status":
+            result = credential_status(args.config)
+        else:
+            result = provision_credentials(
+                args.config,
+                allow_identity_rebind=args.action == "rebind",
+            )
     except (CredentialProviderError, ProvisioningError, OSError, ValueError) as exc:
         print(
             json.dumps(
@@ -280,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
                     "error_code": "CREDENTIAL_PROVISIONING_BLOCKED",
                     "error": str(exc),
                     "secret_values_returned": False,
+                    "principal_values_returned": False,
                 },
                 sort_keys=True,
                 separators=(",", ":"),

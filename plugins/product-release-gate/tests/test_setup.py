@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, Callable, Mapping
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
@@ -56,6 +57,13 @@ class FakeController:
             "missing_capabilities": [] if ready else ["runtime binding"],
         }
 
+    def production_preflight(self) -> dict:
+        return {
+            "ready": False,
+            "missing_capabilities": ["signature.expected_thumbprints"],
+            "checks": [],
+        }
+
 
 class FakeMailGateway:
     def __init__(self, accounts: list[dict[str, str]]) -> None:
@@ -79,6 +87,8 @@ class SetupTests(unittest.TestCase):
         self.accounts = [
             {"name": "mail-primary", "email": "verifier@example.com"}
         ]
+        self.credential_calls: list[Path] = []
+        self.credentials_initialized = False
         self.lock_path = self._build_lock()
         self.verifier_config.parent.mkdir(parents=True, exist_ok=True)
         self.verifier_config.write_text(
@@ -149,7 +159,47 @@ class SetupTests(unittest.TestCase):
             "profile": profile,
         }
 
-    def _setup(self) -> ReleaseGateSetup:
+    def _provision_credentials(self, config_path: Path) -> Mapping[str, Any]:
+        path = Path(config_path).resolve()
+        self.credential_calls.append(path)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        production = payload.setdefault("production", {})
+        production["authorization"] = {
+            "key_env": "PRODUCT_RELEASE_GATE_AUTH_KEY",
+            "credential_target": "ProductReleaseGate/authorization/v1",
+        }
+        production.setdefault("audit", {})["credential_target"] = (
+            "ProductReleaseGate/audit/v1"
+        )
+        payload["runtime"]["identity_binding"] = {
+            "required": True,
+            "principal_sha256": "a" * 64,
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        created = 0 if self.credentials_initialized else 2
+        self.credentials_initialized = True
+        return {
+            "status": "ready",
+            "ready": True,
+            "authorization_credential_present": True,
+            "audit_credential_present": True,
+            "credentials_distinct": True,
+            "secret_values_returned": False,
+            "credential_values_printed": False,
+            "runtime_identity_required": True,
+            "runtime_identity_bound": True,
+            "runtime_identity_matches": True,
+            "principal_values_returned": False,
+            "credentials_created": created,
+            "credentials_reused": 2 - created,
+            "runtime_identity_rebound": False,
+        }
+
+    def _setup(
+        self,
+        *,
+        credential_provisioner: Callable[[Path], Mapping[str, Any]] | None = None,
+    ) -> ReleaseGateSetup:
         def prompt(message: str) -> str:
             self.prompts.append(message)
             raise AssertionError("production setup must not prompt")
@@ -164,6 +214,9 @@ class SetupTests(unittest.TestCase):
             bootstrap_runner=self._bootstrap,
             mail_gateway_factory=lambda _lock, _digest: FakeMailGateway(
                 self.accounts
+            ),
+            credential_provisioner=(
+                credential_provisioner or self._provision_credentials
             ),
         )
 
@@ -183,6 +236,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual("ready", result["status"])
         self.assertEqual(0, result["prompt_count"])
         self.assertEqual(1, self.runtime.calls)
+        self.assertEqual([self.config_path.resolve()], self.credential_calls)
         self.assertEqual(
             [("install", "auto"), ("status", "windows")],
             self.scheduler.calls,
@@ -214,7 +268,15 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(60, config["runtime"]["poll_minutes"])
         identity_binding = config["runtime"]["identity_binding"]
         self.assertTrue(identity_binding["required"])
-        self.assertEqual("", identity_binding["principal_sha256"])
+        self.assertEqual("a" * 64, identity_binding["principal_sha256"])
+        self.assertTrue(result["credential_status"]["ready"])
+        self.assertFalse(result["credential_status"]["secret_values_returned"])
+        self.assertFalse(result["credential_status"]["principal_values_returned"])
+        self.assertFalse(result["production_activation_ready"])
+        self.assertEqual(
+            ["signature.expected_thumbprints"],
+            result["production_preflight"]["missing_capabilities"],
+        )
         self.assertFalse(config["runtime"]["auto_deploy_authorized_releases"])
         self.assertFalse(config["runtime"]["auto_generate_production_report"])
         self.assertFalse(config["runtime"]["auto_deliver_production_report"])
@@ -245,6 +307,8 @@ class SetupTests(unittest.TestCase):
         self.assertEqual("ready", result["status"])
         self.assertEqual([], self.prompts)
         self.assertEqual(2, self.runtime.calls)
+        self.assertEqual(2, len(self.credential_calls))
+        self.assertEqual(2, result["credential_status"]["credentials_reused"])
 
     def test_setup_fails_closed_when_verifier_config_is_missing(self) -> None:
         self.verifier_config.unlink()
@@ -278,6 +342,50 @@ class SetupTests(unittest.TestCase):
                 scheduler_mode="auto",
                 provided={**self._provided(), "password": "forbidden"},
             )
+
+    def test_setup_fails_before_scheduler_when_credential_initialization_fails(self) -> None:
+        def fail(_path: Path) -> Mapping[str, Any]:
+            raise RuntimeError("credential store unavailable")
+
+        with self.assertRaisesRegex(
+            SetupError,
+            "production credential initialization failed",
+        ):
+            self._setup(credential_provisioner=fail).run(
+                non_interactive=True,
+                scheduler_mode="auto",
+                provided=self._provided(),
+            )
+
+        self.assertEqual([], self.scheduler.calls)
+        self.assertEqual(0, self.runtime.calls)
+
+    def test_setup_rejects_credential_provider_that_returns_sensitive_values(self) -> None:
+        def unsafe(_path: Path) -> Mapping[str, Any]:
+            return {
+                "status": "ready",
+                "ready": True,
+                "authorization_credential_present": True,
+                "audit_credential_present": True,
+                "credentials_distinct": True,
+                "secret_values_returned": True,
+                "credential_values_printed": False,
+                "runtime_identity_required": True,
+                "runtime_identity_bound": True,
+                "runtime_identity_matches": True,
+                "principal_values_returned": False,
+                "runtime_identity_rebound": False,
+                "credentials_created": 2,
+                "credentials_reused": 0,
+            }
+
+        with self.assertRaisesRegex(SetupError, "did not pass safe initialization"):
+            self._setup(credential_provisioner=unsafe).run(
+                non_interactive=True,
+                scheduler_mode="auto",
+                provided=self._provided(),
+            )
+        self.assertEqual([], self.scheduler.calls)
 
 
 if __name__ == "__main__":

@@ -21,6 +21,15 @@ When all three deployment stages use filesystem targets, prefer `py -3 scripts/b
 
 Do not enable the generated config until external approval, separate authorization/audit keys, signature trust, scan, test, mail, recipient, and live-target checks are proven. Every frozen artifact must carry size, SHA1, and SHA256. Consumers must follow `<target>/.product-release-gate/current.json` to the content-addressed release `files` directory. A local bootstrap PASS proves only the deployment binding; it is not production deployment evidence.
 
+## Unattended Credentials
+
+On Windows, run `scripts/provision_windows_credentials.py status` and then `init` under
+the exact account that will run the release scheduler. The command creates only missing
+authorization/audit keys in that account's Windows Credential Manager, writes only
+non-secret target references to config, never prints values, and never rotates existing
+keys. Protected CI environment variables take precedence when present. Treat a mail
+profile created under a different CurrentUser DPAPI identity as unavailable in production.
+
 ## Required Workflow
 
 1. Start the MCP server with one protected `PRODUCT_RELEASE_GATE_CONFIG`. Per-call `config_path` overrides are forbidden. Call `release_gate_preflight`; never interpret a missing required integration as PASS.

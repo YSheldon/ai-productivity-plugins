@@ -21,6 +21,8 @@ AUTH_ENV = "TEST_FILESYSTEM_CONTROLLER_AUTH_KEY"
 AUDIT_ENV = "TEST_FILESYSTEM_CONTROLLER_AUDIT_KEY"
 AUTH_KEY = "controller-filesystem-authorization-key-32-bytes"
 AUDIT_KEY = "controller-filesystem-audit-key-at-least-32-bytes"
+AUTH_TARGET = "ProductReleaseGate/test-authorization/v1"
+AUDIT_TARGET = "ProductReleaseGate/test-audit/v1"
 
 
 class FilesystemReleaseControllerIntegrationTests(unittest.TestCase):
@@ -83,6 +85,7 @@ print(json.dumps({
         config["production"]["authorization"].update(
             {
                 "key_env": AUTH_ENV,
+                "credential_target": AUTH_TARGET,
                 "ttl_seconds": 3600,
                 "verify_command": [
                     sys.executable,
@@ -95,12 +98,25 @@ print(json.dumps({
                 "timeout_seconds": 30,
             }
         )
-        config["production"]["audit"] = {"key_env": AUDIT_ENV}
+        config["production"]["audit"] = {
+            "key_env": AUDIT_ENV,
+            "credential_target": AUDIT_TARGET,
+        }
         self.config_path.write_text(
             json.dumps(config, indent=2) + "\n",
             encoding="utf-8",
         )
-        self.controller = ProductionReleaseController(str(self.config_path))
+        os.environ.pop(AUTH_ENV, None)
+        os.environ.pop(AUDIT_ENV, None)
+        self.credentials = {
+            AUTH_TARGET: AUTH_KEY,
+            AUDIT_TARGET: AUDIT_KEY,
+        }
+        self.controller = ProductionReleaseController(
+            str(self.config_path),
+            credential_reader=self.credentials.get,
+            environ={},
+        )
 
     def tearDown(self) -> None:
         if self.previous_auth is None:

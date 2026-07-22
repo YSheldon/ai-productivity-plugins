@@ -23,11 +23,20 @@ Copy `config/config.example.json` to a protected location and set:
 
 ```powershell
 $env:PRODUCT_RELEASE_GATE_CONFIG = "C:\path\to\product-release-gate.json"
-$env:PRODUCT_RELEASE_GATE_AUTH_KEY = "<secret from the credential manager>"
-$env:PRODUCT_RELEASE_GATE_AUDIT_KEY = "<different secret from the credential manager>"
+py -3 scripts/provision_windows_credentials.py `
+  --config $env:PRODUCT_RELEASE_GATE_CONFIG status
+py -3 scripts/provision_windows_credentials.py `
+  --config $env:PRODUCT_RELEASE_GATE_CONFIG init
 ```
 
-Both keys must be at least 32 bytes and must be different. Configure an exact 40-hex Authenticode certificate thumbprint allowlist; a merely valid signature is not sufficient. Set `production.enabled=true` only after every production adapter is configured. `production.deployment.dependency_lock` and `production.deployment.dependency_lock_sha256` bind the deploy, verify, rollback, rollback-verify, and readback argv templates to one locked adapter manifest. Adapter commands execute as argument arrays without a shell, and the controller re-verifies the lock digest plus every pinned executable/script SHA-256 immediately before each invocation.
+Run `init` as the exact Windows account used by the unattended scheduler. It creates only
+missing per-user Credential Manager values, records only their non-secret target names in
+the JSON configuration, never prints values, and never rotates existing credentials. CI
+may instead inject `PRODUCT_RELEASE_GATE_AUTH_KEY` and
+`PRODUCT_RELEASE_GATE_AUDIT_KEY` as protected masked variables; environment values take
+precedence. Both keys must be at least 32 bytes and must be different.
+
+Configure an exact 40-hex Authenticode certificate thumbprint allowlist; a merely valid signature is not sufficient. Set `production.enabled=true` only after every production adapter is configured. `production.deployment.dependency_lock` and `production.deployment.dependency_lock_sha256` bind the deploy, verify, rollback, rollback-verify, and readback argv templates to one locked adapter manifest. Adapter commands execute as argument arrays without a shell, and the controller re-verifies the lock digest plus every pinned executable/script SHA-256 immediately before each invocation.
 
 `production.report_delivery` is disabled by default. Before enabling it, review the locked mail profile, exact sender account, report recipients, module, mailbox, dependency-lock digest, and readback timeout. The report subject is `【发布完成】任务-模块-时间`. Delivery uses a deterministic Message-ID, writes a sealed send intent before SMTP, records the accepted SMTP outcome (including an empty refused map), and requires one exact authenticated IMAP readback. If the process loses the SMTP outcome, it will not resend automatically.
 

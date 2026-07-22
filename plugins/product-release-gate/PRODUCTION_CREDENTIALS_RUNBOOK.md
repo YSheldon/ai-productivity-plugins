@@ -27,10 +27,11 @@ another.
 
 ## 2. Store secrets outside the repository
 
-Use protected and masked GitLab variables for CI jobs, or Windows Credential Manager
-under the dedicated protected Runner service identity. Never put secret values in the
-JSON configuration, deployment lock, event directory, command arguments, logs, or mail
-body.
+Use protected and masked GitLab variables for CI jobs. For an unattended Windows
+scheduler, store the signing keys in Windows Credential Manager under the exact account
+that runs the scheduled task. The controller resolves `key_env` first, then the configured
+`credential_target`; the deploy adapter receives only the authorization key in its child
+environment. Never put secret values in JSON, locks, event files, arguments, logs, or mail.
 
 Required secret inputs are:
 
@@ -40,11 +41,32 @@ PRODUCT_RELEASE_GATE_AUDIT_KEY  # a different secret, at least 32 random bytes
 PMG_CLOUD_SCAN_TOKEN             # protected and masked; only for the live scan adapter
 ```
 
+
+After the disabled deployment configuration has been generated, initialize the two
+per-user credentials from a shell running as the final scheduler identity:
+
+```powershell
+py -3 scripts/provision_windows_credentials.py `
+  --config C:\ProgramData\ProductReleaseGate\config.json status
+
+py -3 scripts/provision_windows_credentials.py `
+  --config C:\ProgramData\ProductReleaseGate\config.json init
+```
+
+`init` creates only missing values, never prints them, never rotates an existing value,
+and records only the non-secret Credential Manager target names in the JSON config. Run
+`status` again and require `ready=true`. Rotation intentionally requires a separate
+incident/change procedure because it invalidates outstanding authorization and audit
+receipts.
 The `imap-smtp-mail` profile owns its SMTP and IMAP credentials. Bind the profile to a
 protected service account and reference the profile from
 `production.report_delivery`; do not copy its password into this plugin's config.
 
 The approval, deployment, readback, and rollback adapters should obtain their service
+The mail profile is also identity-scoped: a profile protected with CurrentUser DPAPI
+under an administrator or developer account is not a production profile for a different
+service identity. Run the `imap-smtp-mail` setup once as the final release-control
+identity, then verify both IMAP and SMTP before enabling report delivery.
 credentials from the same protected Runner identity or an approved secret broker. The
 argv templates must contain references and event placeholders, never inline secrets.
 

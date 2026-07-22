@@ -17,6 +17,10 @@ sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 from filesystem_release_adapter import ADAPTER_VERSION, durable_replace
 from release_gate_core import GateError, deep_merge, default_config
 from release_gate_production import ProductionReleaseController
+from release_gate_credentials import (
+    DEFAULT_AUDIT_CREDENTIAL_TARGET,
+    DEFAULT_AUTHORIZATION_CREDENTIAL_TARGET,
+)
 
 
 ADAPTER_FILENAME = "filesystem_release_adapter.py"
@@ -341,9 +345,17 @@ def _build_config(
     production["enabled"] = False
     authorization = production.setdefault("authorization", {})
     authorization["key_env"] = authorization_key_env
+    authorization.setdefault(
+        "credential_target",
+        DEFAULT_AUTHORIZATION_CREDENTIAL_TARGET,
+    )
     authorization.setdefault("ttl_seconds", 3600)
     audit = production.setdefault("audit", {})
     audit["key_env"] = audit_key_env
+    audit.setdefault(
+        "credential_target",
+        DEFAULT_AUDIT_CREDENTIAL_TARGET,
+    )
     deployment = production.setdefault("deployment", {})
     deployment.update(
         {

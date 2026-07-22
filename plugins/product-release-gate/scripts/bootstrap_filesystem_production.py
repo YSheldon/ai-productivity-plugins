@@ -25,6 +25,7 @@ from release_gate_credentials import (
 
 
 ADAPTER_FILENAME = "filesystem_release_adapter.py"
+SVN_RECEIPT_VERIFIER_FILENAME = "verify_gitlab_svn_gate_receipt.py"
 LOCK_FILENAME = "deployment-adapter.lock.json"
 REQUIRED_STAGES = (
     "preproduction",
@@ -226,6 +227,7 @@ def _validate_env_name(value: str, label: str) -> str:
 def _command_templates(
     python_path: Path,
     adapter_path: Path,
+    svn_receipt_verifier_path: Path,
     authorization_key_env: str,
 ) -> dict[str, list[str]]:
     prefix = [str(python_path), str(adapter_path)]
@@ -303,6 +305,23 @@ def _command_templates(
             "{manifest_r_digest}",
             "--json",
         ],
+        "svn_release_gate_receipt": [
+            str(python_path),
+            str(svn_receipt_verifier_path),
+            "--receipt",
+            "{receipt_path}",
+            "--handoff",
+            "{handoff_path}",
+            "--event-id",
+            "{event_id}",
+            "--request-digest",
+            "{request_sha256}",
+            "--manifest-r-digest",
+            "{manifest_r_digest}",
+            "--gitlab-project-id",
+            "{expected_project_id}",
+            "--json",
+        ],
     }
 
 
@@ -311,8 +330,9 @@ def _dependency_lock(
     *,
     python_path: Path,
     adapter_path: Path,
+    svn_receipt_verifier_path: Path,
 ) -> dict[str, Any]:
-    entrypoints = [
+    adapter_entrypoints = [
         {
             "argv_index": 0,
             "path": str(python_path),
@@ -324,6 +344,18 @@ def _dependency_lock(
             "sha256": sha256_file(adapter_path),
         },
     ]
+    svn_receipt_verifier_entrypoints = [
+        {
+            "argv_index": 0,
+            "path": str(python_path),
+            "sha256": sha256_file(python_path),
+        },
+        {
+            "argv_index": 1,
+            "path": svn_receipt_verifier_path.name,
+            "sha256": sha256_file(svn_receipt_verifier_path),
+        },
+    ]
     return {
         "schema_version": 1,
         "adapter": "filesystem-release-adapter",
@@ -332,7 +364,11 @@ def _dependency_lock(
         "commands": {
             command_id: {
                 "argv_template": command,
-                "entrypoints": entrypoints,
+                "entrypoints": (
+                    svn_receipt_verifier_entrypoints
+                    if command_id == "svn_release_gate_receipt"
+                    else adapter_entrypoints
+                ),
             }
             for command_id, command in commands.items()
         },
@@ -382,6 +418,15 @@ def _build_config(
     audit.setdefault(
         "credential_target",
         DEFAULT_AUDIT_CREDENTIAL_TARGET,
+    )
+    svn_release_gate = production.setdefault("svn_release_gate", {})
+    if not isinstance(svn_release_gate, dict):
+        raise BootstrapError("production.svn_release_gate configuration must be an object")
+    svn_release_gate.setdefault("required", False)
+    svn_release_gate.setdefault("expected_project_id", 59)
+    svn_release_gate["verify_command"] = commands["svn_release_gate_receipt"]
+    svn_release_gate["timeout_seconds"] = int(
+        svn_release_gate.get("timeout_seconds") or 120
     )
     deployment = production.setdefault("deployment", {})
     deployment.update(
@@ -441,7 +486,11 @@ def _validate_locations(
 def _prepare_adapter_directory(
     adapter_dir: Path, replace: bool
 ) -> bool:
-    allowed_names = {ADAPTER_FILENAME, LOCK_FILENAME}
+    allowed_names = {
+        ADAPTER_FILENAME,
+        SVN_RECEIPT_VERIFIER_FILENAME,
+        LOCK_FILENAME,
+    }
     _reject_redirected_path(adapter_dir, "adapter directory")
     if adapter_dir.exists():
         if not adapter_dir.is_dir():
@@ -579,18 +628,40 @@ def bootstrap_filesystem_production(
         source_adapter = PLUGIN_ROOT / "src" / ADAPTER_FILENAME
         if source_adapter.is_symlink() or not source_adapter.is_file():
             raise BootstrapError("packaged filesystem release adapter is missing")
+        source_svn_receipt_verifier = (
+            PLUGIN_ROOT / "scripts" / SVN_RECEIPT_VERIFIER_FILENAME
+        )
+        if (
+            source_svn_receipt_verifier.is_symlink()
+            or not source_svn_receipt_verifier.is_file()
+        ):
+            raise BootstrapError("packaged SVN receipt verifier is missing")
         adapter_path = resolved_adapter_dir / ADAPTER_FILENAME
         _install_immutable_file(
             adapter_path,
             source_adapter.read_bytes(),
             created_files=created_files,
         )
+        svn_receipt_verifier_path = (
+            resolved_adapter_dir / SVN_RECEIPT_VERIFIER_FILENAME
+        )
+        _install_immutable_file(
+            svn_receipt_verifier_path,
+            source_svn_receipt_verifier.read_bytes(),
+            created_files=created_files,
+        )
         python_path = Path(sys.executable).resolve(strict=True)
-        commands = _command_templates(python_path, adapter_path, auth_env)
+        commands = _command_templates(
+            python_path,
+            adapter_path,
+            svn_receipt_verifier_path,
+            auth_env,
+        )
         lock_path = resolved_adapter_dir / LOCK_FILENAME
         lock_payload = _dependency_lock(
             commands,
             python_path=python_path,
+            svn_receipt_verifier_path=svn_receipt_verifier_path,
             adapter_path=adapter_path,
         )
         lock_bytes = (json.dumps(lock_payload, indent=2) + "\n").encode(
@@ -680,6 +751,10 @@ def bootstrap_filesystem_production(
             "path": str(adapter_path),
             "version": ADAPTER_VERSION,
             "sha256": sha256_file(adapter_path),
+        },
+        "svn_receipt_verifier": {
+            "path": str(svn_receipt_verifier_path),
+            "sha256": sha256_file(svn_receipt_verifier_path),
         },
         "dependency_lock": {
             "path": str(lock_path),

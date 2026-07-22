@@ -8,7 +8,9 @@ The unified multi-role verifier first stops at `PRE_RELEASE_REQUESTED`. The inde
 
 ```text
 submission -> submission gate -> test -> test approval -> final material
--> release gate -> RELEASE_READY -> bound release approval -> RELEASE_AUTHORIZED
+-> release gate -> RELEASE_READY -> SVN_RELEASE_GATE_REQUESTED
+-> protected GitLab live_gate -> independently verified CLEAN -> RELEASE_READY
+-> bound release approval -> RELEASE_AUTHORIZED
 -> pre-production -> production canary -> production full -> production readback
 -> PRODUCTION_VERIFIED
 ```
@@ -50,6 +52,18 @@ When `production.enabled=true`, this check is mandatory even if a legacy or hand
 configuration omits `identity_binding` or sets `required=false`; deleting the field is
 not a bypass.
 
+For production SVN material, set `production.svn_release_gate.required=true`.
+`release_gate_build_svn_live_handoff` derives every expected SHA1, SHA256, and size
+only from the frozen `ProductReleaseGateManifestR/v1`; caller-supplied hashes are
+ignored. The protected GitLab job must attest the exact promoted request ID and
+canonical request digest. `release_gate_record_svn_live_gate_receipt` runs the pinned
+`scripts/verify_gitlab_svn_gate_receipt.py`, which independently reads the GitLab
+pipeline, `live_gate` job, protected branch, runtime attestation, artifact manifest,
+and gate result. Authorization re-runs that verifier and rehashes the frozen files.
+Store `PRODUCT_RELEASE_GATE_GITLAB_TOKEN` only in the scheduler's secret store or
+protected runtime environment. The token, SVN credentials, and artifact contents are
+never written into the event or verifier output.
+
 A normal `init` never silently changes an existing identity binding. For an approved
 service-account migration, stop the scheduler and all automatic actions, protect the
 config for the new account, then run as that account:
@@ -58,7 +72,7 @@ config for the new account, then run as that account:
 py -3 scripts/provision_windows_credentials.py --config $env:PRODUCT_RELEASE_GATE_CONFIG rebind --confirm-runtime-identity-rebind
 ```
 
-Configure an exact 40-hex Authenticode certificate thumbprint allowlist; a merely valid signature is not sufficient. Set `production.enabled=true` only after every production adapter is configured. `production.deployment.dependency_lock` and `production.deployment.dependency_lock_sha256` bind the deploy, verify, rollback, rollback-verify, and readback argv templates to one locked adapter manifest. Adapter commands execute as argument arrays without a shell, and the controller re-verifies the lock digest plus every pinned executable/script SHA-256 immediately before each invocation.
+Configure an exact 40-hex Authenticode certificate thumbprint allowlist; a merely valid signature is not sufficient. Set `production.enabled=true` only after every production adapter is configured. `production.deployment.dependency_lock` and `production.deployment.dependency_lock_sha256` bind the deploy, verify, rollback, rollback-verify, readback, and optional `svn_release_gate_receipt` argv templates to one locked adapter manifest. Adapter commands execute as argument arrays without a shell, and the controller re-verifies the lock digest plus every pinned executable/script SHA-256 immediately before each invocation. The filesystem bootstrap installs and locks `svn_release_gate_receipt` automatically; a custom deployment must pin both Python and the verifier script under that exact command ID.
 
 `production.report_delivery` is disabled by default. Before enabling it, review the locked mail profile, exact sender account, report recipients, module, mailbox, dependency-lock digest, and readback timeout. The report subject is `【发布完成】任务-模块-时间`. Delivery uses a deterministic Message-ID, writes a sealed send intent before SMTP, records the accepted SMTP outcome (including an empty refused map), and requires one exact authenticated IMAP readback. If the process loses the SMTP outcome, it will not resend automatically.
 
@@ -77,7 +91,7 @@ py -3 scripts/bootstrap_filesystem_production.py `
   --production-target D:\ReleaseTargets\Production
 ```
 
-The bootstrap copies the packaged adapter into a dedicated immutable directory and locks the exact Python executable, adapter SHA-256, and all five command templates: deploy, verify, rollback, rollback verification, and production readback. It rejects root paths, duplicate or overlapping stage targets, symlinks, Windows Junctions, target/config overlap, embedded secret values, and in-place replacement of a changed adapter. Choose a new adapter directory for upgrades.
+The bootstrap copies the packaged filesystem adapter and SVN receipt verifier into a dedicated immutable directory. It locks the exact Python executable and both script SHA-256 values across all six command templates: deploy, verify, rollback, rollback verification, production readback, and SVN receipt verification. It rejects root paths, duplicate or overlapping stage targets, symlinks, Windows Junctions, target/config overlap, embedded secret values, and in-place replacement of a changed adapter. Choose a new adapter directory for upgrades.
 
 The generated configuration deliberately keeps `production.enabled`, automatic authorization, automatic deployment, automatic report generation, and automatic report delivery disabled.
 
@@ -103,12 +117,14 @@ Final material must be built into a new, non-existent output path. The controlle
 4. Record the auditable test approval when policy requires it.
 5. Build Manifest-R only from the approved Manifest-S and run the release gate.
 6. Run `release_gate_production_preflight`; missing required adapters remain fail-closed.
-7. Freeze an approval request with `release_gate_request_release_authorization`.
-8. Read back the external approval and call `release_gate_record_release_authorization` only when its event, actor, decision, Manifest-S, and Manifest-R fields match.
-9. Run `release_gate_ensure_deployment_capabilities`. A missing capability creates a replayable request and state `CAPABILITY_BLOCKED`; it is never waived.
-10. Run `preproduction`, `production_canary`, and `production_full` in order with `release_gate_run_deployment_stage`.
-11. Run `release_gate_run_production_readback` and require the target to report the exact authorized Manifest-R digest.
-12. Generate the production report, verify the HMAC-signed control-event chain, then call `release_gate_deliver_production_report`. Completion requires its sealed SMTP and exact IMAP readback receipt; a pending readback never causes an automatic resend.
+7. For required SVN verification, call `release_gate_build_svn_live_handoff`, promote it to protected GitLab project 59, and run the manual protected `live_gate` job. Its pipeline variables and runtime attestation must bind the exact request ID and digest.
+8. Write only the project/pipeline/job locator locally, then call `release_gate_record_svn_live_gate_receipt`. CLEAN restores the prior checkpoint; BLOCKED enters `RELEASE_BLOCKED` and requires a corrected submission round.
+9. Freeze an approval request with `release_gate_request_release_authorization`. This operation re-verifies the GitLab evidence and frozen files before writing the request.
+10. Read back the external approval and call `release_gate_record_release_authorization` only when its event, actor, decision, Manifest-S, and Manifest-R fields match.
+11. Run `release_gate_ensure_deployment_capabilities`. A missing capability creates a replayable request and state `CAPABILITY_BLOCKED`; it is never waived.
+12. Run `preproduction`, `production_canary`, and `production_full` in order with `release_gate_run_deployment_stage`.
+13. Run `release_gate_run_production_readback` and require the target to report the exact authorized Manifest-R digest.
+14. Generate the production report, verify the HMAC-signed control-event chain, then call `release_gate_deliver_production_report`. Completion requires its sealed SMTP and exact IMAP readback receipt; a pending readback never causes an automatic resend.
 
 The existing test result is the first stage of the four-stage rollout. The deployment controller executes the remaining pre-production, canary, and full-production stages.
 
@@ -119,6 +135,14 @@ Authorization verification must read the external approval and return the exact 
 ```json
 {"result":"APPROVE","approval_ref":"...","approved_by":"...","manifest_s_digest":"...","manifest_r_digest":"...","target_scope":"preproduction,production_canary,production_full","evidence_ref":"..."}
 ```
+
+The SVN verifier input is a locator, never a self-asserted verdict:
+
+```json
+{"schema":"ProductMaterialGatePipelineLocator/v1","project_id":59,"pipeline_id":1001,"job_id":2001}
+```
+
+The bundled verifier requires an HTTPS GitLab API, a protected `main` branch, the exact project, pipeline, `live_gate` job, commit, request ID/digest, runtime attestation, and ZIP artifact-manifest hashes. It emits the strict `ProductMaterialGateVerifiedReceipt/v1` contract. Both a genuine CLEAN job and a controlled BLOCKED job are valid evidence; only CLEAN permits authorization.
 
 Deployment must return `result=PASS`, the configured `target_ref`, `deployment_ref`, `rollback_ref`, and `deployed_manifest_r_digest`. Stage verification must return `result=PASS`, the same `target_ref`, `verification_ref`, and `observed_manifest_r_digest`.
 

@@ -38,6 +38,12 @@ from release_gate_approval_mail import (
     resolve_locked_entrypoint,
     sha256_file,
 )
+from release_gate_svn_handoff import (
+    SvnGateContractError,
+    build_svn_handoff,
+    validate_verified_receipt,
+    workflow_digest,
+)
 
 
 _VERIFIER_PLUGIN_NAME = "release-approval-verifier"
@@ -481,10 +487,44 @@ class ProductionReleaseController(HardenedReleaseGateController):
         )
         return record
 
+    def _svn_release_gate_config(self) -> dict[str, Any]:
+        config = self._production_config().get("svn_release_gate") or {}
+        if not isinstance(config, dict):
+            raise GateError("production.svn_release_gate must be an object")
+        return config
+
+    def _svn_release_gate_verifier_ready(self) -> bool:
+        try:
+            config = self._svn_release_gate_config()
+            project_id = config.get("expected_project_id")
+            timeout_seconds = config.get("timeout_seconds")
+            command = config.get("verify_command")
+            if (
+                not isinstance(project_id, int)
+                or isinstance(project_id, bool)
+                or project_id < 1
+                or not isinstance(timeout_seconds, int)
+                or isinstance(timeout_seconds, bool)
+                or timeout_seconds < 1
+                or not self._valid_production_command(command)
+            ):
+                return False
+            if self._allow_unlocked_test_adapters:
+                return True
+            self._validate_locked_deployment_command(
+                "svn_release_gate_receipt",
+                command,
+            )
+        except GateError:
+            return False
+        return True
+
     def production_preflight(
         self, *, include_report_delivery: bool = True
     ) -> dict[str, Any]:
         production = self._production_config()
+        svn_release_gate = production.get("svn_release_gate") or {}
+        svn_release_gate_required = svn_release_gate.get("required") is True
         authorization = production.get("authorization") or {}
         deployment = production.get("deployment") or {}
         readback = production.get("readback") or {}
@@ -518,6 +558,12 @@ class ProductionReleaseController(HardenedReleaseGateController):
                 "required": runtime_identity["required"],
                 "configured": runtime_identity["ready"],
                 "detail": runtime_identity,
+            },
+            {
+                "name": "svn_release_gate.receipt_verifier",
+                "required": svn_release_gate_required,
+                "configured": not svn_release_gate_required
+                or self._svn_release_gate_verifier_ready(),
             },
             {
                 "name": "authorization_signer",
@@ -1422,6 +1468,340 @@ class ProductionReleaseController(HardenedReleaseGateController):
             "idempotent": False,
         }
 
+    def _load_bound_svn_handoff(
+        self,
+        event: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        gate = event.get("svn_release_gate") or {}
+        if not isinstance(gate, dict):
+            raise GateError("SVN release-gate state is invalid")
+        handoff_path = Path(str(gate.get("handoff_path") or ""))
+        if not handoff_path.is_file():
+            raise GateError("SVN release-gate handoff is missing")
+        handoff = read_json(handoff_path)
+        if not isinstance(handoff, dict):
+            raise GateError("SVN release-gate handoff is invalid")
+        request = handoff.get("request")
+        expected_manifest_digest = "sha256:" + str(
+            event.get("manifest_r_digest") or ""
+        )
+        valid = (
+            handoff.get("schema") == "ProductMaterialWorkflow/v1"
+            and handoff.get("stage") == "RELEASE_GATE_REQUESTED"
+            and handoff.get("event_id") == event.get("event_id")
+            and isinstance(request, dict)
+            and request.get("request_id") == event.get("event_id")
+            and handoff.get("request_sha256") == workflow_digest(request)
+            and (handoff.get("source") or {}).get("manifest_sha256")
+            == expected_manifest_digest
+            and gate.get("request_sha256") == handoff.get("request_sha256")
+            and gate.get("manifest_r_digest") == expected_manifest_digest
+            and gate.get("handoff_sha256") == workflow_digest(handoff)
+        )
+        if not valid:
+            raise GateError(
+                "SVN release-gate handoff is not bound to the current Manifest-R"
+            )
+        return gate, handoff
+
+    def _verify_svn_release_gate_receipt_adapter(
+        self,
+        event: dict[str, Any],
+        receipt_path: Path,
+    ) -> dict[str, Any]:
+        if not self._svn_release_gate_verifier_ready():
+            raise GateError(
+                "production.svn_release_gate receipt verifier is not ready"
+            )
+        if not receipt_path.is_file() or receipt_path.is_symlink():
+            raise GateError(
+                "SVN release-gate receipt source must be a regular local file"
+            )
+        gate, handoff = self._load_bound_svn_handoff(event)
+        config = self._svn_release_gate_config()
+        project_id = config.get("expected_project_id")
+        timeout_seconds = config.get("timeout_seconds")
+        payload, error = self._run_json_adapter(
+            config.get("verify_command"),
+            {
+                "receipt_path": str(receipt_path.resolve()),
+                "handoff_path": str(Path(gate["handoff_path"]).resolve()),
+                "event_id": str(event["event_id"]),
+                "request_sha256": str(handoff["request_sha256"]),
+                "manifest_r_digest": "sha256:"
+                + str(event["manifest_r_digest"]),
+                "expected_project_id": str(project_id),
+            },
+            int(timeout_seconds),
+            command_id=(
+                None
+                if self._allow_unlocked_test_adapters
+                else "svn_release_gate_receipt"
+            ),
+        )
+        if error is not None or payload is None:
+            raise GateError(
+                "SVN release-gate receipt verification failed: "
+                + str(error or "empty verifier result")
+            )
+        try:
+            return validate_verified_receipt(
+                payload,
+                event_id=str(event["event_id"]),
+                request_sha256=str(handoff["request_sha256"]),
+                manifest_r_digest=str(event["manifest_r_digest"]),
+                expected_project_id=int(project_id),
+            )
+        except (SvnGateContractError, TypeError, ValueError) as exc:
+            raise GateError(
+                f"SVN release-gate verified receipt is invalid: {exc}"
+            ) from exc
+
+    def build_svn_live_handoff(
+        self,
+        event_id: str,
+        product_name: str,
+        product_version: str,
+        repository_root: str,
+        fixed_revision: int,
+        pipeline_nonce: str,
+        materials: list[dict[str, Any]],
+        pre_release_report_sha256: str,
+        source_message_id: str,
+    ) -> dict[str, Any]:
+        self._require_runtime_identity()
+        event = self._load_event(event_id)
+        gate = event.get("svn_release_gate") or {}
+        if isinstance(gate, dict) and gate.get("status") in {
+            "PENDING",
+            "CLEAN",
+            "BLOCKED",
+        }:
+            existing_gate, existing_handoff = self._load_bound_svn_handoff(
+                event
+            )
+            try:
+                candidate = build_svn_handoff(
+                    event_id=event_id,
+                    manifest_r=self._load_manifest(event_id, "manifest-r.json"),
+                    product_name=product_name,
+                    product_version=product_version,
+                    repository_root=repository_root,
+                    fixed_revision=fixed_revision,
+                    pipeline_nonce=pipeline_nonce,
+                    materials=materials,
+                    pre_release_report_sha256=pre_release_report_sha256,
+                    source_message_id=source_message_id,
+                    created_at=str(existing_handoff["created_at"]),
+                )
+            except SvnGateContractError as exc:
+                raise GateError(f"SVN live handoff is invalid: {exc}") from exc
+            if workflow_digest(candidate) != workflow_digest(existing_handoff):
+                raise GateError(
+                    "a different SVN release-gate handoff already exists"
+                )
+            return {
+                "event_id": event_id,
+                "status": event["status"],
+                "svn_release_gate_status": existing_gate["status"],
+                "handoff_path": existing_gate["handoff_path"],
+                "handoff": existing_handoff,
+                "idempotent": True,
+            }
+        origin_status = str(event.get("status") or "")
+        if origin_status not in {"RELEASE_READY", "PRE_RELEASE_REQUESTED"}:
+            raise GateError(
+                "SVN live handoff cannot be built from status "
+                + origin_status
+            )
+        self._verify_frozen_final_material(event)
+        manifest_r = self._load_manifest(event_id, "manifest-r.json")
+        created_at = utc_now()
+        try:
+            handoff = build_svn_handoff(
+                event_id=event_id,
+                manifest_r=manifest_r,
+                product_name=product_name,
+                product_version=product_version,
+                repository_root=repository_root,
+                fixed_revision=fixed_revision,
+                pipeline_nonce=pipeline_nonce,
+                materials=materials,
+                pre_release_report_sha256=pre_release_report_sha256,
+                source_message_id=source_message_id,
+                created_at=created_at,
+            )
+        except SvnGateContractError as exc:
+            raise GateError(f"SVN live handoff is invalid: {exc}") from exc
+        handoff_path = self._event_dir(event_id) / "svn-live-handoff.json"
+        write_json(handoff_path, handoff)
+        event["svn_release_gate"] = {
+            "status": "PENDING",
+            "origin_status": origin_status,
+            "handoff_path": str(handoff_path),
+            "handoff_sha256": workflow_digest(handoff),
+            "request_sha256": handoff["request_sha256"],
+            "manifest_r_digest": "sha256:" + str(event["manifest_r_digest"]),
+            "created_at": created_at,
+        }
+        self._transition(
+            event,
+            "SVN_RELEASE_GATE_REQUESTED",
+            "fixed-revision SVN gate verification is required",
+        )
+        self._append_control_event(
+            event,
+            "SVN_RELEASE_GATE_REQUESTED",
+            {
+                "origin_status": origin_status,
+                "request_sha256": handoff["request_sha256"],
+                "handoff_sha256": workflow_digest(handoff),
+                "manifest_r_digest": "sha256:"
+                + str(event["manifest_r_digest"]),
+            },
+        )
+        self._save_event(event)
+        return {
+            "event_id": event_id,
+            "status": event["status"],
+            "svn_release_gate_status": "PENDING",
+            "handoff_path": str(handoff_path),
+            "handoff": handoff,
+            "idempotent": False,
+        }
+
+    def record_svn_live_gate_receipt(
+        self,
+        event_id: str,
+        receipt_path: str,
+    ) -> dict[str, Any]:
+        self._require_runtime_identity()
+        event = self._load_event(event_id)
+        gate = event.get("svn_release_gate") or {}
+        if not isinstance(gate, dict) or not gate:
+            raise GateError("SVN release-gate handoff has not been requested")
+        normalized_receipt_path = Path(str(receipt_path or "")).resolve()
+        if gate.get("status") in {"CLEAN", "BLOCKED"}:
+            if str(gate.get("receipt_source_path") or "") != str(
+                normalized_receipt_path
+            ):
+                raise GateError(
+                    "a different SVN release-gate receipt is already recorded"
+                )
+            verified = self._verify_svn_release_gate_receipt_adapter(
+                event,
+                normalized_receipt_path,
+            )
+            stored = read_json(Path(str(gate.get("receipt_path") or "")))
+            if not isinstance(stored, dict) or workflow_digest(stored) != workflow_digest(
+                verified
+            ):
+                raise GateError("stored SVN release-gate receipt drifted")
+            return {
+                "event_id": event_id,
+                "status": event["status"],
+                "svn_release_gate_status": gate["status"],
+                "receipt": stored,
+                "idempotent": True,
+            }
+        if (
+            gate.get("status") != "PENDING"
+            or event.get("status") != "SVN_RELEASE_GATE_REQUESTED"
+        ):
+            raise GateError(
+                "SVN release-gate receipt cannot be recorded from the current state"
+            )
+        self._verify_frozen_final_material(event)
+        verified = self._verify_svn_release_gate_receipt_adapter(
+            event,
+            normalized_receipt_path,
+        )
+        stored_receipt_path = (
+            self._event_dir(event_id) / "svn-live-verified-receipt.json"
+        )
+        write_json(stored_receipt_path, verified)
+        gate.update(
+            {
+                "status": verified["verdict"],
+                "receipt_source_path": str(normalized_receipt_path),
+                "receipt_path": str(stored_receipt_path),
+                "receipt_sha256": workflow_digest(verified),
+                "verified_at": verified["verified_at"],
+                "evidence_ref": verified["evidence_ref"],
+                "pipeline_id": verified["pipeline_id"],
+                "job_id": verified["job_id"],
+                "commit_sha": verified["commit_sha"],
+            }
+        )
+        event["svn_release_gate"] = gate
+        if verified["verdict"] == "CLEAN":
+            restored_status = str(gate.get("origin_status") or "RELEASE_READY")
+            if restored_status not in {
+                "RELEASE_READY",
+                "PRE_RELEASE_REQUESTED",
+            }:
+                raise GateError("SVN release-gate origin status is invalid")
+            self._transition(
+                event,
+                restored_status,
+                "independently verified SVN release gate returned CLEAN",
+            )
+            next_action = "request release authorization"
+        else:
+            self._transition(
+                event,
+                "RELEASE_BLOCKED",
+                "independently verified SVN release gate returned BLOCKED",
+            )
+            next_action = "create a corrected submission round"
+        self._append_control_event(
+            event,
+            "SVN_RELEASE_GATE_VERIFIED",
+            verified,
+        )
+        self._save_event(event)
+        return {
+            "event_id": event_id,
+            "status": event["status"],
+            "svn_release_gate_status": verified["verdict"],
+            "receipt_path": str(stored_receipt_path),
+            "receipt": verified,
+            "next_action": next_action,
+            "idempotent": False,
+        }
+
+    def _require_clean_svn_release_gate(
+        self,
+        event: dict[str, Any],
+    ) -> None:
+        config = self._svn_release_gate_config()
+        if config.get("required") is not True:
+            return
+        gate = event.get("svn_release_gate") or {}
+        if not isinstance(gate, dict) or gate.get("status") != "CLEAN":
+            raise GateError(
+                "a verified CLEAN SVN release-gate receipt is required before authorization"
+            )
+        self._verify_frozen_final_material(event)
+        receipt_source_path = Path(
+            str(gate.get("receipt_source_path") or "")
+        )
+        verified = self._verify_svn_release_gate_receipt_adapter(
+            event,
+            receipt_source_path,
+        )
+        stored_path = Path(str(gate.get("receipt_path") or ""))
+        stored = read_json(stored_path)
+        if (
+            verified.get("verdict") != "CLEAN"
+            or not isinstance(stored, dict)
+            or workflow_digest(stored) != gate.get("receipt_sha256")
+            or workflow_digest(verified) != gate.get("receipt_sha256")
+        ):
+            raise GateError(
+                "SVN release-gate CLEAN receipt changed or is no longer verified"
+            )
+
     def _verified_pre_release_handoff(
         self,
         event: dict[str, Any],
@@ -1473,6 +1853,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
     ) -> dict[str, Any]:
         self._require_runtime_identity()
         event = self._load_event(event_id)
+        self._require_clean_svn_release_gate(event)
         if event.get("status") == "RELEASE_AUTHORIZATION_REQUIRED":
             existing = self._signed_authorization_request(event)
             normalized_scope = ",".join(self._parse_target_scope(target_scope))

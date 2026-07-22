@@ -110,6 +110,7 @@ class ConfigContractTests(unittest.TestCase):
         self.assertFalse(config["runtime"]["auto_generate_production_report"])
         self.assertFalse(config["runtime"]["auto_deliver_production_report"])
         self.assertFalse(config["production"]["report_delivery"]["enabled"])
+        self.assertFalse(config["production"]["svn_release_gate"]["required"])
 
     def test_example_config_matches_runtime_preflight_contract(self) -> None:
         previous_auth = os.environ.get("PRODUCT_RELEASE_GATE_AUTH_KEY")

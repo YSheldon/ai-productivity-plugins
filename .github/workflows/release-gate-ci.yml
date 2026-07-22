@@ -1,0 +1,59 @@
+name: Release gate CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release-gate-ci.yml"
+      - "plugins/release-gate/**"
+      - "plugins/product-release-gate/**"
+      - "pytest.ini"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/release-gate-ci.yml"
+      - "plugins/release-gate/**"
+      - "plugins/product-release-gate/**"
+      - "pytest.ini"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gate-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-gates:
+    name: Windows release gate regression
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check pytest==8.3.5
+
+      - name: Compile release gate sources
+        run: >-
+          python -m compileall -q
+          plugins/release-gate/src
+          plugins/product-release-gate/src
+          plugins/product-release-gate/scripts
+
+      - name: Test mailbox release gate
+        run: python -m pytest plugins/release-gate/tests -q --tb=short
+
+      - name: Test production release gate
+        run: >-
+          python -m unittest discover
+          -s plugins/product-release-gate/tests
+          -p "test_*.py"
+          -q

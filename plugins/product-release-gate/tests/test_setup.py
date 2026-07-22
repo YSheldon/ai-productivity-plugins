@@ -188,7 +188,7 @@ class SetupTests(unittest.TestCase):
             self.scheduler.calls,
         )
         self.assertEqual(
-            [("product-release-gate", self.repo_root)],
+            [("product-release-gate", self.repo_root.resolve())],
             self.bootstrap_calls,
         )
         config = json.loads(self.config_path.read_text(encoding="utf-8"))

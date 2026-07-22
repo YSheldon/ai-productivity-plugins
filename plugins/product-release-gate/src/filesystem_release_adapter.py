@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import time
 import uuid
@@ -333,14 +334,34 @@ class TargetLayout:
 
     @staticmethod
     def _reject_redirect(path: Path, label: str) -> None:
-        try:
-            redirected = path.resolve(strict=False) != path
-        except OSError as exc:
-            raise AdapterError(f"{label} path cannot be resolved safely") from exc
-        if path.is_symlink() or redirected:
-            raise AdapterError(
-                f"{label} cannot be a symlink or redirected path"
-            )
+        current = path
+        while True:
+            try:
+                metadata = current.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                metadata = None
+            except OSError as exc:
+                raise AdapterError(
+                    f"{label} path cannot be resolved safely"
+                ) from exc
+            if metadata is not None:
+                file_attributes = getattr(metadata, "st_file_attributes", 0)
+                reparse_flag = getattr(
+                    stat,
+                    "FILE_ATTRIBUTE_REPARSE_POINT",
+                    0x400,
+                )
+                if (
+                    stat.S_ISLNK(metadata.st_mode)
+                    or file_attributes & reparse_flag
+                ):
+                    raise AdapterError(
+                        f"{label} cannot be a symlink or redirected path"
+                    )
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
 
     def prepare_for_deploy(self) -> None:
         self._reject_redirect(self.target_root, "target directory")

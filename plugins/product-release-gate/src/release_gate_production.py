@@ -12,7 +12,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 
 from release_gate_core import (
     GateError,
@@ -25,6 +25,10 @@ from release_gate_core import (
     write_text_file,
 )
 from release_gate_hardened import HardenedReleaseGateController
+from release_gate_credentials import (
+    CredentialProviderError,
+    resolve_configured_secret,
+)
 from release_gate_approval_mail import (
     ApprovalMailError,
     ImapSmtpMailCliGateway,
@@ -63,6 +67,12 @@ _NON_PRODUCTION_ADAPTER_PATH_PARTS = frozenset(
         "examples",
     }
 )
+# Compatibility fixtures must never be executable as production adapters.
+_NON_PRODUCTION_ADAPTER_PATH = re.compile(
+    r"(?:^|[\\/])(?:tests?|fixtures?|compat(?:ibility)?|mocks?|stubs?|demos?|fakes?)(?:[\\/]|$)"
+    r"|first[_-]?practice[_-]?adapter[_-]?compat",
+    re.IGNORECASE,
+)
 _DEPLOYMENT_LOCKED_COMMAND_IDS = (
     ("deploy", "deploy_command"),
     ("verify", "verify_command"),
@@ -81,6 +91,8 @@ class ProductionReleaseController(HardenedReleaseGateController):
         approval_mail_gateway: Any | None = None,
         report_mail_gateway: Any | None = None,
         allow_unlocked_test_adapters: bool = False,
+        credential_reader: Callable[[str], str | None] | None = None,
+        environ: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(config_path)
         self._approval_mail_gateway_override = approval_mail_gateway
@@ -90,6 +102,8 @@ class ProductionReleaseController(HardenedReleaseGateController):
             else approval_mail_gateway
         )
         self._allow_unlocked_test_adapters = allow_unlocked_test_adapters
+        self._credential_reader = credential_reader
+        self._environ = os.environ if environ is None else environ
 
     def _production_config(self) -> dict[str, Any]:
         config = self.config.get("production")
@@ -103,6 +117,17 @@ class ProductionReleaseController(HardenedReleaseGateController):
             isinstance(value, list)
             and bool(value)
             and all(isinstance(item, str) and bool(item) for item in value)
+        )
+
+    @classmethod
+    def _valid_production_command(cls, value: Any) -> bool:
+        """Validate an adapter command and reject known test-only paths."""
+        if not cls._valid_command(value):
+            return False
+        return not any(
+            _NON_PRODUCTION_ADAPTER_PATH.search(item)
+            for item in value
+            if isinstance(item, str)
         )
 
     @staticmethod
@@ -140,15 +165,34 @@ class ProductionReleaseController(HardenedReleaseGateController):
                     pass
         return True
 
+    def _resolve_signing_secret(
+        self,
+        config: Mapping[str, object],
+        label: str,
+    ) -> str:
+        try:
+            value, _source = resolve_configured_secret(
+                config,
+                environ=self._environ,
+                credential_reader=self._credential_reader,
+            )
+        except CredentialProviderError as exc:
+            raise GateError(f"{label} signing credential is unavailable") from exc
+        if not value:
+            key_env = str(config.get("key_env") or "").strip()
+            raise GateError(
+                f"{label} signing credential is missing: "
+                f"{key_env or 'unconfigured'}"
+            )
+        return value
+
     def _authorization_key(self) -> bytes:
         production = self._production_config()
         authorization = production.get("authorization") or {}
         key_env = str(authorization.get("key_env") or "").strip()
         if not key_env:
             raise GateError("production.authorization.key_env is required")
-        key = os.environ.get(key_env, "")
-        if not key:
-            raise GateError(f"authorization signing key environment variable is missing: {key_env}")
+        key = self._resolve_signing_secret(authorization, "authorization")
         encoded = key.encode("utf-8")
         if len(encoded) < 32:
             raise GateError("authorization signing key must be at least 32 bytes")
@@ -164,13 +208,14 @@ class ProductionReleaseController(HardenedReleaseGateController):
             raise GateError("production.audit.key_env is required")
         if key_env == authorization_key_env:
             raise GateError("production audit and authorization keys must use different variables")
-        key = os.environ.get(key_env, "")
-        if not key:
-            raise GateError(f"audit signing key environment variable is missing: {key_env}")
+        key = self._resolve_signing_secret(audit, "audit")
         encoded = key.encode("utf-8")
         if len(encoded) < 32:
             raise GateError("audit signing key must be at least 32 bytes")
-        authorization_value = os.environ.get(authorization_key_env, "")
+        authorization_value = self._resolve_signing_secret(
+            authorization,
+            "authorization",
+        )
         if authorization_value and hmac.compare_digest(
             encoded,
             authorization_value.encode("utf-8"),
@@ -413,6 +458,17 @@ class ProductionReleaseController(HardenedReleaseGateController):
         authorization_key_env = str(authorization.get("key_env") or "").strip()
         audit = production.get("audit") or {}
         audit_key_env = str(audit.get("key_env") or "").strip()
+        try:
+            authorization_value = self._resolve_signing_secret(
+                authorization,
+                "authorization",
+            )
+        except GateError:
+            authorization_value = ""
+        try:
+            audit_value = self._resolve_signing_secret(audit, "audit")
+        except GateError:
+            audit_value = ""
         approval_workflow = production.get("approval_workflow") or {}
         workflow_mode = str(
             approval_workflow.get("mode") or "legacy_external"
@@ -424,8 +480,9 @@ class ProductionReleaseController(HardenedReleaseGateController):
             {
                 "name": "authorization_signer",
                 "configured": bool(
-                    str(authorization.get("key_env") or "").strip()
-                    and os.environ.get(str(authorization.get("key_env") or ""), "")
+                    authorization_key_env
+                    and authorization_value
+                    and len(authorization_value.encode("utf-8")) >= 32
                 ),
             },
             {
@@ -433,11 +490,11 @@ class ProductionReleaseController(HardenedReleaseGateController):
                 "configured": bool(
                     audit_key_env
                     and audit_key_env != authorization_key_env
-                    and os.environ.get(audit_key_env, "")
-                    and os.environ.get(audit_key_env, "")
-                    != os.environ.get(authorization_key_env, "")
-                    and len(os.environ.get(audit_key_env, "").encode("utf-8")) >= 32
-                    and len(os.environ.get(authorization_key_env, "").encode("utf-8")) >= 32
+                    and audit_value
+                    and authorization_value
+                    and not hmac.compare_digest(audit_value, authorization_value)
+                    and len(audit_value.encode("utf-8")) >= 32
+                    and len(authorization_value.encode("utf-8")) >= 32
                 ),
             },
             {
@@ -445,7 +502,33 @@ class ProductionReleaseController(HardenedReleaseGateController):
                 "required": requires_external_authorization_readback,
                 "configured": (
                     not requires_external_authorization_readback
-                    or self._valid_command(authorization.get("verify_command"))
+                    or self._valid_production_command(authorization.get("verify_command"))
+                ),
+            },
+            {
+                "name": "policy.require_signature",
+                "configured": bool((self.config.get("policy") or {}).get("require_signature")),
+            },
+            {
+                "name": "signature.expected_thumbprints",
+                "configured": bool(
+                    isinstance((self.config.get("signature") or {}).get("expected_thumbprints"), list)
+                    and (self.config.get("signature") or {}).get("expected_thumbprints")
+                    and all(
+                        isinstance(value, str)
+                        and re.fullmatch(r"[0-9A-Fa-f]{40}", re.sub(r"[^0-9A-Fa-f]", "", value))
+                        for value in (self.config.get("signature") or {}).get("expected_thumbprints")
+                    )
+                ),
+            },
+            {
+                "name": "policy.require_cloud_scan",
+                "configured": bool((self.config.get("policy") or {}).get("require_cloud_scan")),
+            },
+            {
+                "name": "cloud_scan.command",
+                "configured": self._valid_production_command(
+                    (self.config.get("cloud_scan") or {}).get("command")
                 ),
             },
             {
@@ -463,19 +546,19 @@ class ProductionReleaseController(HardenedReleaseGateController):
             },
             {
                 "name": "deployment.deploy_command",
-                "configured": self._valid_command(deployment.get("deploy_command")),
+                "configured": self._valid_production_command(deployment.get("deploy_command")),
             },
             {
                 "name": "deployment.verify_command",
-                "configured": self._valid_command(deployment.get("verify_command")),
+                "configured": self._valid_production_command(deployment.get("verify_command")),
             },
             {
                 "name": "deployment.rollback_command",
-                "configured": self._valid_command(deployment.get("rollback_command")),
+                "configured": self._valid_production_command(deployment.get("rollback_command")),
             },
             {
                 "name": "deployment.rollback_verify_command",
-                "configured": self._valid_command(deployment.get("rollback_verify_command")),
+                "configured": self._valid_production_command(deployment.get("rollback_verify_command")),
             },
             {
                 "name": "deployment.adapter_lock",
@@ -483,7 +566,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
             },
             {
                 "name": "readback.command",
-                "configured": self._valid_command(readback.get("command")),
+                "configured": self._valid_production_command(readback.get("command")),
             },
         ]
         runtime = self.config.get("runtime") or {}
@@ -2246,11 +2329,29 @@ class ProductionReleaseController(HardenedReleaseGateController):
         except KeyError as exc:
             return None, f"adapter command uses an unknown placeholder: {exc}"
         try:
+            child_environment = None
+            if command_id == "deploy":
+                production = self._production_config()
+                authorization = production.get("authorization") or {}
+                key_env = str(authorization.get("key_env") or "").strip()
+                if not key_env:
+                    return None, "adapter credential is unavailable"
+                try:
+                    authorization_value = self._resolve_signing_secret(
+                        authorization,
+                        "authorization",
+                    )
+                except GateError:
+                    return None, "adapter credential is unavailable"
+                child_environment = dict(os.environ)
+                child_environment.update(self._environ)
+                child_environment[key_env] = authorization_value
             completed = subprocess.run(
                 expanded,
                 capture_output=True,
                 text=True,
                 shell=False,
+                env=child_environment,
                 timeout=max(1, int(timeout_seconds)),
                 check=False,
             )

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import time
 import uuid
@@ -186,7 +187,14 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
-    return _is_relative_to(left, right) or _is_relative_to(right, left)
+    try:
+        resolved_left = left.resolve(strict=False)
+        resolved_right = right.resolve(strict=False)
+    except OSError as exc:
+        raise AdapterError("filesystem paths cannot be resolved safely") from exc
+    return _is_relative_to(resolved_left, resolved_right) or _is_relative_to(
+        resolved_right, resolved_left
+    )
 
 
 def resolve_target_ref(target_ref: str) -> Path:
@@ -219,8 +227,12 @@ def _resolve_state_path(root: Path, relative: str, label: str) -> Path:
     candidate = Path(str(relative or ""))
     if candidate.is_absolute():
         raise AdapterError(f"{label} must be relative to the target state root")
-    resolved = (root / candidate).resolve(strict=False)
-    if not _is_relative_to(resolved, root):
+    try:
+        resolved_root = root.resolve(strict=False)
+        resolved = (resolved_root / candidate).resolve(strict=False)
+    except OSError as exc:
+        raise AdapterError(f"{label} cannot be resolved safely") from exc
+    if not _is_relative_to(resolved, resolved_root):
         raise AdapterError(f"{label} escapes the target state root")
     return resolved
 
@@ -333,14 +345,34 @@ class TargetLayout:
 
     @staticmethod
     def _reject_redirect(path: Path, label: str) -> None:
-        try:
-            redirected = path.resolve(strict=False) != path
-        except OSError as exc:
-            raise AdapterError(f"{label} path cannot be resolved safely") from exc
-        if path.is_symlink() or redirected:
-            raise AdapterError(
-                f"{label} cannot be a symlink or redirected path"
-            )
+        current = path
+        while True:
+            try:
+                metadata = current.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                metadata = None
+            except OSError as exc:
+                raise AdapterError(
+                    f"{label} path cannot be resolved safely"
+                ) from exc
+            if metadata is not None:
+                file_attributes = getattr(metadata, "st_file_attributes", 0)
+                reparse_flag = getattr(
+                    stat,
+                    "FILE_ATTRIBUTE_REPARSE_POINT",
+                    0x400,
+                )
+                if (
+                    stat.S_ISLNK(metadata.st_mode)
+                    or file_attributes & reparse_flag
+                ):
+                    raise AdapterError(
+                        f"{label} cannot be a symlink or redirected path"
+                    )
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
 
     def prepare_for_deploy(self) -> None:
         self._reject_redirect(self.target_root, "target directory")
@@ -570,8 +602,14 @@ class FilesystemReleaseAdapter:
         lock_timeout_seconds: int = 30,
         environ: Mapping[str, str] | None = None,
     ) -> None:
-        self.target_ref = str(target_ref or "").strip()
-        self.target_root = resolve_target_ref(self.target_ref)
+        raw_target_ref = str(target_ref or "").strip()
+        self.target_root = resolve_target_ref(raw_target_ref)
+        try:
+            self.target_ref = os.fspath(
+                self.target_root.resolve(strict=False)
+            )
+        except OSError as exc:
+            raise AdapterError("target path cannot be resolved safely") from exc
         self.layout = TargetLayout.for_target(self.target_root)
         self.lock_timeout_seconds = lock_timeout_seconds
         self.environ = os.environ if environ is None else environ

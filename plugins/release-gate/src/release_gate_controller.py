@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -59,6 +60,32 @@ class ReleaseGateController:
         self.lock_path = self.state_dir / "run-once.lock"
         self.audit = AuditChain(self.state_dir, config.shared_hmac_secret_path)
 
+    def coordination_lock_path(self) -> Path:
+        """Return the host-level lock shared by duplicate configurations.
+
+        A host-level singleton is the safe default: duplicate mailbox or task
+        registrations must not fan out into concurrent IMAP and gate scans.
+        Set RELEASE_GATE_COORDINATION_SCOPE=mailbox only when deliberate
+        per-mailbox parallelism is provisioned and capacity-tested.
+        """
+        root_value = str(os.environ.get("RELEASE_GATE_COORDINATION_DIR") or "").strip()
+        if root_value:
+            root = Path(os.path.expandvars(root_value)).expanduser()
+        elif os.name == "nt":
+            root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "ProductMaterialGate" / "locks"
+        else:
+            root = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") / "product-material-gate" / "locks"
+        scope_mode = str(os.environ.get("RELEASE_GATE_COORDINATION_SCOPE") or "host").strip().lower()
+        if scope_mode not in {"host", "mailbox"}:
+            scope_mode = "host"
+        scope_payload: dict[str, str] = {"host": socket.gethostname()}
+        if scope_mode == "mailbox":
+            scope_payload.update({"mailbox": self.config.mailbox, "release_gate_group": self.config.release_gate_group})
+        scope = json.dumps(scope_payload, sort_keys=True, separators=(",", ":"))
+        suffix = "host" if scope_mode == "host" else "mailbox"
+        digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:32]
+        return (root / f"release-gate-{suffix}-{digest}.lock").resolve(strict=False)
+
     def verify_audit(self) -> dict[str, Any]:
         return self.audit.verify()
 
@@ -85,10 +112,18 @@ class ReleaseGateController:
             return {"status": "CAPABILITY_BLOCKED", "reason": "audit_chain_invalid", "audit": audit}
         if not self._policy_valid():
             return {"status": "CAPABILITY_BLOCKED", "reason": "gate_policy_invalid", "audit": audit}
+        coordination_lock = RunOnceLock(self.coordination_lock_path())
+        coordination_acquired = coordination_lock.acquire()
+        if coordination_acquired["status"] != "acquired":
+            scope_mode = str(os.environ.get("RELEASE_GATE_COORDINATION_SCOPE") or "host").strip().lower()
+            if scope_mode not in {"host", "mailbox"}:
+                scope_mode = "host"
+            return {"status": "RUN_ALREADY_ACTIVE", "busy": True, "scope": scope_mode}
         lock = RunOnceLock(self.lock_path)
         acquired = lock.acquire()
         if acquired["status"] != "acquired":
-            return {"status": "RUN_ALREADY_ACTIVE", "busy": True}
+            coordination_lock.release()
+            return {"status": "RUN_ALREADY_ACTIVE", "busy": True, "scope": "configuration"}
         processed = 0
         blocked = 0
         retried = 0
@@ -108,6 +143,7 @@ class ReleaseGateController:
             return {"status": "ready", "processed": processed, "blocked": blocked, "retried": retried, "audit": self.verify_audit()}
         finally:
             lock.release()
+            coordination_lock.release()
 
     def status(self) -> dict[str, Any]:
         audit = self.verify_audit()

@@ -16,6 +16,10 @@ from release_gate_approval_mail import (
 from release_gate_core import default_config
 from release_gate_production import ProductionReleaseController
 from release_gate_runtime import ReleaseGateWorkflowRuntime
+from release_gate_credentials import (
+    DEFAULT_AUDIT_CREDENTIAL_TARGET,
+    DEFAULT_AUTHORIZATION_CREDENTIAL_TARGET,
+)
 from release_gate_scheduler import ReleaseGateScheduler
 
 
@@ -280,7 +284,10 @@ class ReleaseGateSetup:
         }
         production = config.setdefault("production", {})
         production["enabled"] = True
-        production["audit"] = {"key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY"}
+        production["audit"] = {
+            "key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY",
+            "credential_target": DEFAULT_AUDIT_CREDENTIAL_TARGET,
+        }
         production["approval_workflow"] = self._workflow_binding(
             dependency_lock=dependency_lock,
             dependency_lock_sha256=dependency_lock_sha256,
@@ -314,8 +321,19 @@ class ReleaseGateSetup:
     ) -> dict[str, Any]:
         production = config.setdefault("production", {})
         production["enabled"] = True
-        production.setdefault(
-            "audit", {"key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY"}
+        authorization = production.get("authorization")
+        if isinstance(authorization, dict):
+            authorization.setdefault(
+                "credential_target",
+                DEFAULT_AUTHORIZATION_CREDENTIAL_TARGET,
+            )
+        audit = production.setdefault(
+            "audit",
+            {"key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY"},
+        )
+        audit.setdefault(
+            "credential_target",
+            DEFAULT_AUDIT_CREDENTIAL_TARGET,
         )
         production["approval_workflow"] = self._workflow_binding(
             dependency_lock=dependency_lock,

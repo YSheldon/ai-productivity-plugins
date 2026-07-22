@@ -60,6 +60,7 @@
     },
     "authorization": {
       "key_env": "PRODUCT_RELEASE_GATE_AUTH_KEY",
+      "credential_target": "ProductReleaseGate/authorization/v1",
       "ttl_seconds": 3600,
       "verify_command": [
         "C:\\path\\to\\feishu-approval-adapter.exe",
@@ -79,7 +80,8 @@
       "timeout_seconds": 120
     },
     "audit": {
-      "key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY"
+      "key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY",
+      "credential_target": "ProductReleaseGate/audit/v1"
     },
     "deployment": {
       "stages": [

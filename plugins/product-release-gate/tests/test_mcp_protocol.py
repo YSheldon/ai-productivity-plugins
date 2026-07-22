@@ -142,6 +142,14 @@ class McpProtocolTests(unittest.TestCase):
                 json.dumps(
                     {
                         "storage_dir": str(root / "events"),
+                        "policy": {
+                            "require_signature": True,
+                            "require_cloud_scan": True,
+                        },
+                        "signature": {"expected_thumbprints": ["A" * 40]},
+                        "cloud_scan": {
+                            "command": [sys.executable, "-c", "print('{}')"],
+                        },
                         "production": {
                             "enabled": True,
                             "authorization": {

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import uuid
 from pathlib import Path
@@ -17,6 +18,10 @@ sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 from filesystem_release_adapter import ADAPTER_VERSION, durable_replace
 from release_gate_core import GateError, deep_merge, default_config
 from release_gate_production import ProductionReleaseController
+from release_gate_credentials import (
+    DEFAULT_AUDIT_CREDENTIAL_TARGET,
+    DEFAULT_AUTHORIZATION_CREDENTIAL_TARGET,
+)
 
 
 ADAPTER_FILENAME = "filesystem_release_adapter.py"
@@ -111,14 +116,25 @@ def _normalize_path(value: str | Path, *, require_absolute: bool) -> Path:
 
 
 def _reject_redirected_path(path: Path, label: str) -> None:
-    try:
-        redirected = path.resolve(strict=False) != path
-    except OSError as exc:
-        raise BootstrapError(f"{label} cannot be resolved safely") from exc
-    if path.is_symlink() or redirected:
-        raise BootstrapError(
-            f"{label} cannot be a symlink or redirected path"
-        )
+    current = path
+    while True:
+        try:
+            metadata = current.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            metadata = None
+        except OSError as exc:
+            raise BootstrapError(f"{label} cannot be resolved safely") from exc
+        if metadata is not None:
+            file_attributes = getattr(metadata, "st_file_attributes", 0)
+            reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if stat.S_ISLNK(metadata.st_mode) or file_attributes & reparse_flag:
+                raise BootstrapError(
+                    f"{label} cannot be a symlink or redirected path"
+                )
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
 
 
 def _resolve_target(value: str | Path, label: str) -> Path:
@@ -129,7 +145,10 @@ def _resolve_target(value: str | Path, label: str) -> Path:
     if normalized == Path(normalized.anchor):
         raise BootstrapError(f"{label} cannot be a filesystem root")
     _reject_redirected_path(normalized, label)
-    return normalized
+    try:
+        return normalized.resolve(strict=False)
+    except OSError as exc:
+        raise BootstrapError(f"{label} cannot be resolved safely") from exc
 
 
 def _resolve_output(value: str | Path, label: str) -> Path:
@@ -137,7 +156,10 @@ def _resolve_output(value: str | Path, label: str) -> Path:
     if normalized == Path(normalized.anchor):
         raise BootstrapError(f"{label} cannot be a filesystem root")
     _reject_redirected_path(normalized, label)
-    return normalized
+    try:
+        return normalized.resolve(strict=False)
+    except OSError as exc:
+        raise BootstrapError(f"{label} cannot be resolved safely") from exc
 
 
 def _embedded_secret_paths(
@@ -341,9 +363,17 @@ def _build_config(
     production["enabled"] = False
     authorization = production.setdefault("authorization", {})
     authorization["key_env"] = authorization_key_env
+    authorization.setdefault(
+        "credential_target",
+        DEFAULT_AUTHORIZATION_CREDENTIAL_TARGET,
+    )
     authorization.setdefault("ttl_seconds", 3600)
     audit = production.setdefault("audit", {})
     audit["key_env"] = audit_key_env
+    audit.setdefault(
+        "credential_target",
+        DEFAULT_AUDIT_CREDENTIAL_TARGET,
+    )
     deployment = production.setdefault("deployment", {})
     deployment.update(
         {

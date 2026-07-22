@@ -1,7 +1,7 @@
 {
   "name": "remotex",
-  "version": "0.1.0",
-  "description": "Operate configured SSH, RDP, vSphere/ESXi, and VMware Workstation targets without storing credentials in the plugin.",
+  "version": "0.2.0",
+  "description": "Operate configured SSH, RDP, vSphere/ESXi, and VMware Workstation targets with credential references and a non-preemptive local VM queue.",
   "author": {
     "name": "Sheldon",
     "url": "https://github.com/YSheldon"
@@ -22,7 +22,7 @@
   "interface": {
     "displayName": "RemoteX",
     "shortDescription": "Manage configured remote systems",
-    "longDescription": "Use local OpenSSH, Remote Desktop, govc, and vmrun clients through named profiles whose credentials are referenced from SSH Agent, Windows Credential Manager, or environment variables rather than stored in the plugin.",
+    "longDescription": "Use local OpenSSH, Remote Desktop, govc, and vmrun clients through named profiles, credential references, and a process-safe FIFO VM queue that prevents local RemoteX requesters from preempting one another.",
     "developerName": "Sheldon",
     "category": "Developer Tools",
     "capabilities": [

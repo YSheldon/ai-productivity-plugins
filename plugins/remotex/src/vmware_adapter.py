@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import remotex_core as core
+import vm_queue
 
 
 WINDOWS_VMRUN_PATH = Path(
@@ -129,7 +130,10 @@ def power(args: dict[str, Any]) -> dict[str, Any]:
     if not cfg["vmx_path"].is_file():
         raise core.ToolError(f"vmx_path does not exist: {cfg['vmx_path']}")
     timeout = core.validate_timeout(args.get("timeout_seconds"), core.DEFAULT_COMMAND_TIMEOUT_SECONDS)
-    outcome = _run(cfg, arguments, timeout)
+    with vm_queue.profile_owner_operation(
+        cfg["profile"], args.get("requester")
+    ) as ownership:
+        outcome = _run(cfg, arguments, timeout)
     return core.tool_result(
         _result(
             cfg,
@@ -138,6 +142,8 @@ def power(args: dict[str, Any]) -> dict[str, Any]:
             vmx_path=str(cfg["vmx_path"]),
             action=action,
             mode=None if action in {"pause", "unpause"} else mode,
+            queue_resource=ownership["resource"],
+            queue_owner=ownership["owner"]["requester"],
         )
     )
 
@@ -180,8 +186,9 @@ TOOLS: dict[str, dict[str, Any]] = {
                     "enum": ["start", "stop", "reset", "suspend", "pause", "unpause"],
                 },
                 "mode": {"type": "string", "enum": ["soft", "hard", "gui", "nogui"]},
+                "requester": {"type": "string"},
             },
-            "required": ["action"],
+            "required": ["action", "requester"],
             "additionalProperties": False,
         },
         "handler": power,

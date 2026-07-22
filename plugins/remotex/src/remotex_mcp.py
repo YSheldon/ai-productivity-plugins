@@ -8,12 +8,13 @@ from typing import Any, Callable
 import rdp_adapter
 import remotex_core as core
 import ssh_adapter
+import vm_queue
 import vmware_adapter
 import vsphere_adapter
 
 
 SERVER_NAME = "remotex"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 
 STATUS_HANDLERS: dict[str, Callable[[str, dict[str, Any]], dict[str, Any]]] = {
@@ -31,7 +32,18 @@ def status(_: dict[str, Any]) -> dict[str, Any]:
         try:
             kind = core.normalize_kind(raw.get("kind"))
             handler = STATUS_HANDLERS[kind]
-            profiles.append(handler(name, raw))
+            profile_status = handler(name, raw)
+            if kind in {"rdp", "vmware-workstation"}:
+                target = vm_queue.resolve_profile_resource(name)
+                profile_status["vm_queue"] = vm_queue.inspect(target["resource"])
+            elif kind == "vsphere":
+                profile_status["vm_queue"] = {
+                    "state": "virtual-machine-required",
+                    "preemption_allowed": False,
+                    "scope": "local-cooperative",
+                    "prompt": "Select a virtual_machine to inspect or request its queue resource.",
+                }
+            profiles.append(profile_status)
         except core.ToolError as exc:
             profiles.append(
                 {
@@ -41,9 +53,19 @@ def status(_: dict[str, Any]) -> dict[str, Any]:
                     "errors": [str(exc)],
                 }
             )
+    try:
+        queue_health = vm_queue.health()
+    except core.ToolError as exc:
+        queue_health = {
+            "ok": False,
+            "state_file": str(vm_queue.queue_path()),
+            "error": str(exc),
+            "preemption_allowed": False,
+            "scope": "local-cooperative",
+        }
     ready_count = sum(1 for profile in profiles if profile.get("ready"))
     result = {
-        "ok": bool(profiles) and ready_count == len(profiles),
+        "ok": bool(profiles) and ready_count == len(profiles) and queue_health["ok"],
         "config": {
             "path": str(bundle.path),
             "source": bundle.source,
@@ -51,6 +73,7 @@ def status(_: dict[str, Any]) -> dict[str, Any]:
             "legacy_ssh_compatibility": bundle.source == "legacy-ssh",
         },
         "defaults": bundle.data["defaults"],
+        "vm_queue": queue_health,
         "profiles": profiles,
         "summary": {
             "configured": len(profiles),
@@ -84,6 +107,7 @@ TOOLS: dict[str, dict[str, Any]] = {
     **rdp_adapter.TOOLS,
     **vsphere_adapter.TOOLS,
     **vmware_adapter.TOOLS,
+    **vm_queue.TOOLS,
 }
 
 

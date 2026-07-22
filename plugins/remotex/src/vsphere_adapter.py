@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import remotex_core as core
+import vm_queue
 
 
 def _validate_url(value: Any) -> str:
@@ -149,7 +150,10 @@ def power(args: dict[str, Any]) -> dict[str, Any]:
     if action not in switches:
         raise core.ToolError("action must be on, off, reset, or suspend")
     timeout = core.validate_timeout(args.get("timeout_seconds"), core.DEFAULT_COMMAND_TIMEOUT_SECONDS)
-    outcome = _run_govc(cfg, ["vm.power", switches[action], virtual_machine], timeout)
+    with vm_queue.profile_owner_operation(
+        cfg["profile"], args.get("requester"), virtual_machine
+    ) as ownership:
+        outcome = _run_govc(cfg, ["vm.power", switches[action], virtual_machine], timeout)
     return core.tool_result(
         _result(
             cfg,
@@ -157,6 +161,8 @@ def power(args: dict[str, Any]) -> dict[str, Any]:
             operation="vm-power",
             virtual_machine=virtual_machine,
             action=action,
+            queue_resource=ownership["resource"],
+            queue_owner=ownership["owner"]["requester"],
         )
     )
 
@@ -205,8 +211,9 @@ TOOLS: dict[str, dict[str, Any]] = {
                 **COMMON_TIMEOUT,
                 "virtual_machine": {"type": "string"},
                 "action": {"type": "string", "enum": ["on", "off", "reset", "suspend"]},
+                "requester": {"type": "string"},
             },
-            "required": ["virtual_machine", "action"],
+            "required": ["virtual_machine", "action", "requester"],
             "additionalProperties": False,
         },
         "handler": power,

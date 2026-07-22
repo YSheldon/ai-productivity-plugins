@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import remotex_core as core
+import vm_queue
 import windows_credentials
 
 
@@ -160,10 +161,13 @@ def open_connection(args: dict[str, Any]) -> dict[str, Any]:
         )
     else:
         popen_args["start_new_session"] = True
-    try:
-        process = subprocess.Popen(rdp_arguments(cfg), **popen_args)
-    except OSError as exc:
-        raise core.ToolError(f"Unable to launch Remote Desktop: {exc}") from exc
+    with vm_queue.profile_owner_operation(
+        cfg["profile"], args.get("requester")
+    ) as ownership:
+        try:
+            process = subprocess.Popen(rdp_arguments(cfg), **popen_args)
+        except OSError as exc:
+            raise core.ToolError(f"Unable to launch Remote Desktop: {exc}") from exc
     return core.tool_result(
         {
             "ok": True,
@@ -172,6 +176,8 @@ def open_connection(args: dict[str, Any]) -> dict[str, Any]:
             "host": cfg["host"],
             "port": cfg["port"],
             "credential_target": cfg["credential_target"],
+            "queue_resource": ownership["resource"],
+            "queue_owner": ownership["owner"]["requester"],
             "process_id": process.pid,
         }
     )
@@ -203,10 +209,14 @@ TOOLS: dict[str, dict[str, Any]] = {
         "handler": test_connection,
     },
     "remotex_rdp_open": {
-        "description": "Open mstsc for a configured RDP profile only when its Windows credential exists.",
+        "description": "Open mstsc only when the saved credential exists and this requester owns the VM queue resource.",
         "inputSchema": {
             "type": "object",
-            "properties": COMMON_PROFILE,
+            "properties": {
+                **COMMON_PROFILE,
+                "requester": {"type": "string"},
+            },
+            "required": ["requester"],
             "additionalProperties": False,
         },
         "handler": open_connection,

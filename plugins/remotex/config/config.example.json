@@ -24,6 +24,7 @@
       "kind": "rdp",
       "host": "windows.example.internal",
       "port": 3389,
+      "queue_resource": "lab:windows-rdp",
       "credential": {
         "source": "windows-credential-manager",
         "target": "TERMSRV/windows.example.internal"
@@ -36,6 +37,7 @@
     "esxi-lab": {
       "kind": "esxi",
       "url": "https://esxi.example.internal/sdk",
+      "queue_resource": "lab:esxi:{virtual_machine}",
       "credential": {
         "source": "windows-credential-manager",
         "target": "RemoteX/esxi-lab"
@@ -49,6 +51,7 @@
     "local-workstation-vm": {
       "kind": "vmware-workstation",
       "host_type": "ws",
+      "queue_resource": "lab:local-workstation-vm",
       "vmrun_path": "C:/Program Files (x86)/VMware/VMware Workstation/vmrun.exe",
       "vmx_path": "D:/Virtual Machines/example/example.vmx"
     }

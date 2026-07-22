@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 import os
 import sys
 import tempfile
@@ -16,6 +17,7 @@ import rdp_adapter
 import remotex_core as core
 import ssh_adapter
 import vmware_adapter
+import vm_queue
 import vsphere_adapter
 
 
@@ -135,9 +137,77 @@ class AdapterTests(unittest.TestCase):
             outcome = {"returncode": 0, "timed_out": False, "stdout": "", "stderr": ""}
             with mock.patch.dict(os.environ, {"REMOTEX_CONFIG": str(path)}, clear=True):
                 with mock.patch.object(vmware_adapter, "_vmrun_path", return_value="vmrun"):
-                    with mock.patch.object(core, "run_process", return_value=outcome) as runner:
-                        vmware_adapter.power({"action": "start"})
+                    with mock.patch.object(
+                        vmware_adapter.vm_queue,
+                        "profile_owner_operation",
+                        return_value=nullcontext(
+                            {
+                                "resource": "vmware:test",
+                                "owner": {"requester": "test-owner"},
+                            }
+                        ),
+                    ):
+                        with mock.patch.object(core, "run_process", return_value=outcome) as runner:
+                            vmware_adapter.power(
+                                {"action": "start", "requester": "test-owner"}
+                            )
         self.assertEqual(runner.call_args.args[0][-3:], ["start", str(vmx), "nogui"])
+
+    def test_vmware_power_refuses_unowned_vm_before_vmrun(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            vmx = Path(directory) / "example.vmx"
+            vmx.write_text("config.version = \"8\"", encoding="utf-8")
+            path = self._config(
+                directory,
+                {
+                    "vm": {
+                        "kind": "vmware-workstation",
+                        "vmx_path": str(vmx),
+                    }
+                },
+                {"vmware-workstation": "vm"},
+            )
+            environment = {
+                "REMOTEX_CONFIG": str(path),
+                "REMOTEX_VM_QUEUE_FILE": str(Path(directory) / "queue.json"),
+            }
+            with mock.patch.dict(os.environ, environment, clear=True):
+                with mock.patch.object(vmware_adapter, "_vmrun_path", return_value="vmrun"):
+                    with mock.patch.object(core, "run_process") as runner:
+                        with self.assertRaisesRegex(core.ToolError, "unowned"):
+                            vmware_adapter.power(
+                                {"action": "start", "requester": "test-owner"}
+                            )
+        runner.assert_not_called()
+
+    def test_rdp_open_does_not_preempt_another_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._config(
+                directory,
+                {
+                    "windows": {
+                        "kind": "rdp",
+                        "host": "windows.example",
+                        "credential": {
+                            "source": "windows-credential-manager",
+                            "target": "TERMSRV/windows.example",
+                        },
+                    }
+                },
+                {"rdp": "windows"},
+            )
+            environment = {
+                "REMOTEX_CONFIG": str(path),
+                "REMOTEX_VM_QUEUE_FILE": str(Path(directory) / "queue.json"),
+            }
+            with mock.patch.dict(os.environ, environment, clear=True):
+                target = vm_queue.resolve_profile_resource("windows")
+                vm_queue.claim(target["resource"], "alice", True)
+                with mock.patch.object(rdp_adapter, "_credential_present", return_value=True):
+                    with mock.patch.object(rdp_adapter.subprocess, "Popen") as process:
+                        with self.assertRaisesRegex(core.ToolError, "cannot preempt"):
+                            rdp_adapter.open_connection({"requester": "bob"})
+        process.assert_not_called()
 
 
 if __name__ == "__main__":

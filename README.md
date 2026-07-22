@@ -15,7 +15,7 @@ This repository is a local Codex plugin marketplace maintained by Sheldon. The m
 - `pre-release`: a tester-side role plugin that records one final `PASS` or `FAIL`, builds `Manifest-R` through the locked shared gate, and sends release-gate-check mail.
 - `release-gate`: a service-side role plugin that scans signed `PRERELEASE_REQUEST` mail, runs release-gate checks through the locked shared gate, and emits release-request or blocking notices while stopping at `RELEASE_READY_NOTIFIED`.
 - `rd-flywheel`: an evidence-first R&D workflow skill for turning new requirements, projects, and tasks into real production-proven capability, with versioned visual decision gates and post-production experience harvest.
-- `remotex`: a credential-reference-first remote operations plugin for SSH, Windows RDP, vSphere/ESXi, and VMware Workstation. It uses local OpenSSH, `mstsc`, `govc`, and `vmrun` clients and keeps secrets out of repository configuration and tool arguments.
+- `remotex`: a credential-reference-first remote operations plugin for SSH, Windows RDP, vSphere/ESXi, and VMware Workstation. It uses local OpenSSH, `mstsc`, `govc`, and `vmrun` clients, keeps secrets out of repository configuration and tool arguments, and enforces a process-safe local FIFO queue before RDP launch or VM power changes.
 - `wecom-codex-usage`: a WeCom / Enterprise WeChat plugin packaged and maintained by Sheldon. It connects to a self-built WeCom internal application for message delivery and summarizes local Codex usage signals from the current machine's Codex config and logs.
 - `daily-vuln-bulletin-email`: a verified daily vulnerability bulletin workflow. It uses live Feishu subscribers, severity-safe text/HTML content, exact MIME Subject and Message-ID readback, and recipient-header privacy checks while reusing the existing Lark and IMAP/SMTP plugins.
 
@@ -106,7 +106,7 @@ The skill uses local Visual Companion click events as versioned design-decision 
 
 After installing RemoteX, copy `plugins/remotex/config/config.example.json` to `~/.config/remotex/config.json` and replace the example endpoints with local profile values. Keep only credential references in this file. SSH uses an identity-file path or SSH Agent, RDP uses a `TERMSRV/...` Windows credential, vSphere/ESXi uses environment-variable names or a Windows Generic Credential target, and VMware Workstation uses the current local user session.
 
-Run `remotex_status` before connecting. It separates missing configuration, missing client programs, unreachable targets, and unavailable credential references instead of treating every setup gap as a missing password. The old SSH config remains readable in compatibility mode when no RemoteX config exists. See `plugins/remotex/README.md` for the profile schema and safety boundaries.
+Run `remotex_status` before connecting. It separates missing configuration, missing client programs, unreachable targets, unavailable credential references, and VM queue state instead of treating every setup gap as a missing password. An unowned VM is offered for explicit claim; another owner cannot be preempted. The old SSH config remains readable in compatibility mode when no RemoteX config exists. See `plugins/remotex/README.md` for the profile schema and safety boundaries.
 
 After installing the WeCom Codex Usage plugin, configure a WeCom self-built internal application:
 

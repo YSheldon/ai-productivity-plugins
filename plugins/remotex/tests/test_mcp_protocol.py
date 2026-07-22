@@ -33,7 +33,21 @@ class MCPProtocolTests(unittest.TestCase):
         self.assertIn("remotex_rdp_open", names)
         self.assertIn("remotex_vsphere_list_vms", names)
         self.assertIn("remotex_vmware_power", names)
-        self.assertEqual(len(names), 17)
+        self.assertIn("remotex_vm_queue_claim", names)
+        self.assertIn("remotex_vm_queue_release", names)
+        self.assertEqual(len(names), 22)
+
+    def test_side_effectful_vm_tools_require_requester(self) -> None:
+        response = remotex_mcp.handle_request(
+            {"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}}
+        )
+        tools = {tool["name"]: tool for tool in response["result"]["tools"]}
+        for name in (
+            "remotex_rdp_open",
+            "remotex_vsphere_power",
+            "remotex_vmware_power",
+        ):
+            self.assertIn("requester", tools[name]["inputSchema"]["required"])
 
     def test_unknown_tool_is_a_tool_error(self) -> None:
         response = remotex_mcp.handle_request(

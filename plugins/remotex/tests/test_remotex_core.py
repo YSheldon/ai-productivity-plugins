@@ -25,12 +25,18 @@ class RemoteXCoreTests(unittest.TestCase):
     def test_empty_status_is_configuration_guidance_not_credential_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / "missing.json"
-            with mock.patch.dict(os.environ, {"REMOTEX_CONFIG": str(missing)}, clear=True):
+            environment = {
+                "REMOTEX_CONFIG": str(missing),
+                "REMOTEX_VM_QUEUE_FILE": str(Path(directory) / "queue.json"),
+            }
+            with mock.patch.dict(os.environ, environment, clear=True):
                 result = remotex_mcp.status({})
         text = result["content"][0]["text"]
         payload = json.loads(text)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["summary"]["configured"], 0)
+        self.assertFalse(payload["vm_queue"]["preemption_allowed"])
+        self.assertEqual(payload["vm_queue"]["scope"], "local-cooperative")
         self.assertIn("Create", payload["next_step"])
         self.assertNotIn("no credentials", text.lower())
 

@@ -41,6 +41,9 @@ class PluginContractTests(unittest.TestCase):
         for forbidden in ('"password":', '"secret":', '"token":', '"private_key":'):
             self.assertNotIn(forbidden, serialized)
         self.assertEqual(config["version"], 1)
+        self.assertIn("queue_resource", config["profiles"]["windows-lab"])
+        self.assertIn("queue_resource", config["profiles"]["esxi-lab"])
+        self.assertIn("queue_resource", config["profiles"]["local-workstation-vm"])
         self.assertEqual(
             {profile["kind"] for profile in config["profiles"].values()},
             {"ssh", "rdp", "esxi", "vmware-workstation"},

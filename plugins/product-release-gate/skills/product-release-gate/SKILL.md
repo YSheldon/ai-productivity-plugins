@@ -27,8 +27,16 @@ On Windows, run `scripts/provision_windows_credentials.py status` and then `init
 the exact account that will run the release scheduler. The command creates only missing
 authorization/audit keys in that account's Windows Credential Manager, writes only
 non-secret target references to config, never prints values, and never rotates existing
-keys. Protected CI environment variables take precedence when present. Treat a mail
-profile created under a different CurrentUser DPAPI identity as unavailable in production.
+keys. It also stores only a SHA-256 fingerprint of the process-token SID. Require
+`runtime_identity_bound=true`, `runtime_identity_matches=true`,
+`principal_values_returned=false`, and `ready=true`. Normal `init` must reject an
+identity change. An approved service-account migration uses `rebind` with
+`--confirm-runtime-identity-rebind`, followed by full preflight and a controlled release.
+When `production.enabled=true`, identity binding is mandatory even if an old config
+omits the object or says `required=false`. Treat `runtime.identity_binding` in
+production preflight as a hard gate.
+Protected CI environment variables take precedence when present. Treat a mail profile
+created under a different CurrentUser DPAPI identity as unavailable in production.
 
 ## Required Workflow
 

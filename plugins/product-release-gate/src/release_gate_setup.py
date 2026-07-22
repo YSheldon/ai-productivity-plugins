@@ -276,6 +276,10 @@ class ReleaseGateSetup:
             "state_dir": str((root / "state").resolve(strict=False)),
             "poll_minutes": 60,
             "scheduler_mode": scheduler_mode,
+            "identity_binding": {
+                "required": True,
+                "principal_sha256": "",
+            },
             "auto_authorize_verified_pre_release": True,
             "auto_deploy_authorized_releases": False,
             "auto_generate_production_report": False,
@@ -362,6 +366,16 @@ class ReleaseGateSetup:
             "state_dir",
             str((self.config_path.parent / "state").resolve(strict=False)),
         )
+        identity_binding = runtime.setdefault("identity_binding", {})
+        if not isinstance(identity_binding, dict):
+            raise SetupError(
+                "INVALID_CONFIG",
+                "runtime.identity_binding configuration must be an object",
+            )
+        identity_binding["required"] = True
+        identity_binding["principal_sha256"] = str(
+            identity_binding.get("principal_sha256") or ""
+        ).strip().lower()
         runtime.setdefault("poll_minutes", 60)
         runtime["scheduler_mode"] = str(
             runtime.get("scheduler_mode") or scheduler_mode

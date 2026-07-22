@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -14,6 +16,7 @@ sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 from provision_windows_credentials import (
     ProvisioningError,
     credential_status,
+    main,
     provision_credentials,
 )
 from release_gate_credentials import (
@@ -86,6 +89,10 @@ class ProductionCredentialTests(unittest.TestCase):
         self.assertTrue(result["ready"])
         self.assertEqual(2, result["credentials_created"])
         self.assertFalse(result["credential_values_printed"])
+        self.assertTrue(result["runtime_identity_required"])
+        self.assertTrue(result["runtime_identity_bound"])
+        self.assertTrue(result["runtime_identity_matches"])
+        self.assertFalse(result["principal_values_returned"])
         self.assertEqual(
             {
                 DEFAULT_AUTHORIZATION_CREDENTIAL_TARGET,
@@ -113,6 +120,9 @@ class ProductionCredentialTests(unittest.TestCase):
             DEFAULT_AUDIT_CREDENTIAL_TARGET,
             config["production"]["audit"]["credential_target"],
         )
+        binding = config["runtime"]["identity_binding"]
+        self.assertTrue(binding["required"])
+        self.assertEqual(64, len(binding["principal_sha256"]))
 
     def test_repeated_init_reuses_credentials_without_rotation(self) -> None:
         first = provision_credentials(self.config_path, store=self.store)
@@ -176,6 +186,134 @@ class ProductionCredentialTests(unittest.TestCase):
 
         with self.assertRaises(ProvisioningError):
             provision_credentials(self.config_path, store=self.store)
+
+    def test_init_binds_principal_hash_and_rejects_rebind(self) -> None:
+        principal_a = "windows-sid:S-1-5-21-test-runtime-a"
+        principal_b = "windows-sid:S-1-5-21-test-runtime-b"
+        first = provision_credentials(
+            self.config_path,
+            store=self.store,
+            principal_provider=lambda: principal_a,
+        )
+        before_values = dict(self.store.values)
+        before_writes = list(self.store.writes)
+        before_config = self.config_path.read_text(encoding="utf-8")
+        binding = json.loads(before_config)["runtime"]["identity_binding"]
+
+        self.assertTrue(first["ready"])
+        self.assertTrue(binding["required"])
+        self.assertEqual(64, len(binding["principal_sha256"]))
+        self.assertNotIn(principal_a, before_config)
+        with self.assertRaisesRegex(
+            ProvisioningError,
+            "current runtime identity differs from the configured binding",
+        ):
+            provision_credentials(
+                self.config_path,
+                store=self.store,
+                principal_provider=lambda: principal_b,
+            )
+
+        self.assertEqual(before_values, self.store.values)
+        self.assertEqual(before_writes, self.store.writes)
+        self.assertEqual(
+            before_config,
+            self.config_path.read_text(encoding="utf-8"),
+        )
+
+    def test_explicit_rebind_updates_only_the_principal_hash(self) -> None:
+        principal_a = "windows-sid:S-1-5-21-test-runtime-a"
+        principal_b = "windows-sid:S-1-5-21-test-runtime-b"
+        provision_credentials(
+            self.config_path,
+            store=self.store,
+            principal_provider=lambda: principal_a,
+        )
+        before_values = dict(self.store.values)
+        before_writes = list(self.store.writes)
+        before_config = json.loads(
+            self.config_path.read_text(encoding="utf-8")
+        )
+
+        result = provision_credentials(
+            self.config_path,
+            store=self.store,
+            principal_provider=lambda: principal_b,
+            allow_identity_rebind=True,
+        )
+        serialized = self.config_path.read_text(encoding="utf-8")
+        after_config = json.loads(serialized)
+
+        self.assertTrue(result["ready"])
+        self.assertTrue(result["runtime_identity_rebound"])
+        self.assertTrue(result["runtime_identity_rebind_authorized"])
+        self.assertTrue(result["runtime_identity_matches"])
+        self.assertEqual(before_values, self.store.values)
+        self.assertEqual(before_writes, self.store.writes)
+        self.assertNotEqual(
+            before_config["runtime"]["identity_binding"]["principal_sha256"],
+            after_config["runtime"]["identity_binding"]["principal_sha256"],
+        )
+        self.assertNotIn(principal_a, serialized)
+        self.assertNotIn(principal_b, serialized)
+
+    def test_status_fails_closed_for_runtime_identity_mismatch(self) -> None:
+        principal_a = "windows-sid:S-1-5-21-test-runtime-a"
+        principal_b = "windows-sid:S-1-5-21-test-runtime-b"
+        provision_credentials(
+            self.config_path,
+            store=self.store,
+            principal_provider=lambda: principal_a,
+        )
+
+        result = credential_status(
+            self.config_path,
+            store=self.store,
+            principal_provider=lambda: principal_b,
+        )
+
+        self.assertFalse(result["ready"])
+        self.assertEqual("CAPABILITY_BLOCKED", result["status"])
+        self.assertTrue(result["runtime_identity_required"])
+        self.assertTrue(result["runtime_identity_bound"])
+        self.assertFalse(result["runtime_identity_matches"])
+        self.assertFalse(result["principal_values_returned"])
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn(principal_a, serialized)
+        self.assertNotIn(principal_b, serialized)
+
+    def test_rebind_cli_requires_explicit_confirmation(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = main(
+                ["--config", str(self.config_path), "rebind"]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(3, exit_code)
+        self.assertEqual("CAPABILITY_BLOCKED", payload["status"])
+        self.assertIn(
+            "--confirm-runtime-identity-rebind",
+            payload["error"],
+        )
+        self.assertFalse(payload["secret_values_returned"])
+        self.assertFalse(payload["principal_values_returned"])
+
+    def test_rebind_confirmation_is_rejected_for_other_actions(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = main(
+                [
+                    "--config",
+                    str(self.config_path),
+                    "status",
+                    "--confirm-runtime-identity-rebind",
+                ]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(3, exit_code)
+        self.assertIn("valid only with rebind", payload["error"])
 
 
 if __name__ == "__main__":

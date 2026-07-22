@@ -212,6 +212,9 @@ class SetupTests(unittest.TestCase):
         self.assertEqual("release@example.com", workflow["mail"]["release_group"])
         self.assertEqual("kernel", workflow["mail"]["module"])
         self.assertEqual(60, config["runtime"]["poll_minutes"])
+        identity_binding = config["runtime"]["identity_binding"]
+        self.assertTrue(identity_binding["required"])
+        self.assertEqual("", identity_binding["principal_sha256"])
         self.assertFalse(config["runtime"]["auto_deploy_authorized_releases"])
         self.assertFalse(config["runtime"]["auto_generate_production_report"])
         self.assertFalse(config["runtime"]["auto_deliver_production_report"])

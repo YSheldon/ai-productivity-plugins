@@ -36,6 +36,25 @@ may instead inject `PRODUCT_RELEASE_GATE_AUTH_KEY` and
 `PRODUCT_RELEASE_GATE_AUDIT_KEY` as protected masked variables; environment values take
 precedence. Both keys must be at least 32 bytes and must be different.
 
+`init` also binds `runtime.identity_binding.principal_sha256` to a SHA-256
+fingerprint of the current process-token SID. The SID, account name, and credential
+values are never stored in JSON or returned by `status`. Require all of
+`runtime_identity_bound=true`, `runtime_identity_matches=true`, and `ready=true`
+before enabling production. The controller reports `runtime.identity_binding` in
+production preflight and refuses authorization/audit secret use or deployment secret
+injection when the scheduled-task identity differs.
+When `production.enabled=true`, this check is mandatory even if a legacy or hand-written
+configuration omits `identity_binding` or sets `required=false`; deleting the field is
+not a bypass.
+
+A normal `init` never silently changes an existing identity binding. For an approved
+service-account migration, stop the scheduler and all automatic actions, protect the
+config for the new account, then run as that account:
+
+```powershell
+py -3 scripts/provision_windows_credentials.py --config $env:PRODUCT_RELEASE_GATE_CONFIG rebind --confirm-runtime-identity-rebind
+```
+
 Configure an exact 40-hex Authenticode certificate thumbprint allowlist; a merely valid signature is not sufficient. Set `production.enabled=true` only after every production adapter is configured. `production.deployment.dependency_lock` and `production.deployment.dependency_lock_sha256` bind the deploy, verify, rollback, rollback-verify, and readback argv templates to one locked adapter manifest. Adapter commands execute as argument arrays without a shell, and the controller re-verifies the lock digest plus every pinned executable/script SHA-256 immediately before each invocation.
 
 `production.report_delivery` is disabled by default. Before enabling it, review the locked mail profile, exact sender account, report recipients, module, mailbox, dependency-lock digest, and readback timeout. The report subject is `【发布完成】任务-模块-时间`. Delivery uses a deterministic Message-ID, writes a sealed send intent before SMTP, records the accepted SMTP outcome (including an empty refused map), and requires one exact authenticated IMAP readback. If the process loses the SMTP outcome, it will not resend automatically.

@@ -214,6 +214,10 @@ def default_config() -> dict[str, Any]:
             "state_dir": str(Path.home() / ".codex" / "product-release-gate" / "state"),
             "poll_minutes": 60,
             "scheduler_mode": "auto",
+            "identity_binding": {
+                "required": False,
+                "principal_sha256": "",
+            },
             "auto_authorize_verified_pre_release": False,
             "auto_deploy_authorized_releases": False,
             "auto_generate_production_report": False,

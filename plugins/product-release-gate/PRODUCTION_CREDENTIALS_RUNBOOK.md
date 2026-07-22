@@ -58,6 +58,40 @@ and records only the non-secret Credential Manager target names in the JSON conf
 `status` again and require `ready=true`. Rotation intentionally requires a separate
 incident/change procedure because it invalidates outstanding authorization and audit
 receipts.
+
+`init` also binds the configuration to a SHA-256 fingerprint of the current Windows
+process-token SID. It never stores or returns the SID or account name. A successful
+status must contain all of the following non-secret evidence:
+
+```text
+runtime_identity_required=true
+runtime_identity_bound=true
+runtime_identity_matches=true
+principal_values_returned=false
+ready=true
+```
+Production mode forces the binding requirement even when an old configuration omits
+the object or sets `required=false`. Resolve the missing capability with `init`; never
+weaken or delete the check.
+
+Normal `init` refuses a different process identity. To migrate the scheduled-task
+service account, use an approved change record and perform this explicit sequence:
+
+1. Disable the scheduled task and all four automatic switches.
+2. Grant the new service account only the required config, adapter, target, rollback,
+   readback, and mail-profile permissions.
+3. Run the following command as the new final service identity:
+
+```powershell
+py -3 scripts/provision_windows_credentials.py `
+  --config C:\ProgramData\ProductReleaseGate\config.json rebind `
+  --confirm-runtime-identity-rebind
+```
+
+4. Require identity-matching credential status, full production preflight, and a new
+   controlled release before re-enabling any automatic switch. Rebind explicitly
+   authorizes the fingerprint change and may create missing values in the new account's
+   Credential Manager; it never prints or implicitly rotates an existing value.
 The `imap-smtp-mail` profile owns its SMTP and IMAP credentials. Bind the profile to a
 protected service account and reference the profile from
 `production.report_delivery`; do not copy its password into this plugin's config.
@@ -219,7 +253,7 @@ The following non-secret inputs are required before a controlled release can beg
 
 | Input | Required value | Acceptance evidence |
 | --- | --- | --- |
-| Runtime identity | Dedicated Windows scheduled-task account and stable SID | `whoami /user` captured under the task identity; task status names the same account |
+| Runtime identity | Dedicated Windows scheduled-task account and stable SID | Task identity evidence plus `runtime_identity_bound=true`, `runtime_identity_matches=true`, and `principal_values_returned=false` |
 | Configuration | Protected absolute config path and immutable adapter directory | Only administrators and the runtime identity can modify them |
 | Stage targets | Distinct pre-production, canary, and full-production paths or service endpoints | No overlap; adapter self-check and access test pass |
 | Deployment authority | Runtime account ACL or adapter-specific secret-broker binding | Deploy and verify only the intended stage |
@@ -235,8 +269,9 @@ Run these steps as the final scheduled-task identity:
 1. Generate a fresh disabled config with `bootstrap_filesystem_production.py` or install
    equivalent immutable service adapters.
 2. Run `provision_windows_credentials.py ... init`, then `... status`; require
-   `ready=true`, distinct authorization/audit credentials, and
-   `secret_values_returned=false`.
+   `ready=true`, `runtime_identity_required=true`, `runtime_identity_bound=true`,
+   `runtime_identity_matches=true`, distinct authorization/audit credentials,
+   `secret_values_returned=false`, and `principal_values_returned=false`.
 3. Configure and test the identity-local mail profile. Do not reuse a developer's DPAPI
    profile for the service account.
 4. Configure the independent approval verifier and signature thumbprint allowlist.

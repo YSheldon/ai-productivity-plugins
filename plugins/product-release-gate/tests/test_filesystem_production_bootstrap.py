@@ -83,6 +83,9 @@ class FilesystemProductionBootstrapTests(unittest.TestCase):
         config = json.loads(config_text)
         self.assertFalse(config["production"]["enabled"])
         runtime = config["runtime"]
+        identity_binding = runtime["identity_binding"]
+        self.assertTrue(identity_binding["required"])
+        self.assertEqual("", identity_binding["principal_sha256"])
         for name in (
             "auto_authorize_verified_pre_release",
             "auto_deploy_authorized_releases",

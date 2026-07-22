@@ -27,7 +27,9 @@ from release_gate_core import (
 from release_gate_hardened import HardenedReleaseGateController
 from release_gate_credentials import (
     CredentialProviderError,
+    RuntimePrincipalProvider,
     resolve_configured_secret,
+    runtime_identity_binding_status,
 )
 from release_gate_approval_mail import (
     ApprovalMailError,
@@ -93,6 +95,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         allow_unlocked_test_adapters: bool = False,
         credential_reader: Callable[[str], str | None] | None = None,
         environ: Mapping[str, str] | None = None,
+        runtime_principal_provider: RuntimePrincipalProvider | None = None,
     ) -> None:
         super().__init__(config_path)
         self._approval_mail_gateway_override = approval_mail_gateway
@@ -104,12 +107,42 @@ class ProductionReleaseController(HardenedReleaseGateController):
         self._allow_unlocked_test_adapters = allow_unlocked_test_adapters
         self._credential_reader = credential_reader
         self._environ = os.environ if environ is None else environ
+        self._runtime_principal_provider = runtime_principal_provider
 
     def _production_config(self) -> dict[str, Any]:
         config = self.config.get("production")
         if not isinstance(config, dict) or not config.get("enabled"):
             raise GateError("production.enabled must be true for production operations")
         return config
+
+    def _runtime_identity_status(self) -> dict[str, object]:
+        runtime = self.config.get("runtime")
+        binding = (
+            runtime.get("identity_binding")
+            if isinstance(runtime, Mapping)
+            else None
+        )
+        production = self.config.get("production")
+        production_enabled = bool(
+            isinstance(production, Mapping)
+            and production.get("enabled") is True
+        )
+        return runtime_identity_binding_status(
+            binding,
+            required=production_enabled,
+            principal_provider=self._runtime_principal_provider,
+        )
+
+    def _require_runtime_identity(self) -> None:
+        status = self._runtime_identity_status()
+        if status["required"] is True and status["ready"] is not True:
+            raise GateError(
+                "production runtime identity differs from the configured binding"
+            )
+
+    def _save_event(self, event: dict[str, Any]) -> None:
+        self._require_runtime_identity()
+        super()._save_event(event)
 
     @staticmethod
     def _valid_command(value: Any) -> bool:
@@ -187,6 +220,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         return value
 
     def _authorization_key(self) -> bytes:
+        self._require_runtime_identity()
         production = self._production_config()
         authorization = production.get("authorization") or {}
         key_env = str(authorization.get("key_env") or "").strip()
@@ -199,6 +233,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         return encoded
 
     def _audit_key(self) -> bytes:
+        self._require_runtime_identity()
         production = self._production_config()
         authorization = production.get("authorization") or {}
         audit = production.get("audit") or {}
@@ -457,6 +492,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         targets = deployment.get("targets") or {}
         authorization_key_env = str(authorization.get("key_env") or "").strip()
         audit = production.get("audit") or {}
+        runtime_identity = self._runtime_identity_status()
         audit_key_env = str(audit.get("key_env") or "").strip()
         try:
             authorization_value = self._resolve_signing_secret(
@@ -477,6 +513,12 @@ class ProductionReleaseController(HardenedReleaseGateController):
             workflow_mode != "unified_multi_role"
         )
         checks = [
+            {
+                "name": "runtime.identity_binding",
+                "required": runtime_identity["required"],
+                "configured": runtime_identity["ready"],
+                "detail": runtime_identity,
+            },
             {
                 "name": "authorization_signer",
                 "configured": bool(
@@ -587,6 +629,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         return {"ready": not missing, "missing_capabilities": missing, "checks": checks}
 
     def ensure_deployment_capabilities(self, event_id: str) -> dict[str, Any]:
+        self._require_runtime_identity()
         event = self._load_event(event_id)
         allowed_statuses = {
             "RELEASE_AUTHORIZED",
@@ -955,6 +998,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         role_snapshot_digest: str,
         expires_at: str,
     ) -> dict[str, Any]:
+        self._require_runtime_identity()
         self._approval_workflow_config("unified_multi_role")
         event = self._load_event(event_id)
         requester = str(requested_by or "").strip().lower()
@@ -1238,6 +1282,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         event_id: str,
         verification_ref: str,
     ) -> dict[str, Any]:
+        self._require_runtime_identity()
         workflow = self._approval_workflow_config("unified_multi_role")
         event = self._load_event(event_id)
         reference = str(verification_ref or "").strip()
@@ -1426,6 +1471,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         requested_by: str,
         target_scope: str,
     ) -> dict[str, Any]:
+        self._require_runtime_identity()
         event = self._load_event(event_id)
         if event.get("status") == "RELEASE_AUTHORIZATION_REQUIRED":
             existing = self._signed_authorization_request(event)
@@ -1596,6 +1642,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         manifest_s_digest: str,
         manifest_r_digest: str,
     ) -> dict[str, Any]:
+        self._require_runtime_identity()
         event = self._load_event(event_id)
         if event.get("status") != "RELEASE_AUTHORIZATION_REQUIRED":
             raise GateError(
@@ -1680,6 +1727,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         self,
         event_id: str,
     ) -> dict[str, Any]:
+        self._require_runtime_identity()
         event = self._load_event(event_id)
         if event.get("status") == "RELEASE_AUTHORIZED":
             credential = self._verify_authorization_credential(event)
@@ -1775,6 +1823,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         approval_evidence_ref: str,
         authorization_config: dict[str, Any],
     ) -> dict[str, Any]:
+        self._require_runtime_identity()
         ttl_seconds = int(authorization_config.get("ttl_seconds") or 3600)
         if ttl_seconds < 60 or ttl_seconds > 86400:
             raise GateError(
@@ -2337,6 +2386,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
                 if not key_env:
                     return None, "adapter credential is unavailable"
                 try:
+                    self._require_runtime_identity()
                     authorization_value = self._resolve_signing_secret(
                         authorization,
                         "authorization",
@@ -2576,6 +2626,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         return rollback
 
     def run_deployment_stage(self, event_id: str, stage: str) -> dict[str, Any]:
+        self._require_runtime_identity()
         stage = str(stage or "").strip()
         if stage not in REQUIRED_DEPLOYMENT_STAGES:
             raise GateError(f"stage must be one of: {', '.join(REQUIRED_DEPLOYMENT_STAGES)}")
@@ -2771,6 +2822,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
             failure,
         )
     def run_production_readback(self, event_id: str) -> dict[str, Any]:
+        self._require_runtime_identity()
         event = self._load_event(event_id)
         if event.get("status") != "PRODUCTION_DEPLOYED":
             raise GateError(
@@ -3376,6 +3428,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         }
 
     def deliver_production_report(self, event_id: str) -> dict[str, Any]:
+        self._require_runtime_identity()
         report = self.generate_production_report(event_id)
         event = self._load_event(event_id)
         delivery = self._production_report_delivery_config()
@@ -3641,6 +3694,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         return chain
 
     def generate_production_report(self, event_id: str) -> dict[str, Any]:
+        self._require_runtime_identity()
         event = self._load_event(event_id)
         chain = self._verify_completed_release_evidence(event)
         event_dir = self._event_dir(event_id)

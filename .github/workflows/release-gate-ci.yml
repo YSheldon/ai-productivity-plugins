@@ -49,9 +49,12 @@ jobs:
           plugins/product-release-gate/scripts
 
       - name: Test mailbox release gate
+        shell: cmd
         run: python -m pytest plugins/release-gate/tests -q --tb=short
 
       - name: Test production release gate
+        if: always()
+        shell: cmd
         run: >-
           python -m unittest discover
           -s plugins/product-release-gate/tests

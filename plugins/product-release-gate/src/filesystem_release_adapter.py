@@ -187,7 +187,14 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
-    return _is_relative_to(left, right) or _is_relative_to(right, left)
+    try:
+        resolved_left = left.resolve(strict=False)
+        resolved_right = right.resolve(strict=False)
+    except OSError as exc:
+        raise AdapterError("filesystem paths cannot be resolved safely") from exc
+    return _is_relative_to(resolved_left, resolved_right) or _is_relative_to(
+        resolved_right, resolved_left
+    )
 
 
 def resolve_target_ref(target_ref: str) -> Path:
@@ -595,8 +602,14 @@ class FilesystemReleaseAdapter:
         lock_timeout_seconds: int = 30,
         environ: Mapping[str, str] | None = None,
     ) -> None:
-        self.target_ref = str(target_ref or "").strip()
-        self.target_root = resolve_target_ref(self.target_ref)
+        raw_target_ref = str(target_ref or "").strip()
+        self.target_root = resolve_target_ref(raw_target_ref)
+        try:
+            self.target_ref = os.fspath(
+                self.target_root.resolve(strict=False)
+            )
+        except OSError as exc:
+            raise AdapterError("target path cannot be resolved safely") from exc
         self.layout = TargetLayout.for_target(self.target_root)
         self.lock_timeout_seconds = lock_timeout_seconds
         self.environ = os.environ if environ is None else environ

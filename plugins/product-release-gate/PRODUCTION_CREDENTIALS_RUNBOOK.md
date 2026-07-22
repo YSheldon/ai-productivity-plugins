@@ -62,13 +62,22 @@ The `imap-smtp-mail` profile owns its SMTP and IMAP credentials. Bind the profil
 protected service account and reference the profile from
 `production.report_delivery`; do not copy its password into this plugin's config.
 
-The approval, deployment, readback, and rollback adapters should obtain their service
+The approval, deployment, readback, and rollback adapters must obtain their service
+credentials from the protected runtime identity or an approved secret broker. The
+argument templates contain references and event placeholders only; they never contain
+inline secrets. For the built-in filesystem adapter, the Windows scheduled-task account
+and its NTFS permissions are the deployment, verification, readback, and rollback
+credential. There is no deployment-password field in the plugin JSON.
+
+If policy requires a separate read-only identity for final readback or rollback
+verification, use separate immutable service adapters. The built-in filesystem adapter
+executes every operation as the controller process identity and cannot impersonate a
+second account.
+
 The mail profile is also identity-scoped: a profile protected with CurrentUser DPAPI
 under an administrator or developer account is not a production profile for a different
 service identity. Run the `imap-smtp-mail` setup once as the final release-control
 identity, then verify both IMAP and SMTP before enabling report delivery.
-credentials from the same protected Runner identity or an approved secret broker. The
-argv templates must contain references and event placeholders, never inline secrets.
 
 ## 3. Replace the test adapters
 
@@ -201,3 +210,52 @@ REPORT_READBACK_VERIFIED
 Until the real `/api/v1/scans` service, protected token, real adapters, and external
 approval/mail identities are provisioned, the correct result is `CAPABILITY_BLOCKED`,
 not a simulated production success.
+
+## 8. Production provisioning worksheet
+
+Do not promote `first_practice_adapter_compat.py` or edit a first-practice configuration
+in place. Generate a new disabled configuration in a protected production directory.
+The following non-secret inputs are required before a controlled release can begin:
+
+| Input | Required value | Acceptance evidence |
+| --- | --- | --- |
+| Runtime identity | Dedicated Windows scheduled-task account and stable SID | `whoami /user` captured under the task identity; task status names the same account |
+| Configuration | Protected absolute config path and immutable adapter directory | Only administrators and the runtime identity can modify them |
+| Stage targets | Distinct pre-production, canary, and full-production paths or service endpoints | No overlap; adapter self-check and access test pass |
+| Deployment authority | Runtime account ACL or adapter-specific secret-broker binding | Deploy and verify only the intended stage |
+| Rollback authority | Permission to restore the previous immutable release | Controlled rollback plus independent rollback verification pass |
+| Production readback | Read-only adapter or documented use of the filesystem runtime identity | Exact authorized Manifest-R digest is returned from the active target |
+| Approval verifier | Role source, approval/audit document locations, release group, and trusted inbound issuer | One current event returns an exact digest- and scope-bound `APPROVE` receipt |
+| Product signature policy | Exact allowed Authenticode certificate thumbprints | A valid signature from an unlisted certificate is rejected |
+| Mail delivery | Identity-local `imap-smtp-mail` profile, sender, recipients, and mailbox | SMTP accepted result and exact IMAP Message-ID readback pass |
+| Cloud scan | Live `/api/v1/scans` endpoint and protected `PMG_CLOUD_SCAN_TOKEN` | Required engines return `CLEAN`; until implemented this remains blocked |
+
+Run these steps as the final scheduled-task identity:
+
+1. Generate a fresh disabled config with `bootstrap_filesystem_production.py` or install
+   equivalent immutable service adapters.
+2. Run `provision_windows_credentials.py ... init`, then `... status`; require
+   `ready=true`, distinct authorization/audit credentials, and
+   `secret_values_returned=false`.
+3. Configure and test the identity-local mail profile. Do not reuse a developer's DPAPI
+   profile for the service account.
+4. Configure the independent approval verifier and signature thumbprint allowlist.
+5. Grant the minimum target permissions and record the runtime SID plus ACL evidence.
+6. Run production preflight and resolve every missing capability. Keep all automation
+   switches disabled.
+7. Execute one controlled release through pre-production, canary, full production,
+   production readback, forced rollback, rollback verification, report delivery, and
+   exact IMAP report readback.
+8. Review the receipts independently, then enable only the automation switches approved
+   by the production change record.
+
+Retain these non-secret artifacts for audit:
+
+- Runtime SID and scheduled-task identity evidence.
+- Adapter lock file, lock digest, and entrypoint digests.
+- Credential status JSON without secret values.
+- Approval receipt and frozen Manifest-S/Manifest-R digests.
+- Stage deployment, verification, rollback, and rollback-verification receipts.
+- Production readback receipt bound to the authorized Manifest-R digest.
+- Final report digest, deterministic Message-ID, SMTP accepted/refused result, and exact
+  authenticated IMAP mailbox/UID readback receipt.

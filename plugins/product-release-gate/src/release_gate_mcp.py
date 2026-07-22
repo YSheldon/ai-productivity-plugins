@@ -18,7 +18,7 @@ from release_gate_setup import run_setup_operation
 
 
 SERVER_NAME = "product-release-gate"
-SERVER_VERSION = "0.4.4"
+SERVER_VERSION = "0.5.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 _CONTROLLER = ProductionReleaseController()
 
@@ -194,6 +194,31 @@ def generate_report(args: dict[str, Any]) -> dict[str, Any]:
 
 def production_preflight(args: dict[str, Any]) -> dict[str, Any]:
     return controller(args).production_preflight()
+
+
+def build_svn_live_handoff(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).build_svn_live_handoff(
+        event_id=args["event_id"],
+        product_name=args["product_name"],
+        product_version=args["product_version"],
+        repository_root=args["repository_root"],
+        fixed_revision=args["fixed_revision"],
+        pipeline_nonce=args["pipeline_nonce"],
+        materials=args["materials"],
+        pre_release_report_sha256=args[
+            "pre_release_report_sha256"
+        ],
+        source_message_id=args["source_message_id"],
+    )
+
+
+def record_svn_live_gate_receipt(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    return controller(args).record_svn_live_gate_receipt(
+        args["event_id"],
+        args["receipt_path"],
+    )
 
 
 def request_release_authorization(args: dict[str, Any]) -> dict[str, Any]:
@@ -531,7 +556,71 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": unified_approval_preflight,
-    },    "release_gate_request_release_authorization": {
+    },
+    "release_gate_build_svn_live_handoff": {
+        "description": (
+            "Build a ProductMaterialWorkflow/v1 handoff whose SHA1, SHA256, "
+            "and sizes are derived only from the frozen Manifest-R."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "product_name": {"type": "string"},
+                "product_version": {"type": "string"},
+                "repository_root": {"type": "string"},
+                "fixed_revision": {"type": "integer", "minimum": 1},
+                "pipeline_nonce": {"type": "string"},
+                "materials": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "logical_name": {"type": "string"},
+                            "svn_path": {"type": "string"},
+                            "id": {"type": "string"},
+                            "path": {"type": "string"},
+                        },
+                        "required": ["logical_name", "svn_path"],
+                        "additionalProperties": False,
+                    },
+                },
+                "pre_release_report_sha256": {"type": "string"},
+                "source_message_id": {"type": "string"},
+            },
+            "required": [
+                "event_id",
+                "product_name",
+                "product_version",
+                "repository_root",
+                "fixed_revision",
+                "pipeline_nonce",
+                "materials",
+                "pre_release_report_sha256",
+                "source_message_id",
+            ],
+            "additionalProperties": False,
+        },
+        "handler": build_svn_live_handoff,
+    },
+    "release_gate_record_svn_live_gate_receipt": {
+        "description": (
+            "Use the locked independent verifier to import a protected GitLab "
+            "CLEAN or BLOCKED receipt bound to this event and Manifest-R."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "receipt_path": {"type": "string"},
+            },
+            "required": ["event_id", "receipt_path"],
+            "additionalProperties": False,
+        },
+        "handler": record_svn_live_gate_receipt,
+    },
+    "release_gate_request_release_authorization": {
         "description": "Freeze a production authorization request bound to the current Manifest-S and Manifest-R digests.",
         "inputSchema": {
             "type": "object",

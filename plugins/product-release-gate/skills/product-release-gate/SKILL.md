@@ -49,12 +49,14 @@ created under a different CurrentUser DPAPI identity as unavailable in productio
 4. Run tests or ingest a trusted callback. High and emergency risk require an auditable test approval.
 5. Build Manifest-R into a new, non-existent output path and run the release gate. The controller stages, durably copies, verifies SHA1/SHA256, and atomically publishes the complete directory; any failure cleans it and leaves `RELEASE_PREPARING`. File drift, omissions, extras, signature failure, scan failure, or approval mismatch blocks release. Authenticode must match an exact configured certificate-thumbprint allowlist.
 6. Treat `RELEASE_READY` as an intermediate state. Call `release_gate_production_preflight` before requesting production authority.
-7. Create the bound authorization request. Use the configured external approval system and read the instance back; do not invent an approval reference.
-8. Record release authorization only when the verifier returns the same event, actor, decision, Manifest-S digest, Manifest-R digest, and explicit comma-separated stage scope. The signed ledger request, not mutable event fields, is authoritative. The controller then issues an expiring scoped credential and enters `RELEASE_AUTHORIZED`.
-9. Check deployment capabilities. If state becomes `CAPABILITY_BLOCKED`, preserve the origin checkpoint, build and merge the missing adapter through the approved repository workflow, deploy it, then replay the checkpoint. Required detectors cannot be waived.
-10. Execute `preproduction`, `production_canary`, and `production_full` in order. The credential must authorize the current stage, and deploy/verify receipts must bind the configured target and exact authorized Manifest-R digest.
-11. On deployment or verification failure, allow the controller to run rollback plus an independent rollback-verification adapter. Never advance after `ROLLED_BACK` or `ROLLBACK_FAILED`.
-12. Run production readback. A mismatch must roll back full production. Generate the production report, verify the HMAC-signed event chain, then call `release_gate_deliver_production_report`. The `【发布完成】任务-模块-时间` message must have a sealed SMTP receipt and exact authenticated IMAP readback. Pending or unknown SMTP outcomes never permit automatic resend and never count as completion; notification success is not production truth.
+7. When `production.svn_release_gate.required=true`, call `release_gate_build_svn_live_handoff`. Provide only product/SVN coordinates and the logical-name-to-SVN-path mapping; never supply expected hashes. The tool derives every SHA1, SHA256, and size from `ProductReleaseGateManifestR/v1` and freezes `ProductMaterialWorkflow/v1`.
+8. Promote the handoff to protected GitLab project 59 and run `live_gate`. Create a local `ProductMaterialGatePipelineLocator/v1` containing only project, pipeline, and job IDs, then call `release_gate_record_svn_live_gate_receipt`. The pinned bundled verifier must read GitLab and the artifact ZIP independently. BLOCKED stops release; only a current verified CLEAN receipt restores the prior checkpoint.
+9. Create the bound authorization request. Use the configured external approval system and read the instance back; do not invent an approval reference. The controller re-verifies the GitLab receipt and every frozen file first.
+10. Record release authorization only when the verifier returns the same event, actor, decision, Manifest-S digest, Manifest-R digest, and explicit comma-separated stage scope. The signed ledger request, not mutable event fields, is authoritative. The controller then issues an expiring scoped credential and enters `RELEASE_AUTHORIZED`.
+11. Check deployment capabilities. If state becomes `CAPABILITY_BLOCKED`, preserve the origin checkpoint, build and merge the missing adapter through the approved repository workflow, deploy it, then replay the checkpoint. Required detectors cannot be waived.
+12. Execute `preproduction`, `production_canary`, and `production_full` in order. The credential must authorize the current stage, and deploy/verify receipts must bind the configured target and exact authorized Manifest-R digest.
+13. On deployment or verification failure, allow the controller to run rollback plus an independent rollback-verification adapter. Never advance after `ROLLED_BACK` or `ROLLBACK_FAILED`.
+14. Run production readback. A mismatch must roll back full production. Generate the production report, verify the HMAC-signed event chain, then call `release_gate_deliver_production_report`. The `【发布完成】任务-模块-时间` message must have a sealed SMTP receipt and exact authenticated IMAP readback. Pending or unknown SMTP outcomes never permit automatic resend and never count as completion; notification success is not production truth.
 
 ## Authority Boundaries
 
@@ -63,6 +65,8 @@ created under a different CurrentUser DPAPI identity as unavailable in productio
 - GitLab/GitHub proves source and merge state. Feishu proves approval. SSH/deployment adapters execute targets. IMAP/SMTP and WeCom deliver reports and escalation notices.
 - AI may create, test, review, and merge a missing capability only through configured repository controls. It cannot self-grant production credentials or approval authority.
 - Authorization and audit HMAC keys must be separate, at least 32 bytes, and supplied through the runtime secret manager rather than configuration or artifacts.
+- `PRODUCT_RELEASE_GATE_GITLAB_TOKEN` is a separate read-only verifier secret. Keep it out of JSON, handoffs, locators, logs, and reports. Pin the verifier command as `svn_release_gate_receipt` in the deployment dependency lock.
+- The protected GitLab runtime attestation must bind `PMG_REQUEST_ID` and `PMG_REQUEST_SHA256` to the exact ProgramData request before gate execution. A successful unrelated pipeline or a locally edited receipt is never evidence.
 
 ## Completion Standard
 

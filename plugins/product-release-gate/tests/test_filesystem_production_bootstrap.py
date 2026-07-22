@@ -98,10 +98,23 @@ class FilesystemProductionBootstrapTests(unittest.TestCase):
         deployment = config["production"]["deployment"]
         deploy_command = deployment["deploy_command"]
         verify_command = deployment["verify_command"]
+        svn_release_gate = config["production"]["svn_release_gate"]
+        svn_receipt_verifier = Path(result["svn_receipt_verifier"]["path"])
         self.assertIn("--expected-digest", deploy_command)
         self.assertIn("{manifest_r_digest}", deploy_command)
         self.assertIn("--rollback-ref", verify_command)
         self.assertIn("{rollback_ref}", verify_command)
+        self.assertFalse(svn_release_gate["required"])
+        self.assertEqual(59, svn_release_gate["expected_project_id"])
+        self.assertTrue(svn_receipt_verifier.is_file())
+        self.assertEqual(
+            (PLUGIN_ROOT / "scripts" / "verify_gitlab_svn_gate_receipt.py").read_bytes(),
+            svn_receipt_verifier.read_bytes(),
+        )
+        self.assertEqual(
+            self._sha256(svn_receipt_verifier),
+            result["svn_receipt_verifier"]["sha256"],
+        )
         self.assertEqual(
             str(self.targets["production_target"].resolve()),
             deployment["targets"]["production_full"],
@@ -120,14 +133,56 @@ class FilesystemProductionBootstrapTests(unittest.TestCase):
                 "rollback",
                 "rollback_verify",
                 "readback",
+                "svn_release_gate_receipt",
             },
             set(lock["commands"]),
+        )
+        self.assertEqual(
+            lock["commands"]["svn_release_gate_receipt"]["argv_template"],
+            svn_release_gate["verify_command"],
+        )
+        self.assertEqual(
+            str(svn_receipt_verifier),
+            svn_release_gate["verify_command"][1],
         )
         for command in lock["commands"].values():
             self.assertEqual([0, 1], [
                 entry["argv_index"] for entry in command["entrypoints"]
             ])
 
+    def test_bootstrap_locks_required_svn_receipt_verifier(self) -> None:
+        source_config = self.root / "required-svn-gate.json"
+        source_config.write_text(
+            json.dumps(
+                {
+                    "production": {
+                        "svn_release_gate": {
+                            "required": True,
+                            "expected_project_id": 59,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = self._bootstrap(source_config=source_config)
+        config = json.loads(self.output_config.read_text(encoding="utf-8"))
+        gate = config["production"]["svn_release_gate"]
+        lock_path = Path(config["production"]["deployment"]["dependency_lock"])
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        verifier_entrypoints = lock["commands"]["svn_release_gate_receipt"][
+            "entrypoints"
+        ]
+
+        self.assertTrue(gate["required"])
+        self.assertEqual(
+            str(result["svn_receipt_verifier"]["path"]),
+            gate["verify_command"][1],
+        )
+        self.assertEqual(
+            result["svn_receipt_verifier"]["sha256"],
+            verifier_entrypoints[1]["sha256"],
+        )
     def test_existing_outputs_require_explicit_idempotent_replace(self) -> None:
         first = self._bootstrap()
         adapter_path = Path(first["adapter"]["path"])

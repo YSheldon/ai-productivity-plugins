@@ -43,6 +43,8 @@ CONTROLLER_OPERATIONS = (
     "get_event",
     "generate_report",
     "production_preflight",
+    "build_svn_live_handoff",
+    "record_svn_live_gate_receipt",
     "request_release_authorization",
     "record_release_authorization",
     "finalize_verified_release_authorization",
@@ -169,6 +171,25 @@ def invoke_controller(
         return controller.generate_report(payload["event_id"])
     if operation == "production_preflight":
         return controller.production_preflight()
+    if operation == "build_svn_live_handoff":
+        return controller.build_svn_live_handoff(
+            event_id=payload["event_id"],
+            product_name=payload["product_name"],
+            product_version=payload["product_version"],
+            repository_root=payload["repository_root"],
+            fixed_revision=payload["fixed_revision"],
+            pipeline_nonce=payload["pipeline_nonce"],
+            materials=payload["materials"],
+            pre_release_report_sha256=payload[
+                "pre_release_report_sha256"
+            ],
+            source_message_id=payload["source_message_id"],
+        )
+    if operation == "record_svn_live_gate_receipt":
+        return controller.record_svn_live_gate_receipt(
+            payload["event_id"],
+            payload["receipt_path"],
+        )
     if operation == "request_release_authorization":
         return controller.request_release_authorization(
             payload["event_id"],

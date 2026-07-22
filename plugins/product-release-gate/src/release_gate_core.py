@@ -245,6 +245,12 @@ def default_config() -> dict[str, Any]:
                 "verify_command": [],
                 "timeout_seconds": 120,
             },
+            "svn_release_gate": {
+                "required": False,
+                "expected_project_id": 59,
+                "verify_command": [],
+                "timeout_seconds": 120,
+            },
             "report_delivery": {
                 "enabled": False,
                 "profile": "",
@@ -948,6 +954,7 @@ class ReleaseGateController:
                     }
                 )
             manifest_r = {
+                "schema": "ProductReleaseGateManifestR/v1",
                 "event_id": event_id,
                 "phase": "Manifest-R",
                 "created_at": utc_now(),

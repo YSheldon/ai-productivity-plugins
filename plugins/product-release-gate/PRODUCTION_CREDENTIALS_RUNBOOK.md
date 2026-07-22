@@ -19,6 +19,7 @@ Do not use one account or one secret for every phase.
 | Rollback verification | Independent verification path | Read-only verification of the restored release | Matching references and verification reference |
 | Report delivery | Locked `imap-smtp-mail` profile | Send the final report and read one mailbox | SMTP accepted result plus exact authenticated IMAP readback |
 | Cloud scan | Protected `PMG_CLOUD_SCAN_TOKEN` | Submit and poll `/api/v1/scans` only | Scan id and required-engine `CLEAN` verdicts |
+| SVN release-gate receipt verifier | Protected `PRODUCT_RELEASE_GATE_GITLAB_TOKEN` | Read protected pipeline, job, ref, and artifact evidence for one configured project only | Manifest-R-bound `CLEAN` or `BLOCKED` verifier receipt |
 
 The authorization key is not the external approval account password. The audit key is
 not a deployment credential. The mail password is not an audit key. Keep these domains
@@ -39,7 +40,12 @@ Required secret inputs are:
 PRODUCT_RELEASE_GATE_AUTH_KEY   # at least 32 random bytes
 PRODUCT_RELEASE_GATE_AUDIT_KEY  # a different secret, at least 32 random bytes
 PMG_CLOUD_SCAN_TOKEN             # protected and masked; only for the live scan adapter
+PRODUCT_RELEASE_GATE_GITLAB_TOKEN  # read-only GitLab API token for the SVN receipt verifier
 ```
+
+`PRODUCT_RELEASE_GATE_GITLAB_TOKEN` is a separate read-only verifier secret. Limit it
+to the configured project and API read scope; it must not be able to trigger pipelines,
+deploy, merge, approve, or administer projects.
 
 For the normal Windows installation, run setup under the final scheduled-task identity:
 
@@ -157,10 +163,33 @@ py -3 scripts/bootstrap_filesystem_production.py `
   --production-target D:\ReleaseTargets\Production
 ```
 
+
+The bootstrap copies both the filesystem adapter and the bundled
+`verify_gitlab_svn_gate_receipt.py` into the immutable adapter directory. It pins both
+entrypoints in the deployment lock and writes the verifier command automatically. The
+generated configuration remains disabled and keeps `svn_release_gate.required=false`.
 For service or container targets, the equivalent adapter must implement the same receipt
 contracts and be installed under a protected immutable deployment directory.
 
-## 4. Configure the external approval verifier
+## 4. Configure the SVN release-gate receipt verifier
+
+Set `production.svn_release_gate.required=true` only after the final scheduled-task
+identity has the protected `PRODUCT_RELEASE_GATE_GITLAB_TOKEN` and the configured
+project/ref match the protected GitLab pipeline. The generated verifier command must
+remain the lock entry `svn_release_gate_receipt`; never replace it with a shell command
+or a writable local script.
+
+The verifier accepts only a fixed Manifest-R-bound handoff and a locator for the
+protected GitLab job. It then verifies the exact project, protected ref, pipeline/job,
+artifact manifest, request digest, and Manifest-R digest before returning `CLEAN` or
+`BLOCKED`. A successful HTTP request alone is not a release-gate receipt.
+
+A scanner service cannot be enabled for production merely because it supports
+`POST /api/v1/scans`. It must preserve the release request, pipeline, Manifest, and
+per-file hash bindings required by the gate; otherwise the only correct release result
+is `BLOCKED`.
+
+## 5. Configure the external approval verifier
 
 The verifier must read the approval system and return JSON bound to the current event:
 
@@ -180,7 +209,7 @@ Any decision other than `APPROVE`, an expired approval, a scope mismatch, or a d
 mismatch blocks authorization. The gate records the response; it does not infer
 approval from a sent email or from a human-readable report.
 
-## 5. Configure deployment, rollback, and readback
+## 6. Configure deployment, rollback, and readback
 
 Use separate target references for `preproduction`, `production_canary`, and
 `production_full`. A deployment adapter must return the exact target reference and a
@@ -196,7 +225,7 @@ Final production readback must be read-only and must return the authorized Manif
 digest. A mismatch after `production_full` invokes the bound full-production rollback;
 the release is never marked verified on a partial or stale response.
 
-## 6. Configure final report delivery and readback
+## 7. Configure final report delivery and readback
 
 Keep `production.report_delivery.enabled=false` until the mail profile and its lock have
 passed preflight. Configure:
@@ -219,7 +248,7 @@ the release event. A lost SMTP outcome is `REPORT_READBACK_PENDING`; it is not a
 automatic resend condition. Completion requires both the send receipt and exact IMAP
 readback receipt.
 
-## 7. Preflight and acceptance sequence
+## 8. Preflight and acceptance sequence
 
 Keep all automatic switches disabled during provisioning:
 
@@ -252,11 +281,11 @@ PRODUCTION_VERIFIED
 REPORT_READBACK_VERIFIED
 ```
 
-Until the real `/api/v1/scans` service, protected token, real adapters, and external
-approval/mail identities are provisioned, the correct result is `CAPABILITY_BLOCKED`,
-not a simulated production success.
+Until a contract-compatible `/api/v1/scans` service, protected tokens, real adapters,
+and external approval/mail identities are provisioned, the correct result is
+`CAPABILITY_BLOCKED`, not a simulated production success.
 
-## 8. Production provisioning worksheet
+## 9. Production provisioning worksheet
 
 Do not promote `first_practice_adapter_compat.py` or edit a first-practice configuration
 in place. Generate a new disabled configuration in a protected production directory.
@@ -273,7 +302,8 @@ The following non-secret inputs are required before a controlled release can beg
 | Approval verifier | Role source, approval/audit document locations, release group, and trusted inbound issuer | One current event returns an exact digest- and scope-bound `APPROVE` receipt |
 | Product signature policy | Exact allowed Authenticode certificate thumbprints | A valid signature from an unlisted certificate is rejected |
 | Mail delivery | Identity-local `imap-smtp-mail` profile, sender, recipients, and mailbox | SMTP accepted result and exact IMAP Message-ID readback pass |
-| Cloud scan | Live `/api/v1/scans` endpoint and protected `PMG_CLOUD_SCAN_TOKEN` | Required engines return `CLEAN`; until implemented this remains blocked |
+| Cloud scan | Contract-compatible live `/api/v1/scans` endpoint and protected `PMG_CLOUD_SCAN_TOKEN` | Required engines return `CLEAN`; until compatibility evidence exists this remains blocked |
+| SVN release-gate verifier | Protected GitLab read-only token, protected ref, and immutable verifier lock | One protected `CLEAN` run, one controlled `BLOCKED` run, and exact receipt readback |
 
 Run these steps as the final scheduled-task identity:
 
@@ -285,7 +315,7 @@ Run these steps as the final scheduled-task identity:
    `secret_values_returned=false`, and `principal_values_returned=false`.
 3. Configure and test the identity-local mail profile. Do not reuse a developer's DPAPI
    profile for the service account.
-4. Configure the independent approval verifier and signature thumbprint allowlist.
+4. Configure the independent approval verifier, GitLab SVN receipt verifier, and signature thumbprint allowlist.
 5. Grant the minimum target permissions and record the runtime SID plus ACL evidence.
 6. Run production preflight and resolve every missing capability. Keep all automation
    switches disabled.
@@ -303,5 +333,5 @@ Retain these non-secret artifacts for audit:
 - Approval receipt and frozen Manifest-S/Manifest-R digests.
 - Stage deployment, verification, rollback, and rollback-verification receipts.
 - Production readback receipt bound to the authorized Manifest-R digest.
-- Final report digest, deterministic Message-ID, SMTP accepted/refused result, and exact
-  authenticated IMAP mailbox/UID readback receipt.
+- Final report digest, deterministic Message-ID, SMTP accepted/refused result, and exact authenticated IMAP mailbox/UID readback receipt.
+- SVN handoff, immutable GitLab locator, and verified `CLEAN` or `BLOCKED` receipt bound to Manifest-R.

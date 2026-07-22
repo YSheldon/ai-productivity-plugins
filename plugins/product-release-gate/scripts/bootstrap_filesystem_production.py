@@ -145,7 +145,10 @@ def _resolve_target(value: str | Path, label: str) -> Path:
     if normalized == Path(normalized.anchor):
         raise BootstrapError(f"{label} cannot be a filesystem root")
     _reject_redirected_path(normalized, label)
-    return normalized
+    try:
+        return normalized.resolve(strict=False)
+    except OSError as exc:
+        raise BootstrapError(f"{label} cannot be resolved safely") from exc
 
 
 def _resolve_output(value: str | Path, label: str) -> Path:
@@ -153,7 +156,10 @@ def _resolve_output(value: str | Path, label: str) -> Path:
     if normalized == Path(normalized.anchor):
         raise BootstrapError(f"{label} cannot be a filesystem root")
     _reject_redirected_path(normalized, label)
-    return normalized
+    try:
+        return normalized.resolve(strict=False)
+    except OSError as exc:
+        raise BootstrapError(f"{label} cannot be resolved safely") from exc
 
 
 def _embedded_secret_paths(

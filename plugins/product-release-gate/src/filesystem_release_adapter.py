@@ -220,8 +220,12 @@ def _resolve_state_path(root: Path, relative: str, label: str) -> Path:
     candidate = Path(str(relative or ""))
     if candidate.is_absolute():
         raise AdapterError(f"{label} must be relative to the target state root")
-    resolved = (root / candidate).resolve(strict=False)
-    if not _is_relative_to(resolved, root):
+    try:
+        resolved_root = root.resolve(strict=False)
+        resolved = (resolved_root / candidate).resolve(strict=False)
+    except OSError as exc:
+        raise AdapterError(f"{label} cannot be resolved safely") from exc
+    if not _is_relative_to(resolved, resolved_root):
         raise AdapterError(f"{label} escapes the target state root")
     return resolved
 

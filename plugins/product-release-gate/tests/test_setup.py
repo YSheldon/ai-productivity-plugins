@@ -194,14 +194,16 @@ class SetupTests(unittest.TestCase):
         config = json.loads(self.config_path.read_text(encoding="utf-8"))
         workflow = config["production"]["approval_workflow"]
         self.assertEqual("unified_multi_role", workflow["mode"])
-        self.assertEqual(str(self.lock_path), workflow["dependency_lock"])
+        self.assertEqual(
+            str(self.lock_path.resolve()), workflow["dependency_lock"]
+        )
         self.assertEqual(
             hashlib.sha256(self.lock_path.read_bytes()).hexdigest(),
             workflow["dependency_lock_sha256"],
         )
         self.assertEqual(
             str(
-                self.repo_root
+                self.repo_root.resolve()
                 / "plugins/release-approval-verifier/src/verifier_product_gate_bridge.py"
             ),
             workflow["verify_command"][1],

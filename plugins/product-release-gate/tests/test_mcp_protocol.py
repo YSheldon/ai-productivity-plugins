@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+
 
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
@@ -16,7 +18,6 @@ from release_gate_credentials import (
     current_runtime_principal,
     runtime_principal_sha256,
 )
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
 
 class McpProtocolTests(unittest.TestCase):

@@ -1,7 +1,11 @@
 # GitLab Codex Plugin
 
 This plugin exposes a local MCP server for GitLab REST API workflows. Version
-`0.2.9` adds an explicit, policy-bound `access_level`: production stays
+`0.3.0` adds a one-time Windows Credential Manager bootstrap for the Runner
+manager token: the token is never accepted in command arguments or persisted
+in JSON, is supplied only while the administration CLI invokes GitLab, and is
+cleared automatically after a verified `ready` result. Version `0.2.9` adds an
+explicit, policy-bound `access_level`: production stays
 `ref_protected` by default, while an isolated test Runner must explicitly use
 `not_protected` and is rejected if it carries a protected live-gate tag. Version
 `0.2.8` grants the dedicated NetworkService Runner only `SERVICE_QUERY_CONFIG`
@@ -59,10 +63,38 @@ py -3 .\plugins\gitlab\scripts\runner_admin_cli.py provision --policy-name produ
 py -3 .\plugins\gitlab\scripts\runner_admin_cli.py resume --policy-name product-material-gate
 ```
 
-The CLI accepts only `policy_name` and an optional GitLab profile. It invokes
-the same reviewed handlers as the MCP tools, never accepts a token, executable,
-path, service account, or command, and exits successfully only when the final
-result is `ready=true`.
+The `provision` and `resume` actions accept only `policy_name` and an optional
+GitLab profile. They invoke the same reviewed handlers as the MCP tools, never
+accept a token, executable, path, service account, or command, and exit
+successfully only when the final result is `ready=true`.
+
+### One-Time Runner Manager Token
+
+For the default environment profile, an elevated administrator can avoid a
+long-lived `GITLAB_TOKEN` environment variable by storing a short-lived,
+least-privilege Runner manager token in Windows Credential Manager:
+
+```powershell
+py -3 .\plugins\gitlab\scripts\runner_admin_cli.py token-set --policy-name product-material-gate
+py -3 .\plugins\gitlab\scripts\runner_admin_cli.py provision --policy-name product-material-gate
+```
+
+`token-set` uses hidden console input and records only the per-policy target
+`CodexGitLab/runner-manager/v1/<policy_name>` for the same elevated Windows
+account. It never prints the token or puts it in an argument, JSON file,
+process child environment, Runner config, journal, or receipt. During
+`provision` or `resume`, the CLI reads it only for the API call path, derives
+`GITLAB_URL` from the protected policy if necessary, and removes it after
+`ready=true`. A non-ready result retains it only for the same policy's `resume`;
+`token-clear --confirm-clear` removes it explicitly. If automatic cleanup
+fails, the CLI exits nonzero with `security_ready=false`; do not accept that
+Runner for production use until the credential is cleared.
+
+Use an access token scoped for the target project with GitLab's
+`create_runner` and `manage_runner` permissions and the required project role.
+For advanced named profiles or custom token environment names, keep using the
+configured `token_env`; the managed-token fallback intentionally does not
+override that configuration.
 
 `gitlab_provision_windows_project_runner` accepts only `policy_name` and an
 optional GitLab profile. It never accepts an executable, config path, working

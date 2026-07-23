@@ -42,8 +42,23 @@ Provision and resume require an elevated Windows process. If the MCP host is
 not elevated, use `scripts/runner_admin_cli.py provision|resume --policy-name
 <name>` from an elevated terminal. Do not add secrets or path overrides.
 
-## Windows Runner Policy
+For the default environment profile, use the CLI's one-time Windows Credential
+Manager flow instead of placing a Runner manager token in a persistent
+environment variable:
 
+```powershell
+py -3 .\plugins\gitlab\scripts\runner_admin_cli.py token-set --policy-name <name>
+py -3 .\plugins\gitlab\scripts\runner_admin_cli.py provision --policy-name <name>
+```
+
+`token-set` has hidden input and stores only a per-policy credential target.
+The token is exposed only to the current elevated CLI process while it performs
+the policy-bound GitLab API lifecycle, is never passed to the Runner child, and
+is deleted after a verified ready state. A non-ready result retains it only for
+the same policy's `resume`; `token-clear --confirm-clear` removes it. A result
+with `security_ready=false` is not acceptable for production use.
+
+## Windows Runner Policy
 The protected policy binds the GitLab origin, project, Runner name, exact tags,
 signed Program Files binary and SHA256, optional dedicated service name,
 fixed `NetworkService` account, and timeout. Config, journal, and working

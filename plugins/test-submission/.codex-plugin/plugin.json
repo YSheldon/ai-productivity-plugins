@@ -1,7 +1,7 @@
 {
   "name": "test-submission",
-  "version": "0.1.3",
-  "description": "Collect one product-material submission, preview it through the locked product-release-gate core, and send a fail-closed submission request through IMAP/SMTP.",
+  "version": "0.1.4",
+  "description": "Collect one local-artifact or fixed-revision SVN product-material submission and send a fail-closed request through IMAP/SMTP.",
   "author": {
     "name": "Sheldon"
   },
@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Test Submission",
     "shortDescription": "Four-surface test-submission runtime",
-    "longDescription": "Use one credential-free configuration and one controller across MCP, Skill, standalone CLI, and an unattended retry scheduler. Every submission must explicitly choose a module and produces a signed machine block for the gate service.",
+    "longDescription": "Use one credential-free configuration and one controller across MCP, Skill, standalone CLI, and an unattended retry scheduler. Every submission explicitly chooses a module and produces a signed machine block; local artifacts are previewed locally, while fixed-revision SVN sources defer material evidence to the protected GitLab CI gate.",
     "developerName": "Sheldon",
     "category": "Developer Tools",
     "capabilities": [
@@ -30,9 +30,9 @@
     ],
     "defaultPrompt": [
       "Run test submission setup with zero manual JSON editing.",
-      "Submit one explicit kernel, client, or server package to the submission gate mailbox.",
+      "Submit one explicit local package or fixed-revision SVN source for a kernel, client, or server module to the submission gate mailbox.",
       "Retry any pending submission mail and show local status.",
-      "Diagnose dependency lock, mail account, and shared gate preview readiness."
+      "Diagnose dependency lock, mail account, local preview, and SVN deferred-evidence readiness."
     ],
     "brandColor": "#0F766E",
     "composerIcon": "./assets/test-submission.svg",

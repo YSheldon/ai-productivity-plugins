@@ -15,5 +15,6 @@ Use this plugin when a developer needs to create one `【提测】` request with
 - Codex is optional.
 - Every submit must explicitly set `module` to `kernel`, `client`, or `server`.
 - The controller writes one signed machine block and one durable local event before send completion is claimed.
+- For an SVN submission, provide `retrieval_method=svn`, `source_locator` (or `repository_path`), a fixed numeric `revision`, and `version`; omit `artifacts`. The protected GitLab CI gate retrieves the source and generates file, hash, signature, and scan evidence.
 
 See `references/configuration.md` for required config fields and `references/automation-contract.md` for unattended retry behavior.

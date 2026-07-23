@@ -37,6 +37,28 @@ def test_duplicate_mailbox_configs_share_host_coordination_lock(tmp_path: Path, 
     assert result == {"status": "RUN_ALREADY_ACTIVE", "busy": True, "scope": "host"}
 
 
+def test_unowned_residual_coordination_lock_does_not_block_run_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    coordination_root = tmp_path / "coordination"
+    monkeypatch.setenv("RELEASE_GATE_COORDINATION_DIR", str(coordination_root))
+    controller = ReleaseGateController(
+        _config(tmp_path / "release-gate"),
+        mail_gateway=FakeMailGateway([]),
+        product_gate=FakeProductGate(),
+    )
+    residual = controller.coordination_lock_path()
+    residual.parent.mkdir(parents=True, exist_ok=True)
+    residual.touch()
+
+    result = controller.run_once()
+
+    assert result["status"] == "ready"
+    assert result["processed"] == 0
+    assert result["blocked"] == 0
+
+
 def test_host_coordination_lock_is_default_even_for_distinct_mailboxes(tmp_path: Path, monkeypatch) -> None:
     coordination_root = tmp_path / "coordination"
     monkeypatch.setenv("RELEASE_GATE_COORDINATION_DIR", str(coordination_root))

@@ -67,6 +67,24 @@ def _sha256_digest(raw: bytes) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
+def _approval_binding_sha256(
+    *,
+    event_id: str,
+    request_sha256: str,
+    pre_release_report_sha256: str,
+    manifest_sha256: str,
+    source_message_id: str,
+) -> str:
+    payload = {
+        "event_id": event_id,
+        "manifest_sha256": manifest_sha256,
+        "pre_release_report_sha256": pre_release_report_sha256,
+        "request_sha256": request_sha256,
+        "source_message_id": source_message_id,
+    }
+    return _sha256_digest(_canonical_bytes(payload, ensure_ascii=True))
+
+
 def _require_digest(value: Any, label: str) -> str:
     normalized = str(value or "").strip().lower()
     if _DIGEST_PATTERN.fullmatch(normalized) is None:
@@ -165,8 +183,42 @@ def _validate_handoff(
         or handoff.get("request_sha256") != request_sha256
     ):
         raise ReceiptVerificationError("handoff request digest does not match")
+    source_required = {
+        "approval_binding_sha256",
+        "event_id",
+        "manifest_sha256",
+        "pre_release_report_sha256",
+        "pre_release_status",
+        "source_message_id",
+    }
+    if set(source) != source_required or source.get("pre_release_status") != "PASS":
+        raise ReceiptVerificationError("handoff approval evidence is invalid")
+    if source.get("event_id") != event_id:
+        raise ReceiptVerificationError("handoff approval event does not match")
     if source.get("manifest_sha256") != manifest_r_digest:
         raise ReceiptVerificationError("handoff Manifest-R digest does not match")
+    report_digest = _require_digest(
+        source.get("pre_release_report_sha256"), "handoff pre-release report"
+    )
+    binding_digest = _require_digest(
+        source.get("approval_binding_sha256"), "handoff approval binding"
+    )
+    source_message_id = source.get("source_message_id")
+    if (
+        not isinstance(source_message_id, str)
+        or not source_message_id.strip()
+        or any(character in source_message_id for character in "\r\n")
+    ):
+        raise ReceiptVerificationError("handoff source message is invalid")
+    expected_binding = _approval_binding_sha256(
+        event_id=event_id,
+        request_sha256=request_sha256,
+        pre_release_report_sha256=report_digest,
+        manifest_sha256=manifest_r_digest,
+        source_message_id=source_message_id,
+    )
+    if binding_digest != expected_binding:
+        raise ReceiptVerificationError("handoff approval binding does not match")
 
 
 def _validate_api_base(api_url: str, allowed_host: str) -> str:

@@ -74,7 +74,7 @@ class WorkflowPlugin:
 WORKFLOW_PLUGINS = (
     WorkflowPlugin(
         name="release-approval",
-        version="0.2.4",
+        version="0.2.6",
         mcp_script="release_approval_mcp.py",
         mcp_server_name="release-approval",
         mcp_common_tools=(
@@ -94,7 +94,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="release-approval-verifier",
-        version="0.2.4",
+        version="0.2.6",
         mcp_script="release_approval_verifier_mcp.py",
         mcp_server_name="release-approval-verifier",
         mcp_common_tools=(
@@ -114,7 +114,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="product-release-gate",
-        version="0.4.1",
+        version="0.5.0",
         mcp_script="release_gate_mcp.py",
         mcp_server_name="product-release-gate",
         mcp_common_tools=(
@@ -134,7 +134,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="test-submission",
-        version="0.1.3",
+        version="0.1.4",
         mcp_script="test_submission_mcp.py",
         mcp_server_name="test-submission",
         mcp_common_tools=(
@@ -194,7 +194,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="release-gate",
-        version="0.1.4",
+        version="0.1.5",
         mcp_script="release_gate_mcp.py",
         mcp_server_name="release-gate",
         mcp_common_tools=(
@@ -779,7 +779,11 @@ def test_role_plugin_config_contracts_are_pinned() -> None:
     test_submission_readme = _source(ROOT / "plugins" / "test-submission" / "README.md").casefold()
     assert "no default module" in test_submission_readme
     test_submission_mcp_source = _source(ROOT / "plugins" / "test-submission" / "src" / "test_submission_mcp.py")
-    assert '"required": ["task_name", "module", "artifacts"]' in test_submission_mcp_source
+    assert '"required": ["task_name", "module"]' in test_submission_mcp_source
+    assert '"retrieval_method": {' in test_submission_mcp_source
+    assert '"enum": ["local", "unc", "https", "gitlab-package", "ssh", "svn"]' in test_submission_mcp_source
+    assert '"required": ["revision", "version"]' in test_submission_mcp_source
+    assert '"else": {"required": ["artifacts"]}' in test_submission_mcp_source
 
     submission_gate_config = json.loads(
         _source(ROOT / "plugins" / "submission-gate" / "config" / "config.example.json")
@@ -916,7 +920,7 @@ def test_examples_and_contracts_contain_no_credentials_or_private_production_add
             assert not re.search(r"\bbearer\s+[a-z0-9._~-]{12,}", lowered), (
                 f"bearer credential in {fixture}:{value_path}"
             )
-            if any(fragment in key for fragment in SECRET_KEY_FRAGMENTS) and not key.endswith(("_env", "_path", "_file", "_dir")):
+            if any(fragment in key for fragment in SECRET_KEY_FRAGMENTS) and not key.endswith(("_env", "_path", "_file", "_dir", "_target")):
                 assert not value.strip(), f"credential-like value in {fixture}:{value_path}"
             for email in re.findall(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@([A-Za-z0-9.-]+)", value):
                 assert email.casefold() == "example.com", (

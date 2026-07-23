@@ -58,6 +58,19 @@ def _handoff() -> tuple[dict, str, str]:
         _canonical(request, ensure_ascii=False)
     ).hexdigest()
     manifest_digest = "sha256:" + "3" * 64
+    report_digest = "sha256:" + "4" * 64
+    source_message_id = "<release@example.test>"
+    approval_binding = "sha256:" + hashlib.sha256(
+        _canonical(
+            {
+                "event_id": request["request_id"],
+                "manifest_sha256": manifest_digest,
+                "pre_release_report_sha256": report_digest,
+                "request_sha256": request_digest,
+                "source_message_id": source_message_id,
+            }
+        )
+    ).hexdigest()
     return (
         {
             "schema": "ProductMaterialWorkflow/v1",
@@ -67,9 +80,11 @@ def _handoff() -> tuple[dict, str, str]:
             "request_sha256": request_digest,
             "source": {
                 "pre_release_status": "PASS",
-                "pre_release_report_sha256": "sha256:" + "4" * 64,
+                "pre_release_report_sha256": report_digest,
                 "manifest_sha256": manifest_digest,
-                "source_message_id": "<release@example.test>",
+                "source_message_id": source_message_id,
+                "event_id": request["request_id"],
+                "approval_binding_sha256": approval_binding,
             },
             "created_at": "2026-07-22T02:00:00Z",
         },
@@ -294,6 +309,32 @@ class GitLabSvnGateVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(
             VERIFIER.ReceiptVerificationError,
             "handoff request digest",
+        ):
+            VERIFIER.verify_gitlab_receipt(
+                locator={
+                    "schema": "ProductMaterialGatePipelineLocator/v1",
+                    "project_id": 59,
+                    "pipeline_id": 1001,
+                    "job_id": 2001,
+                },
+                handoff=handoff,
+                event_id="release-20260722-001",
+                request_sha256=request_digest,
+                manifest_r_digest=manifest_digest,
+                expected_project_id=59,
+                expected_ref="main",
+                fetch_json=lambda path: responses[path],
+                fetch_bytes=lambda _path: archive,
+            )
+
+        handoff, request_digest, manifest_digest = _handoff()
+        responses, archive = self._responses(
+            request_digest=request_digest,
+        )
+        handoff["source"]["approval_binding_sha256"] = "sha256:" + "f" * 64
+        with self.assertRaisesRegex(
+            VERIFIER.ReceiptVerificationError,
+            "approval binding",
         ):
             VERIFIER.verify_gitlab_receipt(
                 locator={

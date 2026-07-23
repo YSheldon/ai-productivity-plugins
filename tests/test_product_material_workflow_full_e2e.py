@@ -17,7 +17,11 @@ if str(PLUGIN_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from release_gate_core import GateError  # noqa: E402
+from release_gate_credentials import runtime_principal_sha256  # noqa: E402
 from release_gate_production import ProductionReleaseController  # noqa: E402
+
+
+RUNTIME_PRINCIPAL = "windows-sid:S-1-5-21-full-e2e"
 
 
 @dataclass(frozen=True)
@@ -326,6 +330,14 @@ def _write_config(
         json.dumps(
             {
                 "storage_dir": str(root / "events"),
+                "runtime": {
+                    "identity_binding": {
+                        "required": True,
+                        "principal_sha256": runtime_principal_sha256(
+                            RUNTIME_PRINCIPAL
+                        ),
+                    }
+                },
                 "policy": {
                     "allowed_extensions": [".bin"],
                     "require_source_ref": True,
@@ -472,7 +484,8 @@ def _controller(tmp_path: Path) -> LockedWorkflowContext:
                 verifier_bridge=verifier_bridge,
                 target_paths=target_paths,
             )
-        )
+        ),
+        runtime_principal_provider=lambda: RUNTIME_PRINCIPAL,
     )
     return LockedWorkflowContext(
         controller=controller,
@@ -510,6 +523,18 @@ def _make_release_ready(
     controller.build_final_release(event_id, str(artifact_path.parent / "final"))
     release_ready = controller.run_release_gate(event_id)
     assert release_ready["status"] == "RELEASE_READY"
+    # The submission fixture is deliberately offline and unsigned. Deployment
+    # still has to exercise the complete production preflight contract.
+    controller.config["policy"]["require_signature"] = True
+    controller.config["policy"]["require_cloud_scan"] = True
+    controller.config.setdefault("signature", {})["expected_thumbprints"] = [
+        "A" * 40
+    ]
+    controller.config["cloud_scan"]["command"] = [
+        sys.executable,
+        "-c",
+        "print('{\"verdict\":\"CLEAN\"}')",
+    ]
     return controller.get_event(event_id)["event"]
 
 

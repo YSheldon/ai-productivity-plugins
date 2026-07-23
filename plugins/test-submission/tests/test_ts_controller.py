@@ -41,6 +41,15 @@ class FakePreviewBridge:
         return {"submission": {"manifest_s": {"manifest_digest": "sha256:" + "1" * 64}}, "kwargs": kwargs}
 
 
+class ExplodingPreviewBridge:
+    def preflight(self) -> dict[str, object]:
+        return {"ready": False}
+
+    def preview_submission(self, **kwargs):
+        del kwargs
+        raise AssertionError("SVN submissions must defer local Manifest-S creation to GitLab CI")
+
+
 class FlakyMailGateway(FakeMailGateway):
     def __init__(self) -> None:
         super().__init__()
@@ -100,6 +109,92 @@ def test_submit_builds_signed_request_and_persists_event(tmp_path: Path) -> None
     assert controller.mail_gateway.sent[0]["headers"]["X-RD-Submitter-Email"] == "submitter@example.com"
     assert "提测人邮箱：submitter@example.com" in controller.mail_gateway.sent[0]["text"]
     assert "hmac_sha256" in event["request"]
+
+
+def test_svn_submission_defers_material_evidence_to_gitlab_ci(tmp_path: Path) -> None:
+    module = _load_module()
+    config_path = tmp_path / "config.json"
+    config = {
+        **_base_config(tmp_path),
+        "svn_mandatory_checks": [
+            "provenance_locator_present",
+            "fixed_revision_present",
+            "trusted_retrieval_succeeded",
+            "retrieved_nonempty",
+            "audit_recorded",
+        ],
+    }
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    mail = FakeMailGateway()
+    controller = module.TestSubmissionController(
+        config_path,
+        config=config,
+        mail_gateway=mail,
+        product_gate=ExplodingPreviewBridge(),
+        now_fn=lambda: datetime(2026, 7, 22, 9, 30, tzinfo=timezone.utc),
+        environ={"TEST_SUBMISSION_HMAC_KEY": "test-key"},
+    )
+
+    result = controller.submit(
+        {
+            "event_id": "svn-event-1",
+            "round_id": 1,
+            "task_name": "TASK-SVN-1",
+            "module": "client",
+            "retrieval_method": "svn",
+            "source_locator": "https://svn.example.test/repos/rd/client",
+            "revision": "12345",
+            "version": "8.2.0",
+            "retrieval_instructions": "GitLab CI retrieves this exact revision.",
+            "change_summary": "defer material inspection to the protected CI gate",
+            "artifacts": [],
+        }
+    )
+
+    assert result["status"] == "SUBMITTED"
+    event = controller.get_event(event_id="svn-event-1", round_id=1)["event"]
+    request = event["request"]
+    assert request["retrieval_method"] == "svn"
+    assert request["source_locator"] == "https://svn.example.test/repos/rd/client"
+    assert request["revision"] == "12345"
+    assert request["version"] == "8.2.0"
+    assert request["artifacts"] == []
+    assert request["preview_manifest_digest"] == ""
+    assert request["material_evidence_state"] == "DEFERRED_TO_GITLAB_CI"
+    assert request["effective_checks"] == config["svn_mandatory_checks"]
+    assert "X-RD-Manifest-Digest" not in mail.sent[0]["headers"]
+    assert "SVN：https://svn.example.test/repos/rd/client@12345" in mail.sent[0]["text"]
+    assert "物料证据：由受保护 GitLab CI 生成" in mail.sent[0]["text"]
+
+
+def test_preflight_allows_svn_without_a_local_preview_gate(tmp_path: Path) -> None:
+    module = _load_module()
+    config_path = tmp_path / "config.json"
+    config = {
+        **_base_config(tmp_path),
+        "svn_mandatory_checks": [
+            "provenance_locator_present",
+            "fixed_revision_present",
+            "trusted_retrieval_succeeded",
+            "retrieved_nonempty",
+            "audit_recorded",
+        ],
+    }
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    controller = module.TestSubmissionController(
+        config_path,
+        config=config,
+        mail_gateway=FakeMailGateway(),
+        product_gate=ExplodingPreviewBridge(),
+        environ={"TEST_SUBMISSION_HMAC_KEY": "test-key"},
+    )
+
+    preflight = controller.preflight()
+
+    assert preflight["ready"] is True
+    assert preflight["svn_ready"] is True
+    assert preflight["local_ready"] is False
+    assert preflight["available_retrieval_methods"] == ["svn"]
 
 
 def test_extract_machine_block_requires_one_signed_section() -> None:

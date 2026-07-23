@@ -1,6 +1,6 @@
 {
   "name": "gitlab",
-  "version": "0.2.8",
+  "version": "0.3.0",
   "description": "Operate GitLab workflows and securely provision a dedicated Windows project Runner from Codex.",
   "author": {
     "name": "Sheldon"
@@ -19,7 +19,7 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "GitLab",
-    "shortDescription": "Operate GitLab and provision a protected Windows Runner",
+    "shortDescription": "Operate GitLab and provision isolated Windows Runners",
     "longDescription": "Use GitLab from Codex through a local MCP server backed by the GitLab REST API. It supports project discovery, merge request and issue inspection, discussions, CI pipeline lookup, comments, approvals, merge actions, decoded API calls, and policy-bound atomic provisioning of a dedicated Windows project Runner without exposing its one-time authentication token.",
     "developerName": "Sheldon",
     "category": "Developer Tools",

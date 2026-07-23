@@ -24,6 +24,14 @@ _CANONICAL_MANDATORY = {
     "client": ["artifacts_present", "hashes_match", "version_present", "signature_present", "cloud_scan_required"],
     "server": ["artifacts_present", "hashes_match", "source_revision_present", "package_digest_present", "cloud_scan_required"],
 }
+_SVN_CANONICAL_MANDATORY = [
+    "provenance_locator_present",
+    "fixed_revision_present",
+    "trusted_retrieval_succeeded",
+    "retrieved_nonempty",
+    "audit_recorded",
+]
+_SVN_REVISION_RE = re.compile(r"^[0-9]+$")
 _MACHINE_BEGIN = "-----BEGIN RD TEST SUBMISSION BLOCK-----"
 _MACHINE_END = "-----END RD TEST SUBMISSION BLOCK-----"
 _MAIL_PLUGIN_ROOT = Path("plugins/imap-smtp-mail")
@@ -99,6 +107,7 @@ def default_config() -> dict[str, Any]:
                 "cloud_scan_required",
             ],
         },
+        "svn_mandatory_checks": list(_SVN_CANONICAL_MANDATORY),
         "product_gate_preview_config": str((root / "product-release-gate.preview.json").resolve(strict=False)),
         "dependency_lock": str((root / "dependency-lock.test-submission.json").resolve(strict=False)),
         "dependency_lock_sha256": "",
@@ -128,9 +137,24 @@ def _configured_mandatory_map(config: Mapping[str, Any]) -> dict[str, list[str]]
     return normalized
 
 
+def _configured_svn_mandatory(config: Mapping[str, Any]) -> list[str]:
+    raw = config.get("svn_mandatory_checks") or []
+    if not isinstance(raw, list):
+        raise SubmissionError("CONFIG_ERROR", "svn_mandatory_checks must be an array")
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
 def _missing_canonical_mandatory(config: Mapping[str, Any]) -> dict[str, list[str]]:
     configured = _configured_mandatory_map(config)
-    return {module: [item for item in _CANONICAL_MANDATORY[module] if item not in configured[module]] for module in _MODULES if any(item not in configured[module] for item in _CANONICAL_MANDATORY[module])}
+    missing = {
+        module: [item for item in _CANONICAL_MANDATORY[module] if item not in configured[module]]
+        for module in _MODULES
+        if any(item not in configured[module] for item in _CANONICAL_MANDATORY[module])
+    }
+    svn_missing = [item for item in _SVN_CANONICAL_MANDATORY if item not in _configured_svn_mandatory(config)]
+    if svn_missing:
+        missing["svn"] = svn_missing
+    return missing
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -394,15 +418,31 @@ class TestSubmissionController:
             if isinstance(account, dict) and account.get("name") == profile
         ]
         key_ready = bool(str(self.environ.get("TEST_SUBMISSION_HMAC_KEY") or "").strip())
-        gate_ready = self.product_gate.preflight()
+        try:
+            gate_ready = self.product_gate.preflight()
+        except Exception as exc:
+            gate_ready = {"ready": False, "error": str(exc)}
         missing_canonical = _missing_canonical_mandatory(self.config)
         gate_ready_flag = bool(gate_ready.get("ready", False)) if isinstance(gate_ready, Mapping) else False
+        local_missing = {module: values for module, values in missing_canonical.items() if module in _MODULES}
+        svn_missing = list(missing_canonical.get("svn") or [])
+        shared_ready = bool(matched) and key_ready
+        local_ready = shared_ready and gate_ready_flag and not local_missing
+        svn_ready = shared_ready and not svn_missing
+        available_retrieval_methods: list[str] = []
+        if local_ready:
+            available_retrieval_methods.extend(["local", "unc", "https", "gitlab-package", "ssh"])
+        if svn_ready:
+            available_retrieval_methods.append("svn")
         return {
-            "ready": bool(matched) and key_ready and gate_ready_flag and not missing_canonical,
+            "ready": bool(available_retrieval_methods),
             "mail_account_ready": bool(matched),
             "hmac_key_ready": key_ready,
             "product_gate_preview": gate_ready,
             "missing_canonical_mandatory": missing_canonical,
+            "local_ready": local_ready,
+            "svn_ready": svn_ready,
+            "available_retrieval_methods": available_retrieval_methods,
             "config_path": str(self.config_path),
         }
 
@@ -413,21 +453,56 @@ class TestSubmissionController:
         task_name = str(payload.get("task_name") or "").strip()
         if not task_name:
             raise SubmissionError("INVALID_ARGUMENT", "task_name is required")
-        artifacts = payload.get("artifacts")
-        if not isinstance(artifacts, list) or not artifacts:
-            raise SubmissionError("INVALID_ARGUMENT", "artifacts must be a non-empty array")
+        retrieval_method = str(payload.get("retrieval_method") or "local").strip().lower()
+        if retrieval_method not in {"local", "unc", "https", "gitlab-package", "ssh", "svn"}:
+            raise SubmissionError("INVALID_ARGUMENT", "retrieval_method is unsupported")
         round_id = int(payload.get("round_id") or 1)
         event_id = _ensure_event_id(str(payload.get("event_id") or f"evt-{uuid.uuid4().hex[:12]}"))
         created_at = _now_iso(self.now_fn)
-        normalized = [self._normalize_artifact(item) for item in artifacts]
-        preview = self.product_gate.preview_submission(
-            event_id=event_id,
-            task_id=task_name,
-            artifacts=normalized,
-            source_ref=str(payload.get("source_ref") or normalized[0]["source_ref"]),
-            round_number=round_id,
+        if retrieval_method == "svn":
+            artifacts = payload.get("artifacts", [])
+            if not isinstance(artifacts, list) or artifacts:
+                raise SubmissionError(
+                    "INVALID_ARGUMENT",
+                    "svn submissions use source_locator and must not declare local artifacts",
+                )
+            source_locator = str(payload.get("source_locator") or payload.get("repository_path") or "").strip()
+            revision = str(payload.get("revision") or "").strip()
+            version = str(payload.get("version") or "").strip()
+            if not source_locator:
+                raise SubmissionError("INVALID_ARGUMENT", "svn source_locator is required")
+            if not _SVN_REVISION_RE.fullmatch(revision):
+                raise SubmissionError("INVALID_ARGUMENT", "svn revision must be a fixed numeric revision")
+            if not version:
+                raise SubmissionError("INVALID_ARGUMENT", "svn version is required")
+            normalized: list[dict[str, Any]] = []
+            source_ref = str(payload.get("source_ref") or f"{source_locator}@{revision}").strip()
+            preview_manifest_digest = ""
+            material_evidence_state = "DEFERRED_TO_GITLAB_CI"
+        else:
+            artifacts = payload.get("artifacts")
+            if not isinstance(artifacts, list) or not artifacts:
+                raise SubmissionError("INVALID_ARGUMENT", "artifacts must be a non-empty array")
+            normalized = [self._normalize_artifact(item) for item in artifacts]
+            preview = self.product_gate.preview_submission(
+                event_id=event_id,
+                task_id=task_name,
+                artifacts=normalized,
+                source_ref=str(payload.get("source_ref") or normalized[0]["source_ref"]),
+                round_number=round_id,
+            )
+            source_ref = str(payload.get("source_ref") or normalized[0]["source_ref"])
+            preview_manifest_digest = (
+                (((preview.get("submission") or {}).get("manifest_s")) or {}).get("manifest_digest")
+                or preview.get("manifest_digest")
+                or ""
+            )
+            material_evidence_state = "LOCAL_MANIFEST_S_PREVIEWED"
+        effective_checks = self._effective_checks(
+            module,
+            payload.get("enabled_optional_checks"),
+            retrieval_method=retrieval_method,
         )
-        effective_checks = self._effective_checks(module, payload.get("enabled_optional_checks"))
         if not effective_checks:
             raise SubmissionError("GATE_POLICY_INVALID", "effective submission checks cannot be empty")
         request = {
@@ -445,12 +520,20 @@ class TestSubmissionController:
             "submitter_email": self.config["mail_account"]["email"],
             "sender_email": self.config["mail_account"]["email"],
             "artifacts": normalized,
-            "preview_manifest_digest": (
-                (((preview.get("submission") or {}).get("manifest_s")) or {}).get("manifest_digest")
-                or preview.get("manifest_digest")
-                or ""
-            ),
+            "preview_manifest_digest": preview_manifest_digest,
+            "material_evidence_state": material_evidence_state,
         }
+        if retrieval_method == "svn":
+            request.update(
+                {
+                    "retrieval_method": "svn",
+                    "source_locator": source_locator,
+                    "revision": revision,
+                    "version": version,
+                    "retrieval_instructions": str(payload.get("retrieval_instructions") or "").strip(),
+                    "source_ref": source_ref,
+                }
+            )
         request_digest = hashlib.sha256(canonical_json(request).encode("utf-8")).hexdigest()
         block = dict(request)
         block["contract"] = "rd.test-submission.v1"
@@ -469,16 +552,7 @@ class TestSubmissionController:
                 "text": body_text,
                 "dry_run": False,
                 "message_id": _message_id(event_id, round_id),
-                "headers": {
-                    "X-RD-Contract": block["contract"],
-                    "X-RD-Event-Id": event_id,
-                    "X-RD-Round-Id": str(round_id),
-                    "X-RD-Task": task_name,
-                    "X-RD-Module": module,
-                    "X-RD-Request-Digest": request_digest,
-                    "X-RD-Submitter-Email": block["submitter_email"],
-                    "X-RD-Manifest-Digest": block["preview_manifest_digest"],
-                },
+                "headers": self._mail_headers(block),
             }
         )
         refused = mail_result.get("refused") or {}
@@ -530,16 +604,7 @@ class TestSubmissionController:
                         "text": self._render_body(event["request"]),
                         "dry_run": False,
                         "message_id": event["mail"]["message_id"],
-                        "headers": {
-                            "X-RD-Contract": event["request"]["contract"],
-                            "X-RD-Event-Id": event["event_id"],
-                            "X-RD-Round-Id": str(event["round_id"]),
-                            "X-RD-Task": event["request"]["task_name"],
-                            "X-RD-Module": event["module"],
-                            "X-RD-Request-Digest": event["request"]["request_digest"],
-                            "X-RD-Submitter-Email": event["request"]["submitter_email"],
-                            "X-RD-Manifest-Digest": event["request"]["preview_manifest_digest"],
-                        },
+                        "headers": self._mail_headers(event["request"]),
                     }
                 )
                 if not (result.get("refused") or {}):
@@ -569,14 +634,22 @@ class TestSubmissionController:
     def get_event(self, *, event_id: str, round_id: int) -> dict[str, Any]:
         return {"event": self._read_event(event_id, round_id)}
 
-    def _effective_checks(self, module: str, optional: Any) -> list[str]:
-        configured = _configured_mandatory_map(self.config)
-        missing = [item for item in _CANONICAL_MANDATORY[module] if item not in configured[module]]
+    def _effective_checks(self, module: str, optional: Any, *, retrieval_method: str) -> list[str]:
+        if retrieval_method == "svn":
+            canonical = _SVN_CANONICAL_MANDATORY
+            configured = _configured_svn_mandatory(self.config)
+            policy_label = "svn"
+        else:
+            configured_by_module = _configured_mandatory_map(self.config)
+            canonical = _CANONICAL_MANDATORY[module]
+            configured = configured_by_module[module]
+            policy_label = module
+        missing = [item for item in canonical if item not in configured]
         if missing:
-            raise SubmissionError("GATE_POLICY_INVALID", f"mandatory checks drifted for {module}: {", ".join(missing)}")
+            raise SubmissionError("GATE_POLICY_INVALID", f"mandatory checks drifted for {policy_label}: {", ".join(missing)}")
         enabled_optional = [str(item).strip() for item in list(optional or []) if str(item).strip()]
         seen: list[str] = []
-        for item in _CANONICAL_MANDATORY[module] + configured[module] + enabled_optional:
+        for item in canonical + configured + enabled_optional:
             if item and item not in seen:
                 seen.append(item)
         return seen
@@ -607,6 +680,22 @@ class TestSubmissionController:
             "version": str(payload.get("version") or ""),
         }
 
+    @staticmethod
+    def _mail_headers(block: Mapping[str, Any]) -> dict[str, str]:
+        headers = {
+            "X-RD-Contract": str(block["contract"]),
+            "X-RD-Event-Id": str(block["event_id"]),
+            "X-RD-Round-Id": str(block["round_id"]),
+            "X-RD-Task": str(block["task_name"]),
+            "X-RD-Module": str(block["module"]),
+            "X-RD-Request-Digest": str(block["request_digest"]),
+            "X-RD-Submitter-Email": str(block["submitter_email"]),
+        }
+        manifest_digest = str(block.get("preview_manifest_digest") or "").strip()
+        if manifest_digest:
+            headers["X-RD-Manifest-Digest"] = manifest_digest
+        return headers
+
     def _render_body(self, block: Mapping[str, Any]) -> str:
         summary = [
             f"任务：{block['task_name']}",
@@ -615,11 +704,25 @@ class TestSubmissionController:
             f"轮次：{block['round_id']}",
             f"预计交付：{block.get('expected_delivery_at') or '未填写'}",
             f"摘要：{block.get('change_summary') or '未填写'}",
-            "",
-            _MACHINE_BEGIN,
-            json.dumps(block, ensure_ascii=False, indent=2),
-            _MACHINE_END,
         ]
+        if str(block.get("retrieval_method") or "").strip().lower() == "svn":
+            summary.extend(
+                [
+                    "取件方式：SVN",
+                    f"SVN：{block.get('source_locator') or '未填写'}@{block.get('revision') or '未填写'}",
+                    f"版本：{block.get('version') or '未填写'}",
+                    f"获取说明：{block.get('retrieval_instructions') or '未填写'}",
+                    "物料证据：由受保护 GitLab CI 生成（文件清单、哈希、签名与云查）。",
+                ]
+            )
+        summary.extend(
+            [
+                "",
+                _MACHINE_BEGIN,
+                json.dumps(block, ensure_ascii=False, indent=2),
+                _MACHINE_END,
+            ]
+        )
         return "\n".join(summary)
 
     def _event_dir(self, event_id: str, round_id: int) -> Path:

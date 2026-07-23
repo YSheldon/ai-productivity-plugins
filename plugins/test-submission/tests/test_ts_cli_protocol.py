@@ -11,11 +11,20 @@ from typing import Any
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PLUGIN_ROOT / "src"
 MODULE_PATH = SRC_ROOT / "test_submission_cli.py"
+MCP_MODULE_PATH = SRC_ROOT / "test_submission_mcp.py"
 sys.path.insert(0, str(SRC_ROOT))
 
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("test_submission_cli", MODULE_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_mcp_module():
+    spec = importlib.util.spec_from_file_location("test_submission_mcp", MCP_MODULE_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -77,6 +86,21 @@ def test_cli_inventory_is_complete_and_has_no_import_time_codex_dependency() -> 
     source = MODULE_PATH.read_text(encoding="utf-8").lower()
     assert "import codex" not in source
     assert "from codex" not in source
+
+
+def test_mcp_submission_schema_allows_svn_without_local_artifacts() -> None:
+    module = _load_mcp_module()
+
+    schema = module.TOOLS["test_submission_submit"]["inputSchema"]
+    assert module.SERVER_VERSION == "0.1.4"
+
+    assert schema["required"] == ["task_name", "module"]
+    assert "artifacts" in schema["properties"]
+    assert "retrieval_method" in schema["properties"]
+    assert "source_locator" in schema["properties"]
+    assert "revision" in schema["properties"]
+    assert "version" in schema["properties"]
+    assert schema["allOf"]
 
 
 def test_submit_requires_explicit_module_and_uses_single_json_payload(tmp_path: Path) -> None:

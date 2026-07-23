@@ -20,16 +20,26 @@ def test_skill_documents_all_four_surfaces() -> None:
     assert "scheduler install" in text
     assert "Codex is optional" in text
     assert "module" in text
+    assert "SVN" in text
+    assert "svn_mandatory_checks" in config_ref.read_text(encoding="utf-8")
 
 
 def test_manifest_and_readme_advertise_standalone_operation() -> None:
     manifest = json.loads((PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.1.3"
+    assert manifest["version"] == "0.1.4"
     assert manifest["skills"] == "./skills/"
     assert manifest["mcpServers"] == "./.mcp.json"
     readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
     assert "four surfaces" in readme
     assert "zero manual JSON" in readme
     assert "Codex is optional" in readme
+    assert "SVN" in readme
     config = json.loads((PLUGIN_ROOT / "config" / "config.example.json").read_text(encoding="utf-8"))
     assert "default_module" not in config
+    assert config["svn_mandatory_checks"] == [
+        "provenance_locator_present",
+        "fixed_revision_present",
+        "trusted_retrieval_succeeded",
+        "retrieved_nonempty",
+        "audit_recorded",
+    ]

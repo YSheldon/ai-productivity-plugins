@@ -20,7 +20,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.2.8"
+SERVER_VERSION = "0.3.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -32,6 +32,10 @@ RUNNER_POLICY_NAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])
 RUNNER_SERVICE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$")
 RUNNER_TAG_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$")
 SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+RUNNER_ACCESS_LEVELS = frozenset({"not_protected", "ref_protected"})
+PROTECTED_LIVE_RUNNER_TAGS = frozenset(
+    {"product-material-gate-protected", "product-material-gate-windows-dedicated"}
+)
 RUNNER_POLICY_DIRECTORY_NAME = "runner-policies"
 RUNNER_RUNTIME_DIRECTORY_NAME = "runners"
 RUNNER_JOURNAL_FILE_NAME = "provisioning-state.json"
@@ -672,6 +676,7 @@ RUNNER_POLICY_ALLOWED_FIELDS = frozenset(
         "project",
         "runner_name",
         "tag_list",
+        "access_level",
         "runner_binary",
         "runner_binary_sha256",
         "install_service",
@@ -1559,6 +1564,33 @@ def cleanup_partial_service(policy: dict[str, Any]) -> bool:
     disable_windows_service(policy)
     return False
 
+def resolve_runner_access_level(raw_access_level: Any, tags: list[str]) -> str:
+    """Resolve the only two GitLab runner access-level modes we permit."""
+
+    if raw_access_level is None:
+        return "ref_protected"
+    if (
+        not isinstance(raw_access_level, str)
+        or raw_access_level not in RUNNER_ACCESS_LEVELS
+    ):
+        raise ToolError(
+            "Runner policy access_level must be exactly not_protected or ref_protected"
+        )
+    if raw_access_level == "not_protected":
+        protected_tags = sorted(
+            {
+                tag
+                for tag in tags
+                if tag.casefold() in PROTECTED_LIVE_RUNNER_TAGS
+            },
+            key=str.casefold,
+        )
+        if protected_tags:
+            raise ToolError(
+                "A not_protected Runner policy cannot use protected live-gate tags"
+            )
+    return raw_access_level
+
 def load_windows_runner_policy(
     policy_name: Any,
     *,
@@ -1645,6 +1677,7 @@ def load_windows_runner_policy(
         raise ToolError("Runner policy contains an invalid tag")
     if len({tag.casefold() for tag in tags}) != len(tags):
         raise ToolError("Runner policy tag_list contains duplicates")
+    access_level = resolve_runner_access_level(raw_policy.get("access_level"), tags)
 
     runner_binary_text = canonical_windows_path(raw_policy.get("runner_binary"), "runner_binary")
     matching_root = next((root for root in program_files if windows_path_is_within(runner_binary_text, root)), None)
@@ -1687,6 +1720,7 @@ def load_windows_runner_policy(
         "project": project,
         "runner_name": runner_name,
         "tags": tags,
+        "access_level": access_level,
         "binary_path": Path(runner_binary_text),
         "binary_sha256": binary_evidence["sha256"],
         "binary_signature_thumbprint": binary_evidence["signature_thumbprint"],
@@ -1775,7 +1809,7 @@ def attest_runner_record(
         record.get("paused") is paused,
         record.get("locked") is True,
         record.get("run_untagged") is False,
-        str(record.get("access_level") or "") == "ref_protected",
+        str(record.get("access_level") or "") == policy["access_level"],
         sorted(actual_tags) == sorted(expected_tags),
         project_id in project_ids,
     )
@@ -1812,6 +1846,7 @@ def safe_runner_result(
     data: dict[str, Any] = {
         "runner": {
             "id": runner_id, "name": policy["runner_name"], "tags": list(policy["tags"]),
+            "access_level": policy["access_level"],
             "config_path": str(policy["config_path"]), "binary_sha256": policy["binary_sha256"],
             "binary_signature_thumbprint": policy["binary_signature_thumbprint"], "registered": True,
         },
@@ -2013,7 +2048,7 @@ def provision_windows_project_runner(args: dict[str, Any]) -> dict[str, Any]:
     creation_body = {
         "runner_type": "project_type", "project_id": project_id,
         "description": policy["runner_name"], "locked": True,
-        "run_untagged": False, "access_level": "ref_protected", "paused": True,
+        "run_untagged": False, "access_level": policy["access_level"], "paused": True,
         "tag_list": list(policy["tags"]),
     }
     created = gl.request("POST", "/user/runners", body=creation_body)

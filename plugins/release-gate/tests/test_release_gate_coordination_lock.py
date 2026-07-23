@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing
 import sys
 from pathlib import Path
 
@@ -11,6 +12,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from release_gate_controller import ReleaseGateController
 from release_workflow_gate_lock import RunOnceLock
 from test_release_gate_controller import FakeMailGateway, FakeProductGate, _config
+
+
+def _hold_process_lock(path: str, ready, release) -> None:
+    lock = RunOnceLock(path, owner="child-lock-owner")
+    ready.put(lock.acquire())
+    try:
+        release.wait(timeout=15)
+    finally:
+        lock.release()
 
 
 def test_duplicate_mailbox_configs_share_host_coordination_lock(tmp_path: Path, monkeypatch) -> None:
@@ -35,6 +45,51 @@ def test_duplicate_mailbox_configs_share_host_coordination_lock(tmp_path: Path, 
     finally:
         lock.release()
     assert result == {"status": "RUN_ALREADY_ACTIVE", "busy": True, "scope": "host"}
+
+
+def test_unowned_residual_coordination_lock_does_not_block_run_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    coordination_root = tmp_path / "coordination"
+    monkeypatch.setenv("RELEASE_GATE_COORDINATION_DIR", str(coordination_root))
+    controller = ReleaseGateController(
+        _config(tmp_path / "release-gate"),
+        mail_gateway=FakeMailGateway([]),
+        product_gate=FakeProductGate(),
+    )
+    residual = controller.coordination_lock_path()
+    residual.parent.mkdir(parents=True, exist_ok=True)
+    residual.touch()
+
+    result = controller.run_once()
+
+    assert result["status"] == "ready"
+    assert result["processed"] == 0
+    assert result["blocked"] == 0
+
+
+def test_coordination_lock_excludes_a_second_process(tmp_path: Path) -> None:
+    context = multiprocessing.get_context("spawn")
+    path = tmp_path / "coordination" / "release-gate.lock"
+    ready = context.Queue()
+    release = context.Event()
+    process = context.Process(
+        target=_hold_process_lock,
+        args=(str(path), ready, release),
+    )
+    process.start()
+    try:
+        assert ready.get(timeout=15)["status"] == "acquired"
+        contender = RunOnceLock(path, owner="parent-lock-owner")
+        assert contender.acquire()["status"] == "active"
+    finally:
+        release.set()
+        process.join(timeout=15)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=15)
+    assert process.exitcode == 0
 
 
 def test_host_coordination_lock_is_default_even_for_distinct_mailboxes(tmp_path: Path, monkeypatch) -> None:

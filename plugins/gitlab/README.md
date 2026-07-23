@@ -132,8 +132,8 @@ points, broad write ACLs, and untrusted owners. It then performs this sequence:
 
 1. Resolve the policy project to its numeric GitLab project id.
 2. `POST /user/runners` as `project_type`, initially `paused=true`,
-   `locked=true`, `run_untagged=false`, and `access_level=ref_protected` with
-   the exact policy tags.
+   `locked=true`, `run_untagged=false`, and the policy-bound `access_level`
+   (default `ref_protected`) with the exact policy tags.
 3. Pass the returned one-time token only in a private child environment as
    `CI_SERVER_TOKEN`; the token never appears in argv, tool output, errors, or
    logs, and the parent environment is not modified.

@@ -112,6 +112,102 @@ def make_policy(
     }
 
 
+def load_policy_from_layout(
+    tmp_path: Path,
+    module,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    access_level: str | None,
+    tags: list[str],
+) -> dict[str, object]:
+    program_data = tmp_path / "program-data"
+    program_files = tmp_path / "program-files"
+    policy_root = program_data / "CodexGitLab" / "runner-policies"
+    runtime_root = (
+        program_data / "CodexGitLab" / "runners" / "product-material-gate-ci-test-windows"
+    )
+    builds_dir = runtime_root / "work" / "builds"
+    cache_dir = runtime_root / "work" / "cache"
+    binary = program_files / "GitLab-Runner" / "gitlab-runner.exe"
+    policy_root.mkdir(parents=True)
+    builds_dir.mkdir(parents=True)
+    cache_dir.mkdir()
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"test-only-runner")
+    payload: dict[str, object] = {
+        "schema_version": module.RUNNER_POLICY_SCHEMA_VERSION,
+        "gitlab_url": "https://gitlab.example.com",
+        "project": "ai/product-material-gate-ci",
+        "runner_name": "product-material-gate-ci-test-windows",
+        "tag_list": tags,
+        "runner_binary": str(binary),
+        "runner_binary_sha256": "a" * 64,
+        "install_service": False,
+    }
+    if access_level is not None:
+        payload["access_level"] = access_level
+    (policy_root / "product-material-gate-ci-test-windows.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        module,
+        "windows_platform_roots",
+        lambda: {
+            "program_data": str(program_data),
+            "program_files": str(program_files),
+        },
+    )
+    monkeypatch.setattr(module, "assert_strict_windows_acl", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "verify_runner_binary",
+        lambda _path, digest: {
+            "sha256": digest.upper(),
+            "signature_thumbprint": "A" * 40,
+        },
+    )
+    return module.load_windows_runner_policy("product-material-gate-ci-test-windows")
+
+
+def test_policy_loader_defaults_to_protected_and_allows_explicit_test_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module()
+    default_policy = load_policy_from_layout(
+        tmp_path / "default",
+        module,
+        monkeypatch,
+        access_level=None,
+        tags=["product-material-gate-protected", "windows-dedicated"],
+    )
+    assert default_policy["access_level"] == "ref_protected"
+
+    test_policy = load_policy_from_layout(
+        tmp_path / "test",
+        module,
+        monkeypatch,
+        access_level="not_protected",
+        tags=["windows", "product-material-gate-ci-test"],
+    )
+    assert test_policy["access_level"] == "not_protected"
+
+
+def test_policy_loader_rejects_nonprotected_live_gate_tags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module()
+    with pytest.raises(module.ToolError, match="live-gate tags"):
+        load_policy_from_layout(
+            tmp_path,
+            module,
+            monkeypatch,
+            access_level="not_protected",
+            tags=["product-material-gate-protected", "windows"],
+        )
+
 def test_administrator_precondition_runs_before_policy_or_remote_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

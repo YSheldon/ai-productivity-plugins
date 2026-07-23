@@ -14,6 +14,7 @@ from release_gate_svn_handoff import (
     MANIFEST_R_SCHEMA,
     VERIFIED_RECEIPT_SCHEMA,
     SvnGateContractError,
+    approval_binding_sha256,
     build_svn_handoff,
     manifest_r_digest,
     validate_verified_receipt,
@@ -101,6 +102,17 @@ class SvnHandoffTests(unittest.TestCase):
             ).encode("utf-8")
         ).hexdigest()
         self.assertEqual(expected_digest, handoff["request_sha256"])
+        self.assertEqual(handoff["event_id"], handoff["source"]["event_id"])
+        self.assertEqual(
+            approval_binding_sha256(
+                event_id=handoff["event_id"],
+                request_sha256=handoff["request_sha256"],
+                pre_release_report_sha256=handoff["source"]["pre_release_report_sha256"],
+                manifest_sha256=handoff["source"]["manifest_sha256"],
+                source_message_id=handoff["source"]["source_message_id"],
+            ),
+            handoff["source"]["approval_binding_sha256"],
+        )
         self.assertEqual(
             {
                 "manifest_logical_name": "product.bin",

@@ -18,7 +18,11 @@ from release_gate_credentials import (
     runtime_principal_sha256,
 )
 from release_gate_production import ProductionReleaseController
-from release_gate_svn_handoff import VERIFIED_RECEIPT_SCHEMA
+from release_gate_svn_handoff import (
+    VERIFIED_RECEIPT_SCHEMA,
+    approval_binding_sha256,
+    workflow_digest,
+)
 
 
 class SvnReleaseGateControllerTests(unittest.TestCase):
@@ -318,6 +322,28 @@ print(json.dumps(payload))
                         "release-manager",
                         "preproduction",
                     )
+
+    def test_malformed_approval_digest_is_rejected_even_if_rebound(self) -> None:
+        controller = self._controller()
+        event_id = "event-svn-malformed-approval-digest"
+        self._release_ready(controller, event_id)
+        result = self._handoff(controller, event_id)
+        handoff_path = Path(result["handoff_path"])
+        handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+        source = handoff["source"]
+        source["pre_release_report_sha256"] = "not-a-digest"
+        source["approval_binding_sha256"] = approval_binding_sha256(
+            event_id=handoff["event_id"],
+            request_sha256=handoff["request_sha256"],
+            pre_release_report_sha256=source["pre_release_report_sha256"],
+            manifest_sha256=source["manifest_sha256"],
+            source_message_id=source["source_message_id"],
+        )
+        handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
+        event = controller._load_event(event_id)
+        event["svn_release_gate"]["handoff_sha256"] = workflow_digest(handoff)
+        with self.assertRaisesRegex(GateError, "not bound"):
+            controller._load_bound_svn_handoff(event)
 
     def test_required_verifier_is_a_production_preflight_capability(self) -> None:
         controller = self._controller(verifier_enabled=False)

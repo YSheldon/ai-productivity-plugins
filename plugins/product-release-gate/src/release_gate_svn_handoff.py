@@ -47,6 +47,27 @@ def workflow_digest(value: Any) -> str:
     ).hexdigest()
 
 
+def approval_binding_sha256(
+    *,
+    event_id: str,
+    request_sha256: str,
+    pre_release_report_sha256: str,
+    manifest_sha256: str,
+    source_message_id: str,
+) -> str:
+    """Bind all approved handoff fields before protected promotion."""
+    payload = {
+        "event_id": event_id,
+        "manifest_sha256": manifest_sha256,
+        "pre_release_report_sha256": pre_release_report_sha256,
+        "request_sha256": request_sha256,
+        "source_message_id": source_message_id,
+    }
+    return "sha256:" + hashlib.sha256(
+        _canonical_bytes(payload, ensure_ascii=True)
+    ).hexdigest()
+
+
 def _nonempty_line(value: Any, label: str) -> str:
     normalized = str(value or "").strip()
     if not normalized or any(character in normalized for character in "\r\n"):
@@ -274,23 +295,30 @@ def build_svn_handoff(
         },
         "release_materials": release_materials,
     }
+    request_digest = workflow_digest(request)
+    report_digest = _digest(pre_release_report_sha256, "pre_release_report_sha256")
+    manifest_digest = "sha256:" + str(manifest_r["digest"])
+    normalized_source_message_id = _nonempty_line(source_message_id, "source_message_id")
+    approval_binding = approval_binding_sha256(
+        event_id=normalized_event_id,
+        request_sha256=request_digest,
+        pre_release_report_sha256=report_digest,
+        manifest_sha256=manifest_digest,
+        source_message_id=normalized_source_message_id,
+    )
     return {
         "schema": WORKFLOW_SCHEMA,
         "stage": WORKFLOW_STAGE,
         "event_id": normalized_event_id,
         "request": request,
-        "request_sha256": workflow_digest(request),
+        "request_sha256": request_digest,
         "source": {
             "pre_release_status": "PASS",
-            "pre_release_report_sha256": _digest(
-                pre_release_report_sha256,
-                "pre_release_report_sha256",
-            ),
-            "manifest_sha256": "sha256:" + str(manifest_r["digest"]),
-            "source_message_id": _nonempty_line(
-                source_message_id,
-                "source_message_id",
-            ),
+            "pre_release_report_sha256": report_digest,
+            "manifest_sha256": manifest_digest,
+            "source_message_id": normalized_source_message_id,
+            "event_id": normalized_event_id,
+            "approval_binding_sha256": approval_binding,
         },
         "created_at": _timestamp(created_at, "created_at"),
     }

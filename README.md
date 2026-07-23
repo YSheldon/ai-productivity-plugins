@@ -10,18 +10,18 @@ This repository is a local Codex plugin marketplace maintained by Sheldon. The m
 - `lark-cli`: a Lark/Feishu CLI plugin packaged and maintained by Sheldon. It bundles the existing `lark-*` skills and uses the locally installed `lark-cli` to work with docs, wikis, calendars, messages, Base tables, sheets, and related workflows.
 - `gitlab`: a GitLab REST API plugin for Codex. It supports project discovery, merge requests, issues, pipelines, decoded API calls, and policy-bound atomic provisioning of a dedicated Windows project Runner with paused-first activation, token-safe child-process registration, Authenticode/SHA256/ACL validation, API attestation, and rollback.
 - `product-release-gate`: a fail-closed product material gate for immutable submission manifests, submission checks, test evidence and approval, final-material generation, release checks, scoped production authorization, four-stage deployment/rollback, production readback, and auditable report delivery.
-- `test-submission`: a submitter-side product material role plugin that freezes one explicit module submission, previews the request through the locked shared gate, and sends `【提测】` mail through the locked IMAP/SMTP CLI.
-- `submission-gate`: a service-side role plugin that scans signed `【提测】` mail, executes the authoritative submission gate through the locked shared gate, and sends pass or blocked notices.
-- `pre-release`: a tester-side role plugin that records one final `PASS` or `FAIL`, builds `Manifest-R` through the locked shared gate, and sends `【发布门禁检查】` mail.
-- `release-gate`: a service-side role plugin that scans signed `PRERELEASE_REQUEST` mail, runs release-gate checks through the locked shared gate, and emits `【发布申请】` or blocking notices while stopping at `RELEASE_READY_NOTIFIED`.
+- `test-submission`: a submitter-side product material role plugin that freezes one explicit module submission, previews the request through the locked shared gate, and sends test-request mail through the locked IMAP/SMTP CLI.
+- `submission-gate`: a service-side role plugin that scans signed test-request mail, executes the authoritative submission gate through the locked shared gate, and sends pass or blocked notices.
+- `pre-release`: a tester-side role plugin that records one final `PASS` or `FAIL`, builds `Manifest-R` through the locked shared gate, and sends release-gate-check mail.
+- `release-gate`: a service-side role plugin that scans signed `PRERELEASE_REQUEST` mail, runs release-gate checks through the locked shared gate, and emits release-request or blocking notices while stopping at `RELEASE_READY_NOTIFIED`.
 - `rd-flywheel`: an evidence-first R&D workflow skill for turning new requirements, projects, and tasks into real production-proven capability, with versioned visual decision gates and post-production experience harvest.
-- `ssh`: an OpenSSH plugin for Codex. It supports strict-key connection tests, explicit remote commands and stdin scripts, SCP transfers, SSH-agent lifecycle operations, and public-key fingerprint checks.
+- `remotex`: a credential-reference-first remote operations plugin for SSH, Windows RDP, vSphere/ESXi, and VMware Workstation. It uses local OpenSSH, `mstsc`, `govc`, and `vmrun` clients, keeps secrets out of repository configuration and tool arguments, and enforces a process-safe local FIFO queue before RDP launch or VM power changes.
 - `wecom-codex-usage`: a WeCom / Enterprise WeChat plugin packaged and maintained by Sheldon. It connects to a self-built WeCom internal application for message delivery and summarizes local Codex usage signals from the current machine's Codex config and logs.
 - `daily-vuln-bulletin-email`: a verified daily vulnerability bulletin workflow. It uses live Feishu subscribers, severity-safe text/HTML content, exact MIME Subject and Message-ID readback, and recipient-header privacy checks while reusing the existing Lark and IMAP/SMTP plugins.
 
 ## Use In Codex
 
-Open this repository in Codex App. Codex reads `.agents/plugins/marketplace.json` and shows the `IMAP/SMTP Mail`, `Lark / Feishu CLI`, `GitLab`, `Product Release Gate`, `Test Submission`, `Submission Gate`, `Pre Release`, `Release Gate`, `SSH`, `WeCom Codex Usage`, and `每日漏洞播报` plugins under this local marketplace.
+Open this repository in Codex App. Codex reads `.agents/plugins/marketplace.json` and shows the `IMAP/SMTP Mail`, `Lark / Feishu CLI`, `GitLab`, `Product Release Gate`, `Test Submission`, `Submission Gate`, `Pre Release`, `Release Gate`, `RemoteX`, `WeCom Codex Usage`, and `Daily Vulnerability Bulletin` plugins under this local marketplace.
 
 After installing the IMAP/SMTP Mail plugin, the recommended setup path is the local setup wizard. Ask Codex:
 
@@ -98,30 +98,27 @@ The four product-material role plugins are moving to one build-embedded shared `
 After installing the R&D Flywheel plugin, invoke it for new requirements, projects, automations, and engineering tasks that must become reusable production capability:
 
 ```text
-把这个新需求作为研发飞轮首个实践
-用可视化门禁确认这个新项目的设计
+Use this new requirement as the first R&D Flywheel practice
+Confirm this project's design through the visual decision gate
 ```
 
 The skill uses local Visual Companion click events as versioned design-decision evidence. Those clicks never replace Feishu approval, protected-branch policy, release authorization, or deterministic production gates.
 
-After installing the SSH plugin, configure either `SSH_HOST` and `SSH_USER` or a JSON profile based on `plugins/ssh/config/config.example.json`:
+After installing RemoteX, copy `plugins/remotex/config/config.example.json` to `~/.config/remotex/config.json` and replace the example endpoints with local profile values. Keep only credential references in this file. SSH uses an identity-file path or SSH Agent, RDP uses a `TERMSRV/...` Windows credential, vSphere/ESXi uses environment-variable names or a Windows Generic Credential target, and VMware Workstation uses the current local user session.
 
-```powershell
-$env:SSH_HOST = "ssh.example.internal"
-$env:SSH_USER = "root"
-$env:SSH_IDENTITY_FILE = "$env:USERPROFILE\.ssh\id_ed25519"
-$env:SSH_KNOWN_HOSTS_FILE = "$env:USERPROFILE\.ssh\known_hosts"
-```
-
-The plugin uses the local OpenSSH tools with strict host-key checking and public-key-only authentication. It does not store passwords or private keys. Use `ssh_test_connection` before remote commands, and remove temporary keys from `ssh-agent` after the task.
+Run `remotex_status` before connecting. It separates missing configuration, missing client programs, unreachable targets, unavailable credential references, and VM queue state instead of treating every setup gap as a missing password. An unowned VM is offered for explicit claim; another owner cannot be preempted. The old SSH config remains readable in compatibility mode when no RemoteX config exists. See `plugins/remotex/README.md` for the profile schema and safety boundaries.
 
 After installing the WeCom Codex Usage plugin, configure a WeCom self-built internal application:
 
 ```text
-打开企业微信配置向导
+Open the WeCom configuration wizard
 ```
 
 The wizard stores `corp_id`, app `corp_secret`, and `agent_id` in `~/.wecom-codex-usage/config.json`. The plugin can then test the connection, send WeCom app messages, and build a local Codex usage summary from `~/.codex/config.toml` plus recent `~/.codex/log/codex-tui.log` token usage lines. It does not claim to read a stable hosted profile-usage API.
+
+## How Codex & GPT-5.6 were used
+
+Codex and GPT-5.6 were used as engineering assistants to inspect existing plugin contracts, implement narrowly scoped changes, generate and run tests, review security boundaries, and maintain the English documentation. The generated work was not accepted on model output alone: repository validators, unit tests, MCP protocol smoke tests, diff review, and secret-pattern scans remain required before publication. Runtime credentials and private infrastructure values were neither requested for documentation nor committed to this repository.
 
 ## Install From GitHub
 
@@ -137,10 +134,11 @@ codex plugin add submission-gate@ai-productivity-plugins
 codex plugin add pre-release@ai-productivity-plugins
 codex plugin add release-gate@ai-productivity-plugins
 codex plugin add rd-flywheel@ai-productivity-plugins
+codex plugin add remotex@ai-productivity-plugins
 ```
 
-Each plugin also provides a standalone CLI and OS scheduler, so Codex is optional after setup.
+The release workflow plugins also provide standalone CLIs and OS schedulers, so those workflows can run without Codex after setup.
 
 To publish these plugins in the official public marketplace, follow the official review and submission process. This repository already contains the local marketplace structure.
 
-Only plugin source, skills, and example configuration are committed. Real mailbox accounts, authorization codes, GitLab tokens, WeCom app secrets, Lark tokens, SSH private keys, SSH profiles, release-gate adapter settings, and local runtime caches are not included. Real mailbox configuration belongs in each user's local `~/.imap-smtp-mail/accounts.json`; real WeCom configuration belongs in `~/.wecom-codex-usage/config.json`; real release-gate configuration belongs in a protected local file referenced by `PRODUCT_RELEASE_GATE_CONFIG`.
+Only plugin source, skills, and example configuration are committed. Real mailbox accounts, authorization codes, GitLab tokens, WeCom app secrets, Lark tokens, SSH private keys, RemoteX profiles, remote-management credentials, release-gate adapter settings, and local runtime caches are not included. Real mailbox configuration belongs in each user's local `~/.imap-smtp-mail/accounts.json`; real WeCom configuration belongs in `~/.wecom-codex-usage/config.json`; real RemoteX configuration belongs in `~/.config/remotex/config.json` or a protected file referenced by `REMOTEX_CONFIG`; real release-gate configuration belongs in a protected local file referenced by `PRODUCT_RELEASE_GATE_CONFIG`.

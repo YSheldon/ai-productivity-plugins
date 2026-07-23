@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "defaults": {
+    "ssh": "linux-lab",
+    "rdp": "windows-lab",
+    "vsphere": "esxi-lab",
+    "vmware-workstation": "local-workstation-vm"
+  },
+  "profiles": {
+    "linux-lab": {
+      "kind": "ssh",
+      "host": "ssh.example.internal",
+      "user": "root",
+      "port": 22,
+      "credential": {
+        "source": "identity-file",
+        "identity_file": "~/.ssh/id_ed25519"
+      },
+      "known_hosts_file": "~/.ssh/known_hosts",
+      "strict_host_key_checking": "yes",
+      "connect_timeout_seconds": 10
+    },
+    "windows-lab": {
+      "kind": "rdp",
+      "host": "windows.example.internal",
+      "port": 3389,
+      "queue_resource": "lab:windows-rdp",
+      "credential": {
+        "source": "windows-credential-manager",
+        "target": "TERMSRV/windows.example.internal"
+      },
+      "admin": false,
+      "fullscreen": false,
+      "width": 1600,
+      "height": 900
+    },
+    "esxi-lab": {
+      "kind": "esxi",
+      "url": "https://esxi.example.internal/sdk",
+      "queue_resource": "lab:esxi:{virtual_machine}",
+      "credential": {
+        "source": "windows-credential-manager",
+        "target": "RemoteX/esxi-lab"
+      },
+      "tls": {
+        "insecure": false,
+        "ca_file": "~/.config/remotex/esxi-ca.pem"
+      },
+      "govc_path": "C:/Tools/govc/govc.exe"
+    },
+    "local-workstation-vm": {
+      "kind": "vmware-workstation",
+      "host_type": "ws",
+      "queue_resource": "lab:local-workstation-vm",
+      "vmrun_path": "C:/Program Files (x86)/VMware/VMware Workstation/vmrun.exe",
+      "vmx_path": "D:/Virtual Machines/example/example.vmx"
+    }
+  }
+}

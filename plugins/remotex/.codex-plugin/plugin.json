@@ -1,0 +1,42 @@
+{
+  "name": "remotex",
+  "version": "0.2.0",
+  "description": "Operate configured SSH, RDP, vSphere/ESXi, and VMware Workstation targets with credential references and a non-preemptive local VM queue.",
+  "author": {
+    "name": "Sheldon",
+    "url": "https://github.com/YSheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/remotex",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "remote-management",
+    "ssh",
+    "rdp",
+    "esxi",
+    "vsphere",
+    "vmware-workstation"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "RemoteX",
+    "shortDescription": "Manage configured remote systems",
+    "longDescription": "Use local OpenSSH, Remote Desktop, govc, and vmrun clients through named profiles, credential references, and a process-safe FIFO VM queue that prevents local RemoteX requesters from preempting one another.",
+    "developerName": "Sheldon",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Check my RemoteX profile readiness",
+      "Inspect a configured remote host",
+      "List my configured virtual machines"
+    ],
+    "brandColor": "#167D73",
+    "composerIcon": "./assets/remotex.svg",
+    "logo": "./assets/remotex.svg",
+    "screenshots": []
+  }
+}

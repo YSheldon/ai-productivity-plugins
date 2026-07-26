@@ -1,7 +1,7 @@
 {
   "name": "remotex",
-  "version": "0.2.0",
-  "description": "Operate configured SSH, RDP, vSphere/ESXi, and VMware Workstation targets with credential references and a non-preemptive local VM queue.",
+  "version": "0.3.0",
+  "description": "Operate SSH, RDP, vSphere/ESXi, and VMware Workstation targets with native script transport, verified file transfer, resumable tasks, credential references, host-key governance, and renewable non-preemptive VM leases.",
   "author": {
     "name": "Sheldon",
     "url": "https://github.com/YSheldon"
@@ -12,17 +12,19 @@
   "keywords": [
     "remote-management",
     "ssh",
+    "powershell",
     "rdp",
     "esxi",
     "vsphere",
-    "vmware-workstation"
+    "vmware-workstation",
+    "sftp"
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "RemoteX",
-    "shortDescription": "Manage configured remote systems",
-    "longDescription": "Use local OpenSSH, Remote Desktop, govc, and vmrun clients through named profiles, credential references, and a process-safe FIFO VM queue that prevents local RemoteX requesters from preempting one another.",
+    "shortDescription": "Operate remote systems with bounded execution",
+    "longDescription": "Use local OpenSSH, Remote Desktop, govc, and vmrun clients through named profiles, native script transport, verified SFTP, credential references, managed host keys, resumable tasks, tamper-evident audit records, and renewable FIFO VM leases.",
     "developerName": "Sheldon",
     "category": "Developer Tools",
     "capabilities": [
@@ -30,9 +32,9 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Check my RemoteX profile readiness",
-      "Inspect a configured remote host",
-      "List my configured virtual machines"
+      "Check my selected RemoteX profile readiness",
+      "Inspect a configured remote host safely",
+      "Show my RemoteX VM queue leases"
     ],
     "brandColor": "#167D73",
     "composerIcon": "./assets/remotex.svg",

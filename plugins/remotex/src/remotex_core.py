@@ -111,7 +111,10 @@ def tool_result(data: Any) -> dict[str, Any]:
 
 
 def error_result(message: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": message}], "isError": True}
+    return {
+        "content": [{"type": "text", "text": redact_text(message)}],
+        "isError": True,
+    }
 
 
 def _required_text(value: Any, field: str) -> str:

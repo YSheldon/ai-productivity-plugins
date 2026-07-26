@@ -19,7 +19,11 @@ const candidates = process.platform === "win32"
     ];
 
 const candidate = candidates.find(({ command, prefix }) => {
-  const probe = spawnSync(command, [...prefix, "--version"], {
+  const probe = spawnSync(command, [
+    ...prefix,
+    "-c",
+    "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)",
+  ], {
     cwd: pluginRoot,
     stdio: "ignore",
     windowsHide: true,
@@ -28,7 +32,7 @@ const candidate = candidates.find(({ command, prefix }) => {
 });
 
 if (!candidate) {
-  process.stderr.write("RemoteX could not find a usable Python 3 interpreter.\n");
+  process.stderr.write("RemoteX requires Python 3.10 or newer.\n");
   process.exit(127);
 }
 

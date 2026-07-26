@@ -1,30 +1,52 @@
 {
   "version": 1,
   "defaults": {
-    "ssh": "linux-lab",
+    "ssh": "windows-ssh-lab",
     "rdp": "windows-lab",
     "vsphere": "esxi-lab",
     "vmware-workstation": "local-workstation-vm"
   },
   "profiles": {
+    "windows-ssh-lab": {
+      "kind": "ssh",
+      "host": "windows.example.internal",
+      "user": "Administrator",
+      "port": 22,
+      "platform": "windows",
+      "queue_resource": "lab:windows-vm",
+      "queue_lease_seconds": 14400,
+      "credential": {
+        "source": "ssh-agent",
+        "identity_file": "~/.ssh/id_ed25519"
+      },
+      "known_hosts_file": "~/.ssh/known_hosts",
+      "strict_host_key_checking": "yes",
+      "host_key_policy": "managed",
+      "connect_timeout_seconds": 10
+    },
     "linux-lab": {
       "kind": "ssh",
       "host": "ssh.example.internal",
       "user": "root",
       "port": 22,
+      "platform": "posix",
+      "queue_resource": "lab:linux-vm",
+      "queue_lease_seconds": 14400,
       "credential": {
         "source": "identity-file",
         "identity_file": "~/.ssh/id_ed25519"
       },
       "known_hosts_file": "~/.ssh/known_hosts",
       "strict_host_key_checking": "yes",
+      "host_key_policy": "managed",
       "connect_timeout_seconds": 10
     },
     "windows-lab": {
       "kind": "rdp",
       "host": "windows.example.internal",
       "port": 3389,
-      "queue_resource": "lab:windows-rdp",
+      "queue_resource": "lab:windows-vm",
+      "queue_lease_seconds": 14400,
       "credential": {
         "source": "windows-credential-manager",
         "target": "TERMSRV/windows.example.internal"
@@ -38,6 +60,7 @@
       "kind": "esxi",
       "url": "https://esxi.example.internal/sdk",
       "queue_resource": "lab:esxi:{virtual_machine}",
+      "queue_lease_seconds": 14400,
       "credential": {
         "source": "windows-credential-manager",
         "target": "RemoteX/esxi-lab"
@@ -52,6 +75,7 @@
       "kind": "vmware-workstation",
       "host_type": "ws",
       "queue_resource": "lab:local-workstation-vm",
+      "queue_lease_seconds": 14400,
       "vmrun_path": "C:/Program Files (x86)/VMware/VMware Workstation/vmrun.exe",
       "vmx_path": "D:/Virtual Machines/example/example.vmx"
     }

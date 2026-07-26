@@ -35,7 +35,7 @@ class MCPProtocolTests(unittest.TestCase):
         self.assertIn("remotex_vmware_power", names)
         self.assertIn("remotex_vm_queue_claim", names)
         self.assertIn("remotex_vm_queue_release", names)
-        self.assertEqual(len(names), 22)
+        self.assertEqual(len(names), 30)
 
     def test_side_effectful_vm_tools_require_requester(self) -> None:
         response = remotex_mcp.handle_request(

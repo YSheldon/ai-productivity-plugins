@@ -109,6 +109,12 @@ class RemoteXCoreTests(unittest.TestCase):
         self.assertNotIn("hunter2", scrubbed)
         self.assertNotIn("ghp_abcdefghijklmnop", scrubbed)
 
+    def test_error_results_redact_secret_assignments(self) -> None:
+        result = core.error_result("failure password=do-not-return")
+        text = result["content"][0]["text"]
+        self.assertNotIn("do-not-return", text)
+        self.assertIn("[REDACTED]", text)
+
 
 if __name__ == "__main__":
     unittest.main()

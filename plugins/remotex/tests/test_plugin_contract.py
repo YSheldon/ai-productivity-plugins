@@ -41,6 +41,15 @@ class PluginContractTests(unittest.TestCase):
         for forbidden in ('"password":', '"secret":', '"token":', '"private_key":'):
             self.assertNotIn(forbidden, serialized)
         self.assertEqual(config["version"], 1)
+        windows_ssh = config["profiles"]["windows-ssh-lab"]
+        windows_rdp = config["profiles"]["windows-lab"]
+        self.assertEqual(windows_ssh["platform"], "windows")
+        self.assertEqual(windows_ssh["host_key_policy"], "managed")
+        self.assertEqual(
+            windows_ssh["queue_resource"],
+            windows_rdp["queue_resource"],
+        )
+        self.assertEqual(windows_ssh["queue_lease_seconds"], 14400)
         self.assertIn("queue_resource", config["profiles"]["windows-lab"])
         self.assertIn("queue_resource", config["profiles"]["esxi-lab"])
         self.assertIn("queue_resource", config["profiles"]["local-workstation-vm"])
@@ -63,6 +72,10 @@ class PluginContractTests(unittest.TestCase):
         self.assertEqual(server["command"], "node")
         self.assertEqual(server["args"], ["./scripts/launch_remotex.mjs"])
         self.assertTrue((PLUGIN_ROOT / "scripts" / "launch_remotex.mjs").is_file())
+        launcher = (PLUGIN_ROOT / "scripts" / "launch_remotex.mjs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("sys.version_info >= (3, 10)", launcher)
 
 
 if __name__ == "__main__":

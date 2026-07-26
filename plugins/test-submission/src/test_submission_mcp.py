@@ -11,7 +11,7 @@ from test_submission_setup import run_setup_operation
 
 
 SERVER_NAME = "test-submission"
-SERVER_VERSION = "0.1.3"
+SERVER_VERSION = "0.1.4"
 _CONTROLLER = TestSubmissionController(default_config_path()) if default_config_path().is_file() else None
 
 
@@ -72,8 +72,43 @@ TOOLS = {
         "handler": lambda _args: _controller().preflight(),
     },
     "test_submission_submit": {
-        "description": "Create one explicit module submission and send one signed request mail.",
-        "inputSchema": {"type": "object", "required": ["task_name", "module", "artifacts"], "properties": {"task_name": {"type": "string"}, "module": {"type": "string"}, "artifacts": {"type": "array"}}, "additionalProperties": True},
+        "description": "Create one explicit local-artifact or fixed-revision SVN submission and send one signed request mail.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["task_name", "module"],
+            "properties": {
+                "task_name": {"type": "string"},
+                "module": {"type": "string", "enum": ["kernel", "client", "server"]},
+                "artifacts": {"type": "array"},
+                "retrieval_method": {
+                    "type": "string",
+                    "enum": ["local", "unc", "https", "gitlab-package", "ssh", "svn"],
+                    "default": "local",
+                },
+                "source_locator": {"type": "string"},
+                "repository_path": {"type": "string"},
+                "revision": {"type": "string"},
+                "version": {"type": "string"},
+                "retrieval_instructions": {"type": "string"},
+            },
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"retrieval_method": {"const": "svn"}},
+                        "required": ["retrieval_method"],
+                    },
+                    "then": {
+                        "required": ["revision", "version"],
+                        "anyOf": [
+                            {"required": ["source_locator"]},
+                            {"required": ["repository_path"]},
+                        ],
+                    },
+                    "else": {"required": ["artifacts"]},
+                }
+            ],
+            "additionalProperties": True,
+        },
         "handler": lambda args: _controller().submit(args),
     },
     "test_submission_run_once": {

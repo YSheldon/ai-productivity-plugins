@@ -19,11 +19,13 @@ def test_skill_documents_all_four_surfaces() -> None:
     assert "submission_gate_cli.py setup" in text
     assert "scheduler install" in text
     assert "Codex is optional" in text
+    assert "HMAC is optional" in text
+    assert "Missing HMAC is nonblocking" in automation_ref.read_text(encoding="utf-8")
 
 
 def test_manifest_and_readme_advertise_standalone_operation() -> None:
     manifest = json.loads((PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.1.3"
+    assert manifest["version"] == "0.1.4"
     assert manifest["skills"] == "./skills/"
     assert manifest["mcpServers"] == "./.mcp.json"
     readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")

@@ -40,6 +40,7 @@ from release_gate_approval_mail import (
 )
 from release_gate_svn_handoff import (
     SvnGateContractError,
+    approval_binding_sha256,
     build_svn_handoff,
     validate_verified_receipt,
     workflow_digest,
@@ -1482,18 +1483,51 @@ class ProductionReleaseController(HardenedReleaseGateController):
         if not isinstance(handoff, dict):
             raise GateError("SVN release-gate handoff is invalid")
         request = handoff.get("request")
+        source = handoff.get("source")
         expected_manifest_digest = "sha256:" + str(
             event.get("manifest_r_digest") or ""
         )
+        request_digest = workflow_digest(request) if isinstance(request, dict) else ""
+        expected_source_keys = {
+            "approval_binding_sha256",
+            "event_id",
+            "manifest_sha256",
+            "pre_release_report_sha256",
+            "pre_release_status",
+            "source_message_id",
+        }
+        source_is_bound = False
+        if isinstance(source, dict) and set(source) == expected_source_keys:
+            report_digest = source.get("pre_release_report_sha256")
+            source_message_id = source.get("source_message_id")
+            binding_digest = source.get("approval_binding_sha256")
+            if (
+                source.get("pre_release_status") == "PASS"
+                and source.get("event_id") == event.get("event_id")
+                and source.get("manifest_sha256") == expected_manifest_digest
+                and isinstance(report_digest, str)
+                and re.fullmatch(r"sha256:[0-9a-f]{64}", report_digest) is not None
+                and isinstance(source_message_id, str)
+                and source_message_id.strip()
+                and not any(character in source_message_id for character in "\r\n")
+                and isinstance(binding_digest, str)
+                and re.fullmatch(r"sha256:[0-9a-f]{64}", binding_digest) is not None
+            ):
+                source_is_bound = binding_digest == approval_binding_sha256(
+                    event_id=str(event.get("event_id") or ""),
+                    request_sha256=request_digest,
+                    pre_release_report_sha256=report_digest,
+                    manifest_sha256=expected_manifest_digest,
+                    source_message_id=source_message_id,
+                )
         valid = (
             handoff.get("schema") == "ProductMaterialWorkflow/v1"
             and handoff.get("stage") == "RELEASE_GATE_REQUESTED"
             and handoff.get("event_id") == event.get("event_id")
             and isinstance(request, dict)
             and request.get("request_id") == event.get("event_id")
-            and handoff.get("request_sha256") == workflow_digest(request)
-            and (handoff.get("source") or {}).get("manifest_sha256")
-            == expected_manifest_digest
+            and handoff.get("request_sha256") == request_digest
+            and source_is_bound
             and gate.get("request_sha256") == handoff.get("request_sha256")
             and gate.get("manifest_r_digest") == expected_manifest_digest
             and gate.get("handoff_sha256") == workflow_digest(handoff)

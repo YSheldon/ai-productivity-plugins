@@ -33,6 +33,13 @@
       "cloud_scan_required"
     ]
   },
+  "svn_mandatory_checks": [
+    "provenance_locator_present",
+    "fixed_revision_present",
+    "trusted_retrieval_succeeded",
+    "retrieved_nonempty",
+    "audit_recorded"
+  ],
   "product_gate_preview_config": "%LOCALAPPDATA%\\test-submission\\product-release-gate.preview.json",
   "dependency_lock": "%LOCALAPPDATA%\\test-submission\\dependency-lock.test-submission.json",
   "dependency_lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000"

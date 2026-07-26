@@ -55,13 +55,13 @@ def main() -> int:
     handler = server.TOOLS[mapped]["handler"]
     try:
         result = unwrap_result(handler(arguments))
-        sys.stdout.write(json.dumps({"ok": True, "result": result}, ensure_ascii=False) + "\n")
+        sys.stdout.write(json.dumps({"ok": True, "result": result}, ensure_ascii=True) + "\n")
         return 0
     except server.ToolError as exc:
-        sys.stdout.write(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False) + "\n")
+        sys.stdout.write(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=True) + "\n")
         return 1
     except Exception as exc:  # pragma: no cover - defensive CLI bridge
-        sys.stdout.write(json.dumps({"ok": False, "error": f"Unexpected {type(exc).__name__}: {exc}"}, ensure_ascii=False) + "\n")
+        sys.stdout.write(json.dumps({"ok": False, "error": f"Unexpected {type(exc).__name__}: {exc}"}, ensure_ascii=True) + "\n")
         return 1
 
 

@@ -98,6 +98,8 @@ class ApprovalMailTests(unittest.TestCase):
             calls[0]["args"],
         )
         self.assertFalse(calls[0]["shell"])
+        self.assertEqual("utf-8", calls[0]["encoding"])
+        self.assertTrue(str(calls[0]["input"]).isascii())
         self.assertEqual(
             {
                 "tool": "send_email",

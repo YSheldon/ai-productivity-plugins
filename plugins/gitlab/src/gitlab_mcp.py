@@ -710,6 +710,8 @@ RUNNER_CHILD_ENV_ALLOWLIST = frozenset(
     }
 )
 
+SYSTEM_POWERSHELL_TIMEOUT_SECONDS = 90
+
 
 def require_windows_runner_host() -> None:
     if os.name != "nt":
@@ -767,7 +769,7 @@ def run_system_powershell_json(script: str, payload: dict[str, Any]) -> dict[str
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        timeout=30,
+        timeout=SYSTEM_POWERSHELL_TIMEOUT_SECONDS,
         check=False,
         env=powershell_environment,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

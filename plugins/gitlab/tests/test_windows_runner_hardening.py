@@ -114,6 +114,8 @@ def test_trusted_windows_powershell_drops_parent_psmodulepath(
     monkeypatch.setenv("PSModulePath", r"C:\Program Files\PowerShell\7\Modules")
 
     assert module.run_system_powershell_json("ignored", {}) == {"ok": True}
+    assert module.SYSTEM_POWERSHELL_TIMEOUT_SECONDS == 90
+    assert captured["timeout"] == module.SYSTEM_POWERSHELL_TIMEOUT_SECONDS
     child_environment = captured["env"]
     assert isinstance(child_environment, dict)
     assert all(key.casefold() != "psmodulepath" for key in child_environment)

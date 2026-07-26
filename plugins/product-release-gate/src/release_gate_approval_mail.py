@@ -123,6 +123,7 @@ class ImapSmtpMailCliGateway:
                 list(self.command),
                 input=json.dumps(request, ensure_ascii=False),
                 text=True,
+                encoding="utf-8",
                 capture_output=True,
                 shell=False,
                 timeout=self.timeout_seconds,

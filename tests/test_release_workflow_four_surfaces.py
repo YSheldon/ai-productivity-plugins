@@ -154,7 +154,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="submission-gate",
-        version="0.1.3",
+        version="0.1.4",
         mcp_script="submission_gate_mcp.py",
         mcp_server_name="submission-gate",
         mcp_common_tools=(

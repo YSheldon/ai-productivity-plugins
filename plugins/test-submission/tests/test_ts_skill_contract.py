@@ -21,7 +21,9 @@ def test_skill_documents_all_four_surfaces() -> None:
     assert "Codex is optional" in text
     assert "module" in text
     assert "SVN" in text
+    assert "HMAC is optional" in text
     assert "svn_mandatory_checks" in config_ref.read_text(encoding="utf-8")
+    assert "missing HMAC key" in automation_ref.read_text(encoding="utf-8")
 
 
 def test_manifest_and_readme_advertise_standalone_operation() -> None:

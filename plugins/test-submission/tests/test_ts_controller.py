@@ -107,8 +107,56 @@ def test_submit_builds_signed_request_and_persists_event(tmp_path: Path) -> None
     assert event["request"]["submitter_email"] == "submitter@example.com"
     assert event["request"]["artifacts"][0]["sha1"] == module.sha1_file(artifact)
     assert controller.mail_gateway.sent[0]["headers"]["X-RD-Submitter-Email"] == "submitter@example.com"
+    assert controller.mail_gateway.sent[0]["headers"]["X-RD-Auth-Mode"] == "HMAC_SHA256"
     assert "提测人邮箱：submitter@example.com" in controller.mail_gateway.sent[0]["text"]
+    assert "发起标识：合规插件发起（HMAC 已附带）" in controller.mail_gateway.sent[0]["text"]
     assert "hmac_sha256" in event["request"]
+
+
+def test_submit_without_hmac_is_explicitly_unverified_but_not_blocked(tmp_path: Path) -> None:
+    module = _load_module()
+    artifact = tmp_path / "client.bin"
+    artifact.write_bytes(b"client-package")
+    config_path = tmp_path / "config.json"
+    base_config = _base_config(tmp_path)
+    config_path.write_text(json.dumps(base_config), encoding="utf-8")
+    mail = FakeMailGateway()
+    controller = module.TestSubmissionController(
+        config_path,
+        mail_gateway=mail,
+        product_gate=FakePreviewBridge(),
+        now_fn=lambda: datetime(2026, 7, 17, 9, 30, tzinfo=timezone.utc),
+        environ={},
+    )
+
+    preflight = controller.preflight()
+    result = controller.submit(
+        {
+            "event_id": "event-unsigned",
+            "round_id": 1,
+            "task_name": "TASK-UNSIGNED",
+            "module": "client",
+            "artifacts": [
+                {
+                    "logical_name": "client.bin",
+                    "local_path": str(artifact),
+                    "retrieval_method": "local",
+                }
+            ],
+        }
+    )
+
+    event = controller.get_event(event_id="event-unsigned", round_id=1)["event"]
+    assert preflight["ready"] is True
+    assert preflight["hmac_key_ready"] is False
+    assert preflight["hmac_required"] is False
+    assert preflight["transport_auth_mode"] == "NONE"
+    assert result["status"] == "SUBMITTED"
+    assert result["transport_auth_mode"] == "NONE"
+    assert "hmac_sha256" not in event["request"]
+    assert event["request"]["origin_classification"] == "STRUCTURED_UNVERIFIED"
+    assert mail.sent[0]["headers"]["X-RD-Auth-Mode"] == "NONE"
+    assert "发起标识：普通兼容模式（未验证）" in mail.sent[0]["text"]
 
 
 def test_svn_submission_defers_material_evidence_to_gitlab_ci(tmp_path: Path) -> None:

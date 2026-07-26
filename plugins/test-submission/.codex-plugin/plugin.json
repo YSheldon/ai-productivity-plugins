@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Test Submission",
     "shortDescription": "Four-surface test-submission runtime",
-    "longDescription": "Use one credential-free configuration and one controller across MCP, Skill, standalone CLI, and an unattended retry scheduler. Every submission explicitly chooses a module and produces a signed machine block; local artifacts are previewed locally, while fixed-revision SVN sources defer material evidence to the protected GitLab CI gate.",
+    "longDescription": "Use one credential-free configuration and one controller across MCP, Skill, standalone CLI, and an unattended retry scheduler. Every submission explicitly chooses a module and produces a structured machine block; HMAC is added and labeled when configured, while unsigned requests remain explicitly unverified. Local artifacts are previewed locally, while fixed-revision SVN sources defer material evidence to the protected GitLab CI gate.",
     "developerName": "Sheldon",
     "category": "Developer Tools",
     "capabilities": [

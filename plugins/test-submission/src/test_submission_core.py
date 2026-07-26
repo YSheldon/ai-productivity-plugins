@@ -34,6 +34,8 @@ _SVN_CANONICAL_MANDATORY = [
 _SVN_REVISION_RE = re.compile(r"^[0-9]+$")
 _MACHINE_BEGIN = "-----BEGIN RD TEST SUBMISSION BLOCK-----"
 _MACHINE_END = "-----END RD TEST SUBMISSION BLOCK-----"
+_SIGNED_ORIGIN_BADGE = "合规插件发起（HMAC 已附带）"
+_UNSIGNED_ORIGIN_BADGE = "普通兼容模式（未验证）"
 _MAIL_PLUGIN_ROOT = Path("plugins/imap-smtp-mail")
 _MAIL_CLI_PATH = _MAIL_PLUGIN_ROOT / "src" / "imap_smtp_mail_cli.py"
 _GATE_PLUGIN_PARTS = ("product", "release", "gate")
@@ -426,7 +428,7 @@ class TestSubmissionController:
         gate_ready_flag = bool(gate_ready.get("ready", False)) if isinstance(gate_ready, Mapping) else False
         local_missing = {module: values for module, values in missing_canonical.items() if module in _MODULES}
         svn_missing = list(missing_canonical.get("svn") or [])
-        shared_ready = bool(matched) and key_ready
+        shared_ready = bool(matched)
         local_ready = shared_ready and gate_ready_flag and not local_missing
         svn_ready = shared_ready and not svn_missing
         available_retrieval_methods: list[str] = []
@@ -438,6 +440,8 @@ class TestSubmissionController:
             "ready": bool(available_retrieval_methods),
             "mail_account_ready": bool(matched),
             "hmac_key_ready": key_ready,
+            "hmac_required": False,
+            "transport_auth_mode": "HMAC_SHA256" if key_ready else "NONE",
             "product_gate_preview": gate_ready,
             "missing_canonical_mandatory": missing_canonical,
             "local_ready": local_ready,
@@ -539,9 +543,15 @@ class TestSubmissionController:
         block["contract"] = "rd.test-submission.v1"
         block["request_digest"] = request_digest
         hmac_key = str(self.environ.get("TEST_SUBMISSION_HMAC_KEY") or "").encode("utf-8")
-        if not hmac_key:
-            raise SubmissionError("CAPABILITY_BLOCKED", "TEST_SUBMISSION_HMAC_KEY is required")
-        block["hmac_sha256"] = _machine_hmac(block, hmac_key)
+        if hmac_key:
+            block["transport_auth"] = "HMAC_SHA256"
+            block["origin_classification"] = "COMPLIANT_PLUGIN_SIGNED"
+            block["origin_badge"] = _SIGNED_ORIGIN_BADGE
+            block["hmac_sha256"] = _machine_hmac(block, hmac_key)
+        else:
+            block["transport_auth"] = "NONE"
+            block["origin_classification"] = "STRUCTURED_UNVERIFIED"
+            block["origin_badge"] = _UNSIGNED_ORIGIN_BADGE
         subject = f"【提测】{task_name}-{module}-{created_at[:10]}"
         body_text = self._render_body(block)
         mail_result = self.mail_gateway.send_email(
@@ -576,6 +586,7 @@ class TestSubmissionController:
             "round_id": round_id,
             "request_digest": request_digest,
             "preview_manifest_digest": block["preview_manifest_digest"],
+            "transport_auth_mode": block["transport_auth"],
             "message_id": event["mail"]["message_id"],
         }
 
@@ -690,6 +701,8 @@ class TestSubmissionController:
             "X-RD-Module": str(block["module"]),
             "X-RD-Request-Digest": str(block["request_digest"]),
             "X-RD-Submitter-Email": str(block["submitter_email"]),
+            "X-RD-Auth-Mode": str(block.get("transport_auth") or "NONE"),
+            "X-RD-Origin-Class": str(block.get("origin_classification") or "STRUCTURED_UNVERIFIED"),
         }
         manifest_digest = str(block.get("preview_manifest_digest") or "").strip()
         if manifest_digest:
@@ -704,6 +717,7 @@ class TestSubmissionController:
             f"轮次：{block['round_id']}",
             f"预计交付：{block.get('expected_delivery_at') or '未填写'}",
             f"摘要：{block.get('change_summary') or '未填写'}",
+            f"发起标识：{block.get('origin_badge') or _UNSIGNED_ORIGIN_BADGE}",
         ]
         if str(block.get("retrieval_method") or "").strip().lower() == "svn":
             summary.extend(

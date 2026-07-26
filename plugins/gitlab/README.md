@@ -1,6 +1,9 @@
 # GitLab Codex Plugin
 
 This plugin exposes a local MCP server for GitLab REST API workflows. Version
+`0.2.9` adds an explicit, policy-bound `access_level`: production stays
+`ref_protected` by default, while an isolated test Runner must explicitly use
+`not_protected` and is rejected if it carries a protected live-gate tag. Version
 `0.2.8` grants the dedicated NetworkService Runner only `SERVICE_QUERY_CONFIG`
 and `SERVICE_QUERY_STATUS` on its own protected service so native runtime
 attestation does not need WMI. Version `0.2.7` honors GitLab 18's explicit
@@ -112,7 +115,11 @@ icacls $work /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(C
 ```
 
 Copy `config/runner-policy.example.json` to the protected policy directory and
-replace every placeholder. `runner_binary_sha256` must equal the exact signed
+replace every placeholder. `access_level` defaults to `ref_protected` when it
+is omitted. A non-production Windows test Runner must set
+`"access_level": "not_protected"` and use only its test tags, such as
+`windows` and `product-material-gate-ci-test`; known protected live-gate tags
+are rejected before any GitLab API request. `runner_binary_sha256` must equal the exact signed
 `gitlab-runner.exe` under a Windows Program Files directory:
 
 ```powershell

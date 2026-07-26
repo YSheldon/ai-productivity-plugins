@@ -1,6 +1,13 @@
 # GitLab Codex Plugin
 
 This plugin exposes a local MCP server for GitLab REST API workflows. Version
+`0.3.0` adds a one-time Windows Credential Manager bootstrap for the Runner
+manager token: the token is never accepted in command arguments or persisted
+in JSON, is supplied only while the administration CLI invokes GitLab, and is
+cleared automatically after a verified `ready` result. Version `0.2.9` adds an
+explicit, policy-bound `access_level`: production stays
+`ref_protected` by default, while an isolated test Runner must explicitly use
+`not_protected` and is rejected if it carries a protected live-gate tag. Version
 `0.2.8` grants the dedicated NetworkService Runner only `SERVICE_QUERY_CONFIG`
 and `SERVICE_QUERY_STATUS` on its own protected service so native runtime
 attestation does not need WMI. Version `0.2.7` honors GitLab 18's explicit
@@ -56,10 +63,38 @@ py -3 .\plugins\gitlab\scripts\runner_admin_cli.py provision --policy-name produ
 py -3 .\plugins\gitlab\scripts\runner_admin_cli.py resume --policy-name product-material-gate
 ```
 
-The CLI accepts only `policy_name` and an optional GitLab profile. It invokes
-the same reviewed handlers as the MCP tools, never accepts a token, executable,
-path, service account, or command, and exits successfully only when the final
-result is `ready=true`.
+The `provision` and `resume` actions accept only `policy_name` and an optional
+GitLab profile. They invoke the same reviewed handlers as the MCP tools, never
+accept a token, executable, path, service account, or command, and exit
+successfully only when the final result is `ready=true`.
+
+### One-Time Runner Manager Token
+
+For the default environment profile, an elevated administrator can avoid a
+long-lived `GITLAB_TOKEN` environment variable by storing a short-lived,
+least-privilege Runner manager token in Windows Credential Manager:
+
+```powershell
+py -3 .\plugins\gitlab\scripts\runner_admin_cli.py token-set --policy-name product-material-gate
+py -3 .\plugins\gitlab\scripts\runner_admin_cli.py provision --policy-name product-material-gate
+```
+
+`token-set` uses hidden console input and records only the per-policy target
+`CodexGitLab/runner-manager/v1/<policy_name>` for the same elevated Windows
+account. It never prints the token or puts it in an argument, JSON file,
+process child environment, Runner config, journal, or receipt. During
+`provision` or `resume`, the CLI reads it only for the API call path, derives
+`GITLAB_URL` from the protected policy if necessary, and removes it after
+`ready=true`. A non-ready result retains it only for the same policy's `resume`;
+`token-clear --confirm-clear` removes it explicitly. If automatic cleanup
+fails, the CLI exits nonzero with `security_ready=false`; do not accept that
+Runner for production use until the credential is cleared.
+
+Use an access token scoped for the target project with GitLab's
+`create_runner` and `manage_runner` permissions and the required project role.
+For advanced named profiles or custom token environment names, keep using the
+configured `token_env`; the managed-token fallback intentionally does not
+override that configuration.
 
 `gitlab_provision_windows_project_runner` accepts only `policy_name` and an
 optional GitLab profile. It never accepts an executable, config path, working
@@ -112,7 +147,11 @@ icacls $work /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(C
 ```
 
 Copy `config/runner-policy.example.json` to the protected policy directory and
-replace every placeholder. `runner_binary_sha256` must equal the exact signed
+replace every placeholder. `access_level` defaults to `ref_protected` when it
+is omitted. A non-production Windows test Runner must set
+`"access_level": "not_protected"` and use only its test tags, such as
+`windows` and `product-material-gate-ci-test`; known protected live-gate tags
+are rejected before any GitLab API request. `runner_binary_sha256` must equal the exact signed
 `gitlab-runner.exe` under a Windows Program Files directory:
 
 ```powershell
@@ -125,8 +164,8 @@ points, broad write ACLs, and untrusted owners. It then performs this sequence:
 
 1. Resolve the policy project to its numeric GitLab project id.
 2. `POST /user/runners` as `project_type`, initially `paused=true`,
-   `locked=true`, `run_untagged=false`, and `access_level=ref_protected` with
-   the exact policy tags.
+   `locked=true`, `run_untagged=false`, and the policy-bound `access_level`
+   (default `ref_protected`) with the exact policy tags.
 3. Pass the returned one-time token only in a private child environment as
    `CI_SERVER_TOKEN`; the token never appears in argv, tool output, errors, or
    logs, and the parent environment is not modified.

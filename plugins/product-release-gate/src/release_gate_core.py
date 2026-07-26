@@ -214,6 +214,10 @@ def default_config() -> dict[str, Any]:
             "state_dir": str(Path.home() / ".codex" / "product-release-gate" / "state"),
             "poll_minutes": 60,
             "scheduler_mode": "auto",
+            "identity_binding": {
+                "required": False,
+                "principal_sha256": "",
+            },
             "auto_authorize_verified_pre_release": False,
             "auto_deploy_authorized_releases": False,
             "auto_generate_production_report": False,
@@ -238,6 +242,12 @@ def default_config() -> dict[str, Any]:
             "enabled": False,
             "approval_workflow": {
                 "mode": "legacy_external",
+                "verify_command": [],
+                "timeout_seconds": 120,
+            },
+            "svn_release_gate": {
+                "required": False,
+                "expected_project_id": 59,
                 "verify_command": [],
                 "timeout_seconds": 120,
             },
@@ -944,6 +954,7 @@ class ReleaseGateController:
                     }
                 )
             manifest_r = {
+                "schema": "ProductReleaseGateManifestR/v1",
                 "event_id": event_id,
                 "phase": "Manifest-R",
                 "created_at": utc_now(),

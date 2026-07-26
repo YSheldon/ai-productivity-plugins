@@ -398,7 +398,8 @@ class ReleaseGateWorkflowRuntime:
         workflow = self.controller.unified_approval_preflight()
         production: dict[str, Any] | None = None
         production_ready = True
-        if self.auto_deploy_authorized_releases:
+        production_config = self.controller.config.get("production") or {}
+        if production_config.get("enabled") is True:
             try:
                 production = self.controller.production_preflight()
                 production_ready = bool(production.get("ready"))

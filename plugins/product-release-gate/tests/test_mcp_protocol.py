@@ -9,8 +9,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+
+
+sys.path.insert(0, str(PLUGIN_ROOT / "src"))
+
+from release_gate_credentials import (
+    current_runtime_principal,
+    runtime_principal_sha256,
+)
 
 
 class McpProtocolTests(unittest.TestCase):
@@ -103,8 +110,13 @@ class McpProtocolTests(unittest.TestCase):
 
         tools = responses[1]["result"]["tools"]
         tool_names = {item["name"] for item in tools}
-        self.assertGreaterEqual(len(tools), 29)
+        self.assertGreaterEqual(len(tools), 31)
         self.assertIn("release_gate_run_release_gate", tool_names)
+        self.assertIn("release_gate_build_svn_live_handoff", tool_names)
+        self.assertIn(
+            "release_gate_record_svn_live_gate_receipt",
+            tool_names,
+        )
         self.assertIn("release_gate_request_release_authorization", tool_names)
         self.assertIn("release_gate_record_release_authorization", tool_names)
         self.assertIn("release_gate_unified_approval_preflight", tool_names)
@@ -142,6 +154,22 @@ class McpProtocolTests(unittest.TestCase):
                 json.dumps(
                     {
                         "storage_dir": str(root / "events"),
+                        "runtime": {
+                            "identity_binding": {
+                                "required": True,
+                                "principal_sha256": runtime_principal_sha256(
+                                    current_runtime_principal()
+                                ),
+                            }
+                        },
+                        "policy": {
+                            "require_signature": True,
+                            "require_cloud_scan": True,
+                        },
+                        "signature": {"expected_thumbprints": ["A" * 40]},
+                        "cloud_scan": {
+                            "command": [sys.executable, "-c", "print('{}')"],
+                        },
                         "production": {
                             "enabled": True,
                             "authorization": {

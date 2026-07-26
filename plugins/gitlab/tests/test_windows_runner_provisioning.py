@@ -35,6 +35,7 @@ class FakeGitLab:
         self.project_id = 59
         self.runner_name = "product-material-gate-windows"
         self.tags = ["product-material-gate-protected", "windows-dedicated"]
+        self.access_level = "ref_protected"
         self.fail_create = False
         self.bad_attestation = False
 
@@ -46,6 +47,10 @@ class FakeGitLab:
         if method == "POST" and path == "/user/runners":
             if self.fail_create:
                 raise RuntimeError("API secret details must not be echoed")
+            assert isinstance(body, dict)
+            self.runner_name = str(body["description"])
+            self.tags = list(body["tag_list"])
+            self.access_level = str(body["access_level"])
             return {"id": self.runner_id, "token": self.token}
         if method == "DELETE" and path == f"/runners/{self.runner_id}":
             return {"status": 204}
@@ -60,7 +65,7 @@ class FakeGitLab:
                 "paused": self.paused,
                 "locked": True,
                 "run_untagged": False,
-                "access_level": "ref_protected",
+                "access_level": self.access_level,
                 "status": "online",
                 "tag_list": ["wrong-tag"] if self.bad_attestation else list(self.tags),
                 "projects": [{"id": self.project_id}],
@@ -68,7 +73,14 @@ class FakeGitLab:
         raise AssertionError(f"unexpected fake request: {method} {path}")
 
 
-def make_policy(tmp_path: Path, module, *, install_service: bool = False) -> dict[str, object]:
+def make_policy(
+    tmp_path: Path,
+    module,
+    *,
+    install_service: bool = False,
+    access_level: str = "ref_protected",
+    tags: list[str] | None = None,
+) -> dict[str, object]:
     binary = tmp_path / "gitlab-runner.exe"
     binary.write_bytes(b"signed-runner-binary")
     working_dir = tmp_path / "work"
@@ -81,7 +93,8 @@ def make_policy(tmp_path: Path, module, *, install_service: bool = False) -> dic
         "gitlab_url": "https://gitlab.example.com",
         "project": "ai/product-material-gate-ci",
         "runner_name": "product-material-gate-windows",
-        "tags": ["product-material-gate-protected", "windows-dedicated"],
+        "tags": list(tags or ["product-material-gate-protected", "windows-dedicated"]),
+        "access_level": access_level,
         "binary_path": binary,
         "binary_sha256": module.sha256_file(binary).upper(),
         "binary_signature_thumbprint": "A" * 40,
@@ -98,6 +111,102 @@ def make_policy(tmp_path: Path, module, *, install_service: bool = False) -> dic
         "timeout_seconds": 120,
     }
 
+
+def load_policy_from_layout(
+    tmp_path: Path,
+    module,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    access_level: str | None,
+    tags: list[str],
+) -> dict[str, object]:
+    program_data = tmp_path / "program-data"
+    program_files = tmp_path / "program-files"
+    policy_root = program_data / "CodexGitLab" / "runner-policies"
+    runtime_root = (
+        program_data / "CodexGitLab" / "runners" / "product-material-gate-ci-test-windows"
+    )
+    builds_dir = runtime_root / "work" / "builds"
+    cache_dir = runtime_root / "work" / "cache"
+    binary = program_files / "GitLab-Runner" / "gitlab-runner.exe"
+    policy_root.mkdir(parents=True)
+    builds_dir.mkdir(parents=True)
+    cache_dir.mkdir()
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"test-only-runner")
+    payload: dict[str, object] = {
+        "schema_version": module.RUNNER_POLICY_SCHEMA_VERSION,
+        "gitlab_url": "https://gitlab.example.com",
+        "project": "ai/product-material-gate-ci",
+        "runner_name": "product-material-gate-ci-test-windows",
+        "tag_list": tags,
+        "runner_binary": str(binary),
+        "runner_binary_sha256": "a" * 64,
+        "install_service": False,
+    }
+    if access_level is not None:
+        payload["access_level"] = access_level
+    (policy_root / "product-material-gate-ci-test-windows.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        module,
+        "windows_platform_roots",
+        lambda: {
+            "program_data": str(program_data),
+            "program_files": str(program_files),
+        },
+    )
+    monkeypatch.setattr(module, "assert_strict_windows_acl", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "verify_runner_binary",
+        lambda _path, digest: {
+            "sha256": digest.upper(),
+            "signature_thumbprint": "A" * 40,
+        },
+    )
+    return module.load_windows_runner_policy("product-material-gate-ci-test-windows")
+
+
+def test_policy_loader_defaults_to_protected_and_allows_explicit_test_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module()
+    default_policy = load_policy_from_layout(
+        tmp_path / "default",
+        module,
+        monkeypatch,
+        access_level=None,
+        tags=["product-material-gate-protected", "windows-dedicated"],
+    )
+    assert default_policy["access_level"] == "ref_protected"
+
+    test_policy = load_policy_from_layout(
+        tmp_path / "test",
+        module,
+        monkeypatch,
+        access_level="not_protected",
+        tags=["windows", "product-material-gate-ci-test"],
+    )
+    assert test_policy["access_level"] == "not_protected"
+
+
+def test_policy_loader_rejects_nonprotected_live_gate_tags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module()
+    with pytest.raises(module.ToolError, match="live-gate tags"):
+        load_policy_from_layout(
+            tmp_path,
+            module,
+            monkeypatch,
+            access_level="not_protected",
+            tags=["product-material-gate-protected", "windows"],
+        )
 
 def test_administrator_precondition_runs_before_policy_or_remote_api(
     monkeypatch: pytest.MonkeyPatch,
@@ -365,6 +474,75 @@ def test_atomic_creation_uses_protected_project_runner_defaults_and_verifies(
     assert result["paused"] is True
     assert result["ready"] is False
 
+
+def test_nonprotected_test_runner_is_explicitly_policy_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_module()
+    policy = make_policy(
+        tmp_path,
+        module,
+        access_level="not_protected",
+        tags=["windows", "product-material-gate-ci-test"],
+    )
+    gl = FakeGitLab()
+    configure_atomic_test(module, monkeypatch, policy, gl)
+
+    result = parse_tool_result(
+        module.provision_windows_project_runner({"policy_name": "product-material-gate"})
+    )
+    create_body = next(
+        body
+        for method, path, body in gl.calls
+        if method == "POST" and path == "/user/runners"
+    )
+    assert create_body["access_level"] == "not_protected"
+    assert create_body["tag_list"] == ["windows", "product-material-gate-ci-test"]
+    assert result["runner"]["access_level"] == "not_protected"
+
+
+def test_runner_access_level_is_explicit_and_rejects_live_tags() -> None:
+    module = load_module()
+    assert (
+        module.resolve_runner_access_level(None, ["product-material-gate-protected"])
+        == "ref_protected"
+    )
+    assert (
+        module.resolve_runner_access_level(
+            "not_protected", ["windows", "product-material-gate-ci-test"]
+        )
+        == "not_protected"
+    )
+    with pytest.raises(module.ToolError, match="access_level"):
+        module.resolve_runner_access_level("unprotected", ["windows"])
+    with pytest.raises(module.ToolError, match="live-gate tags"):
+        module.resolve_runner_access_level(
+            "not_protected", ["product-material-gate-protected"]
+        )
+
+
+def test_nonprotected_policy_rejects_protected_api_attestation(
+    tmp_path: Path,
+) -> None:
+    module = load_module()
+    policy = make_policy(
+        tmp_path,
+        module,
+        access_level="not_protected",
+        tags=["windows", "product-material-gate-ci-test"],
+    )
+    record = {
+        "id": 41,
+        "description": policy["runner_name"],
+        "paused": True,
+        "locked": True,
+        "run_untagged": False,
+        "access_level": "ref_protected",
+        "tag_list": policy["tags"],
+        "projects": [{"id": 59}],
+    }
+    with pytest.raises(module.ToolError, match="attestation"):
+        module.attest_runner_record(record, policy, 41, 59, paused=True)
 
 def test_registration_failure_rolls_back_remote_runner_and_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

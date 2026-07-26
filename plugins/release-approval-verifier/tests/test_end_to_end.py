@@ -39,6 +39,10 @@ sys.path.insert(0, str(PRODUCT_ROOT / "src"))
 from lark_audit import AuditWriteResult  # noqa: E402
 from product_gate_adapter import ProductGateMcpAdapter  # noqa: E402
 from release_gate_production import ProductionReleaseController  # noqa: E402
+from release_gate_credentials import (  # noqa: E402
+    current_runtime_principal,
+    runtime_principal_sha256,
+)
 from release_gate_runtime import ReleaseGateWorkflowRuntime  # noqa: E402
 from role_snapshot import RoleRecord, RoleSnapshot  # noqa: E402
 from verifier_config import (  # noqa: E402
@@ -459,6 +463,31 @@ def _write_deployment_lock(tmp_path: Path, adapter: Path) -> tuple[Path, str]:
     return lock_path, _sha256(lock_path)
 
 
+def _set_integrity_preflight(
+    controller: ProductionReleaseController,
+    config_path: Path,
+    *,
+    enabled: bool,
+) -> None:
+    """Enable strict controls only after the unsigned fixture reached release-ready."""
+    policy = controller.config.setdefault("policy", {})
+    assert isinstance(policy, dict)
+    policy["require_signature"] = enabled
+    policy["require_cloud_scan"] = enabled
+    if enabled:
+        signature = controller.config.setdefault("signature", {})
+        cloud_scan = controller.config.setdefault("cloud_scan", {})
+        assert isinstance(signature, dict)
+        assert isinstance(cloud_scan, dict)
+        signature["expected_thumbprints"] = ["A" * 40]
+        cloud_scan["command"] = [
+            sys.executable,
+            "-c",
+            "import json; print(json.dumps({'verdict': 'CLEAN'}))",
+        ]
+    config_path.write_text(json.dumps(controller.config), encoding="utf-8")
+
+
 def test_real_mcp_handoff_authorizes_once_and_survives_restart(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -523,6 +552,12 @@ def test_real_mcp_handoff_authorizes_once_and_survives_restart(
             "scheduler_mode": "auto",
             "auto_authorize_verified_pre_release": True,
             "authorization_requester": "rd-flywheel",
+            "identity_binding": {
+                "required": True,
+                "principal_sha256": runtime_principal_sha256(
+                    current_runtime_principal()
+                ),
+            },
         },
         "policy": {
             "allowed_extensions": [".bin"],
@@ -640,6 +675,7 @@ def test_real_mcp_handoff_authorizes_once_and_survives_restart(
         str(tmp_path / "product" / "final"),
     )
     assert product.run_release_gate("event-e2e")["status"] == "RELEASE_READY"
+    _set_integrity_preflight(product, product_config, enabled=True)
     product.request_unified_release_approval(
         event_id="event-e2e",
         requested_by="bot@example.com",
@@ -757,6 +793,7 @@ def test_real_mcp_handoff_authorizes_once_and_survives_restart(
     ).is_file()
 
     rollback_mail = CapturingProductMail()
+    _set_integrity_preflight(product, product_config, enabled=False)
     rollback_product = ProductionReleaseController(
         str(product_config), approval_mail_gateway=rollback_mail
     )
@@ -789,6 +826,7 @@ def test_real_mcp_handoff_authorizes_once_and_survives_restart(
     assert rollback_product.run_release_gate("event-rollback")[
         "status"
     ] == "RELEASE_READY"
+    _set_integrity_preflight(rollback_product, product_config, enabled=True)
     rollback_product.request_unified_release_approval(
         event_id="event-rollback",
         requested_by="bot@example.com",

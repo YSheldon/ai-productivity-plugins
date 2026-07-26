@@ -25,6 +25,24 @@ class FakeController:
     def deliver_production_report(self, event_id: str) -> dict:
         return {"status": "DELIVERED", "event_id": event_id, "idempotent": True}
 
+    def build_svn_live_handoff(self, **values: object) -> dict:
+        return {
+            "status": "SVN_RELEASE_GATE_REQUESTED",
+            "received": values,
+        }
+
+    def record_svn_live_gate_receipt(
+        self,
+        event_id: str,
+        receipt_path: str,
+    ) -> dict:
+        return {
+            "status": "RELEASE_READY",
+            "svn_release_gate_status": "CLEAN",
+            "event_id": event_id,
+            "receipt_path": receipt_path,
+        }
+
 
 class FakeRuntime:
     def run_once(self) -> dict:
@@ -104,6 +122,59 @@ class CliProtocolTests(unittest.TestCase):
             )
         self.assertEqual(EXIT_OK, code)
         self.assertEqual("DELIVERED", payload["result"]["status"])
+
+    def test_call_routes_svn_handoff_and_receipt_without_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = str(Path(temporary) / "config.json")
+            request = {
+                "event_id": "event-svn-1",
+                "product_name": "Falcon Client",
+                "product_version": "6.7.8",
+                "repository_root": "https://svn.example.test/releases",
+                "fixed_revision": 123,
+                "pipeline_nonce": "pipeline-1",
+                "materials": [
+                    {
+                        "logical_name": "product.bin",
+                        "svn_path": "products/client/product.bin",
+                    }
+                ],
+                "pre_release_report_sha256": "sha256:" + "a" * 64,
+                "source_message_id": "<release@example.test>",
+            }
+            code, payload = self._run(
+                [
+                    "--config",
+                    config,
+                    "call",
+                    "build_svn_live_handoff",
+                    "--input",
+                    json.dumps(request),
+                ]
+            )
+            receipt_code, receipt_payload = self._run(
+                [
+                    "--config",
+                    config,
+                    "call",
+                    "record_svn_live_gate_receipt",
+                    "--input",
+                    json.dumps(
+                        {
+                            "event_id": "event-svn-1",
+                            "receipt_path": "C:/evidence/receipt.json",
+                        }
+                    ),
+                ]
+            )
+
+        self.assertEqual(EXIT_OK, code)
+        self.assertEqual(request, payload["result"]["received"])
+        self.assertEqual(EXIT_OK, receipt_code)
+        self.assertEqual(
+            "CLEAN",
+            receipt_payload["result"]["svn_release_gate_status"],
+        )
 
     def test_scheduler_policy_cannot_be_overridden_per_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

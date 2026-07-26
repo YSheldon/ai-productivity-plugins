@@ -12,7 +12,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 
 from release_gate_core import (
     GateError,
@@ -25,12 +25,25 @@ from release_gate_core import (
     write_text_file,
 )
 from release_gate_hardened import HardenedReleaseGateController
+from release_gate_credentials import (
+    CredentialProviderError,
+    RuntimePrincipalProvider,
+    resolve_configured_secret,
+    runtime_identity_binding_status,
+)
 from release_gate_approval_mail import (
     ApprovalMailError,
     ImapSmtpMailCliGateway,
     LockedImapSmtpMailCliGateway,
     resolve_locked_entrypoint,
     sha256_file,
+)
+from release_gate_svn_handoff import (
+    SvnGateContractError,
+    approval_binding_sha256,
+    build_svn_handoff,
+    validate_verified_receipt,
+    workflow_digest,
 )
 
 
@@ -63,6 +76,12 @@ _NON_PRODUCTION_ADAPTER_PATH_PARTS = frozenset(
         "examples",
     }
 )
+# Compatibility fixtures must never be executable as production adapters.
+_NON_PRODUCTION_ADAPTER_PATH = re.compile(
+    r"(?:^|[\\/])(?:tests?|fixtures?|compat(?:ibility)?|mocks?|stubs?|demos?|fakes?)(?:[\\/]|$)"
+    r"|first[_-]?practice[_-]?adapter[_-]?compat",
+    re.IGNORECASE,
+)
 _DEPLOYMENT_LOCKED_COMMAND_IDS = (
     ("deploy", "deploy_command"),
     ("verify", "verify_command"),
@@ -81,6 +100,9 @@ class ProductionReleaseController(HardenedReleaseGateController):
         approval_mail_gateway: Any | None = None,
         report_mail_gateway: Any | None = None,
         allow_unlocked_test_adapters: bool = False,
+        credential_reader: Callable[[str], str | None] | None = None,
+        environ: Mapping[str, str] | None = None,
+        runtime_principal_provider: RuntimePrincipalProvider | None = None,
     ) -> None:
         super().__init__(config_path)
         self._approval_mail_gateway_override = approval_mail_gateway
@@ -90,6 +112,9 @@ class ProductionReleaseController(HardenedReleaseGateController):
             else approval_mail_gateway
         )
         self._allow_unlocked_test_adapters = allow_unlocked_test_adapters
+        self._credential_reader = credential_reader
+        self._environ = os.environ if environ is None else environ
+        self._runtime_principal_provider = runtime_principal_provider
 
     def _production_config(self) -> dict[str, Any]:
         config = self.config.get("production")
@@ -97,12 +122,52 @@ class ProductionReleaseController(HardenedReleaseGateController):
             raise GateError("production.enabled must be true for production operations")
         return config
 
+    def _runtime_identity_status(self) -> dict[str, object]:
+        runtime = self.config.get("runtime")
+        binding = (
+            runtime.get("identity_binding")
+            if isinstance(runtime, Mapping)
+            else None
+        )
+        production = self.config.get("production")
+        production_enabled = bool(
+            isinstance(production, Mapping)
+            and production.get("enabled") is True
+        )
+        return runtime_identity_binding_status(
+            binding,
+            required=production_enabled,
+            principal_provider=self._runtime_principal_provider,
+        )
+
+    def _require_runtime_identity(self) -> None:
+        status = self._runtime_identity_status()
+        if status["required"] is True and status["ready"] is not True:
+            raise GateError(
+                "production runtime identity differs from the configured binding"
+            )
+
+    def _save_event(self, event: dict[str, Any]) -> None:
+        self._require_runtime_identity()
+        super()._save_event(event)
+
     @staticmethod
     def _valid_command(value: Any) -> bool:
         return (
             isinstance(value, list)
             and bool(value)
             and all(isinstance(item, str) and bool(item) for item in value)
+        )
+
+    @classmethod
+    def _valid_production_command(cls, value: Any) -> bool:
+        """Validate an adapter command and reject known test-only paths."""
+        if not cls._valid_command(value):
+            return False
+        return not any(
+            _NON_PRODUCTION_ADAPTER_PATH.search(item)
+            for item in value
+            if isinstance(item, str)
         )
 
     @staticmethod
@@ -140,21 +205,42 @@ class ProductionReleaseController(HardenedReleaseGateController):
                     pass
         return True
 
+    def _resolve_signing_secret(
+        self,
+        config: Mapping[str, object],
+        label: str,
+    ) -> str:
+        try:
+            value, _source = resolve_configured_secret(
+                config,
+                environ=self._environ,
+                credential_reader=self._credential_reader,
+            )
+        except CredentialProviderError as exc:
+            raise GateError(f"{label} signing credential is unavailable") from exc
+        if not value:
+            key_env = str(config.get("key_env") or "").strip()
+            raise GateError(
+                f"{label} signing credential is missing: "
+                f"{key_env or 'unconfigured'}"
+            )
+        return value
+
     def _authorization_key(self) -> bytes:
+        self._require_runtime_identity()
         production = self._production_config()
         authorization = production.get("authorization") or {}
         key_env = str(authorization.get("key_env") or "").strip()
         if not key_env:
             raise GateError("production.authorization.key_env is required")
-        key = os.environ.get(key_env, "")
-        if not key:
-            raise GateError(f"authorization signing key environment variable is missing: {key_env}")
+        key = self._resolve_signing_secret(authorization, "authorization")
         encoded = key.encode("utf-8")
         if len(encoded) < 32:
             raise GateError("authorization signing key must be at least 32 bytes")
         return encoded
 
     def _audit_key(self) -> bytes:
+        self._require_runtime_identity()
         production = self._production_config()
         authorization = production.get("authorization") or {}
         audit = production.get("audit") or {}
@@ -164,13 +250,14 @@ class ProductionReleaseController(HardenedReleaseGateController):
             raise GateError("production.audit.key_env is required")
         if key_env == authorization_key_env:
             raise GateError("production audit and authorization keys must use different variables")
-        key = os.environ.get(key_env, "")
-        if not key:
-            raise GateError(f"audit signing key environment variable is missing: {key_env}")
+        key = self._resolve_signing_secret(audit, "audit")
         encoded = key.encode("utf-8")
         if len(encoded) < 32:
             raise GateError("audit signing key must be at least 32 bytes")
-        authorization_value = os.environ.get(authorization_key_env, "")
+        authorization_value = self._resolve_signing_secret(
+            authorization,
+            "authorization",
+        )
         if authorization_value and hmac.compare_digest(
             encoded,
             authorization_value.encode("utf-8"),
@@ -401,10 +488,44 @@ class ProductionReleaseController(HardenedReleaseGateController):
         )
         return record
 
+    def _svn_release_gate_config(self) -> dict[str, Any]:
+        config = self._production_config().get("svn_release_gate") or {}
+        if not isinstance(config, dict):
+            raise GateError("production.svn_release_gate must be an object")
+        return config
+
+    def _svn_release_gate_verifier_ready(self) -> bool:
+        try:
+            config = self._svn_release_gate_config()
+            project_id = config.get("expected_project_id")
+            timeout_seconds = config.get("timeout_seconds")
+            command = config.get("verify_command")
+            if (
+                not isinstance(project_id, int)
+                or isinstance(project_id, bool)
+                or project_id < 1
+                or not isinstance(timeout_seconds, int)
+                or isinstance(timeout_seconds, bool)
+                or timeout_seconds < 1
+                or not self._valid_production_command(command)
+            ):
+                return False
+            if self._allow_unlocked_test_adapters:
+                return True
+            self._validate_locked_deployment_command(
+                "svn_release_gate_receipt",
+                command,
+            )
+        except GateError:
+            return False
+        return True
+
     def production_preflight(
         self, *, include_report_delivery: bool = True
     ) -> dict[str, Any]:
         production = self._production_config()
+        svn_release_gate = production.get("svn_release_gate") or {}
+        svn_release_gate_required = svn_release_gate.get("required") is True
         authorization = production.get("authorization") or {}
         deployment = production.get("deployment") or {}
         readback = production.get("readback") or {}
@@ -412,7 +533,19 @@ class ProductionReleaseController(HardenedReleaseGateController):
         targets = deployment.get("targets") or {}
         authorization_key_env = str(authorization.get("key_env") or "").strip()
         audit = production.get("audit") or {}
+        runtime_identity = self._runtime_identity_status()
         audit_key_env = str(audit.get("key_env") or "").strip()
+        try:
+            authorization_value = self._resolve_signing_secret(
+                authorization,
+                "authorization",
+            )
+        except GateError:
+            authorization_value = ""
+        try:
+            audit_value = self._resolve_signing_secret(audit, "audit")
+        except GateError:
+            audit_value = ""
         approval_workflow = production.get("approval_workflow") or {}
         workflow_mode = str(
             approval_workflow.get("mode") or "legacy_external"
@@ -422,10 +555,23 @@ class ProductionReleaseController(HardenedReleaseGateController):
         )
         checks = [
             {
+                "name": "runtime.identity_binding",
+                "required": runtime_identity["required"],
+                "configured": runtime_identity["ready"],
+                "detail": runtime_identity,
+            },
+            {
+                "name": "svn_release_gate.receipt_verifier",
+                "required": svn_release_gate_required,
+                "configured": not svn_release_gate_required
+                or self._svn_release_gate_verifier_ready(),
+            },
+            {
                 "name": "authorization_signer",
                 "configured": bool(
-                    str(authorization.get("key_env") or "").strip()
-                    and os.environ.get(str(authorization.get("key_env") or ""), "")
+                    authorization_key_env
+                    and authorization_value
+                    and len(authorization_value.encode("utf-8")) >= 32
                 ),
             },
             {
@@ -433,11 +579,11 @@ class ProductionReleaseController(HardenedReleaseGateController):
                 "configured": bool(
                     audit_key_env
                     and audit_key_env != authorization_key_env
-                    and os.environ.get(audit_key_env, "")
-                    and os.environ.get(audit_key_env, "")
-                    != os.environ.get(authorization_key_env, "")
-                    and len(os.environ.get(audit_key_env, "").encode("utf-8")) >= 32
-                    and len(os.environ.get(authorization_key_env, "").encode("utf-8")) >= 32
+                    and audit_value
+                    and authorization_value
+                    and not hmac.compare_digest(audit_value, authorization_value)
+                    and len(audit_value.encode("utf-8")) >= 32
+                    and len(authorization_value.encode("utf-8")) >= 32
                 ),
             },
             {
@@ -445,7 +591,33 @@ class ProductionReleaseController(HardenedReleaseGateController):
                 "required": requires_external_authorization_readback,
                 "configured": (
                     not requires_external_authorization_readback
-                    or self._valid_command(authorization.get("verify_command"))
+                    or self._valid_production_command(authorization.get("verify_command"))
+                ),
+            },
+            {
+                "name": "policy.require_signature",
+                "configured": bool((self.config.get("policy") or {}).get("require_signature")),
+            },
+            {
+                "name": "signature.expected_thumbprints",
+                "configured": bool(
+                    isinstance((self.config.get("signature") or {}).get("expected_thumbprints"), list)
+                    and (self.config.get("signature") or {}).get("expected_thumbprints")
+                    and all(
+                        isinstance(value, str)
+                        and re.fullmatch(r"[0-9A-Fa-f]{40}", re.sub(r"[^0-9A-Fa-f]", "", value))
+                        for value in (self.config.get("signature") or {}).get("expected_thumbprints")
+                    )
+                ),
+            },
+            {
+                "name": "policy.require_cloud_scan",
+                "configured": bool((self.config.get("policy") or {}).get("require_cloud_scan")),
+            },
+            {
+                "name": "cloud_scan.command",
+                "configured": self._valid_production_command(
+                    (self.config.get("cloud_scan") or {}).get("command")
                 ),
             },
             {
@@ -463,19 +635,19 @@ class ProductionReleaseController(HardenedReleaseGateController):
             },
             {
                 "name": "deployment.deploy_command",
-                "configured": self._valid_command(deployment.get("deploy_command")),
+                "configured": self._valid_production_command(deployment.get("deploy_command")),
             },
             {
                 "name": "deployment.verify_command",
-                "configured": self._valid_command(deployment.get("verify_command")),
+                "configured": self._valid_production_command(deployment.get("verify_command")),
             },
             {
                 "name": "deployment.rollback_command",
-                "configured": self._valid_command(deployment.get("rollback_command")),
+                "configured": self._valid_production_command(deployment.get("rollback_command")),
             },
             {
                 "name": "deployment.rollback_verify_command",
-                "configured": self._valid_command(deployment.get("rollback_verify_command")),
+                "configured": self._valid_production_command(deployment.get("rollback_verify_command")),
             },
             {
                 "name": "deployment.adapter_lock",
@@ -483,7 +655,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
             },
             {
                 "name": "readback.command",
-                "configured": self._valid_command(readback.get("command")),
+                "configured": self._valid_production_command(readback.get("command")),
             },
         ]
         runtime = self.config.get("runtime") or {}
@@ -504,6 +676,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         return {"ready": not missing, "missing_capabilities": missing, "checks": checks}
 
     def ensure_deployment_capabilities(self, event_id: str) -> dict[str, Any]:
+        self._require_runtime_identity()
         event = self._load_event(event_id)
         allowed_statuses = {
             "RELEASE_AUTHORIZED",
@@ -872,6 +1045,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         role_snapshot_digest: str,
         expires_at: str,
     ) -> dict[str, Any]:
+        self._require_runtime_identity()
         self._approval_workflow_config("unified_multi_role")
         event = self._load_event(event_id)
         requester = str(requested_by or "").strip().lower()
@@ -1155,6 +1329,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         event_id: str,
         verification_ref: str,
     ) -> dict[str, Any]:
+        self._require_runtime_identity()
         workflow = self._approval_workflow_config("unified_multi_role")
         event = self._load_event(event_id)
         reference = str(verification_ref or "").strip()
@@ -1294,6 +1469,373 @@ class ProductionReleaseController(HardenedReleaseGateController):
             "idempotent": False,
         }
 
+    def _load_bound_svn_handoff(
+        self,
+        event: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        gate = event.get("svn_release_gate") or {}
+        if not isinstance(gate, dict):
+            raise GateError("SVN release-gate state is invalid")
+        handoff_path = Path(str(gate.get("handoff_path") or ""))
+        if not handoff_path.is_file():
+            raise GateError("SVN release-gate handoff is missing")
+        handoff = read_json(handoff_path)
+        if not isinstance(handoff, dict):
+            raise GateError("SVN release-gate handoff is invalid")
+        request = handoff.get("request")
+        source = handoff.get("source")
+        expected_manifest_digest = "sha256:" + str(
+            event.get("manifest_r_digest") or ""
+        )
+        request_digest = workflow_digest(request) if isinstance(request, dict) else ""
+        expected_source_keys = {
+            "approval_binding_sha256",
+            "event_id",
+            "manifest_sha256",
+            "pre_release_report_sha256",
+            "pre_release_status",
+            "source_message_id",
+        }
+        source_is_bound = False
+        if isinstance(source, dict) and set(source) == expected_source_keys:
+            report_digest = source.get("pre_release_report_sha256")
+            source_message_id = source.get("source_message_id")
+            binding_digest = source.get("approval_binding_sha256")
+            if (
+                source.get("pre_release_status") == "PASS"
+                and source.get("event_id") == event.get("event_id")
+                and source.get("manifest_sha256") == expected_manifest_digest
+                and isinstance(report_digest, str)
+                and re.fullmatch(r"sha256:[0-9a-f]{64}", report_digest) is not None
+                and isinstance(source_message_id, str)
+                and source_message_id.strip()
+                and not any(character in source_message_id for character in "\r\n")
+                and isinstance(binding_digest, str)
+                and re.fullmatch(r"sha256:[0-9a-f]{64}", binding_digest) is not None
+            ):
+                source_is_bound = binding_digest == approval_binding_sha256(
+                    event_id=str(event.get("event_id") or ""),
+                    request_sha256=request_digest,
+                    pre_release_report_sha256=report_digest,
+                    manifest_sha256=expected_manifest_digest,
+                    source_message_id=source_message_id,
+                )
+        valid = (
+            handoff.get("schema") == "ProductMaterialWorkflow/v1"
+            and handoff.get("stage") == "RELEASE_GATE_REQUESTED"
+            and handoff.get("event_id") == event.get("event_id")
+            and isinstance(request, dict)
+            and request.get("request_id") == event.get("event_id")
+            and handoff.get("request_sha256") == request_digest
+            and source_is_bound
+            and gate.get("request_sha256") == handoff.get("request_sha256")
+            and gate.get("manifest_r_digest") == expected_manifest_digest
+            and gate.get("handoff_sha256") == workflow_digest(handoff)
+        )
+        if not valid:
+            raise GateError(
+                "SVN release-gate handoff is not bound to the current Manifest-R"
+            )
+        return gate, handoff
+
+    def _verify_svn_release_gate_receipt_adapter(
+        self,
+        event: dict[str, Any],
+        receipt_path: Path,
+    ) -> dict[str, Any]:
+        if not self._svn_release_gate_verifier_ready():
+            raise GateError(
+                "production.svn_release_gate receipt verifier is not ready"
+            )
+        if not receipt_path.is_file() or receipt_path.is_symlink():
+            raise GateError(
+                "SVN release-gate receipt source must be a regular local file"
+            )
+        gate, handoff = self._load_bound_svn_handoff(event)
+        config = self._svn_release_gate_config()
+        project_id = config.get("expected_project_id")
+        timeout_seconds = config.get("timeout_seconds")
+        payload, error = self._run_json_adapter(
+            config.get("verify_command"),
+            {
+                "receipt_path": str(receipt_path.resolve()),
+                "handoff_path": str(Path(gate["handoff_path"]).resolve()),
+                "event_id": str(event["event_id"]),
+                "request_sha256": str(handoff["request_sha256"]),
+                "manifest_r_digest": "sha256:"
+                + str(event["manifest_r_digest"]),
+                "expected_project_id": str(project_id),
+            },
+            int(timeout_seconds),
+            command_id=(
+                None
+                if self._allow_unlocked_test_adapters
+                else "svn_release_gate_receipt"
+            ),
+        )
+        if error is not None or payload is None:
+            raise GateError(
+                "SVN release-gate receipt verification failed: "
+                + str(error or "empty verifier result")
+            )
+        try:
+            return validate_verified_receipt(
+                payload,
+                event_id=str(event["event_id"]),
+                request_sha256=str(handoff["request_sha256"]),
+                manifest_r_digest=str(event["manifest_r_digest"]),
+                expected_project_id=int(project_id),
+            )
+        except (SvnGateContractError, TypeError, ValueError) as exc:
+            raise GateError(
+                f"SVN release-gate verified receipt is invalid: {exc}"
+            ) from exc
+
+    def build_svn_live_handoff(
+        self,
+        event_id: str,
+        product_name: str,
+        product_version: str,
+        repository_root: str,
+        fixed_revision: int,
+        pipeline_nonce: str,
+        materials: list[dict[str, Any]],
+        pre_release_report_sha256: str,
+        source_message_id: str,
+    ) -> dict[str, Any]:
+        self._require_runtime_identity()
+        event = self._load_event(event_id)
+        gate = event.get("svn_release_gate") or {}
+        if isinstance(gate, dict) and gate.get("status") in {
+            "PENDING",
+            "CLEAN",
+            "BLOCKED",
+        }:
+            existing_gate, existing_handoff = self._load_bound_svn_handoff(
+                event
+            )
+            try:
+                candidate = build_svn_handoff(
+                    event_id=event_id,
+                    manifest_r=self._load_manifest(event_id, "manifest-r.json"),
+                    product_name=product_name,
+                    product_version=product_version,
+                    repository_root=repository_root,
+                    fixed_revision=fixed_revision,
+                    pipeline_nonce=pipeline_nonce,
+                    materials=materials,
+                    pre_release_report_sha256=pre_release_report_sha256,
+                    source_message_id=source_message_id,
+                    created_at=str(existing_handoff["created_at"]),
+                )
+            except SvnGateContractError as exc:
+                raise GateError(f"SVN live handoff is invalid: {exc}") from exc
+            if workflow_digest(candidate) != workflow_digest(existing_handoff):
+                raise GateError(
+                    "a different SVN release-gate handoff already exists"
+                )
+            return {
+                "event_id": event_id,
+                "status": event["status"],
+                "svn_release_gate_status": existing_gate["status"],
+                "handoff_path": existing_gate["handoff_path"],
+                "handoff": existing_handoff,
+                "idempotent": True,
+            }
+        origin_status = str(event.get("status") or "")
+        if origin_status not in {"RELEASE_READY", "PRE_RELEASE_REQUESTED"}:
+            raise GateError(
+                "SVN live handoff cannot be built from status "
+                + origin_status
+            )
+        self._verify_frozen_final_material(event)
+        manifest_r = self._load_manifest(event_id, "manifest-r.json")
+        created_at = utc_now()
+        try:
+            handoff = build_svn_handoff(
+                event_id=event_id,
+                manifest_r=manifest_r,
+                product_name=product_name,
+                product_version=product_version,
+                repository_root=repository_root,
+                fixed_revision=fixed_revision,
+                pipeline_nonce=pipeline_nonce,
+                materials=materials,
+                pre_release_report_sha256=pre_release_report_sha256,
+                source_message_id=source_message_id,
+                created_at=created_at,
+            )
+        except SvnGateContractError as exc:
+            raise GateError(f"SVN live handoff is invalid: {exc}") from exc
+        handoff_path = self._event_dir(event_id) / "svn-live-handoff.json"
+        write_json(handoff_path, handoff)
+        event["svn_release_gate"] = {
+            "status": "PENDING",
+            "origin_status": origin_status,
+            "handoff_path": str(handoff_path),
+            "handoff_sha256": workflow_digest(handoff),
+            "request_sha256": handoff["request_sha256"],
+            "manifest_r_digest": "sha256:" + str(event["manifest_r_digest"]),
+            "created_at": created_at,
+        }
+        self._transition(
+            event,
+            "SVN_RELEASE_GATE_REQUESTED",
+            "fixed-revision SVN gate verification is required",
+        )
+        self._append_control_event(
+            event,
+            "SVN_RELEASE_GATE_REQUESTED",
+            {
+                "origin_status": origin_status,
+                "request_sha256": handoff["request_sha256"],
+                "handoff_sha256": workflow_digest(handoff),
+                "manifest_r_digest": "sha256:"
+                + str(event["manifest_r_digest"]),
+            },
+        )
+        self._save_event(event)
+        return {
+            "event_id": event_id,
+            "status": event["status"],
+            "svn_release_gate_status": "PENDING",
+            "handoff_path": str(handoff_path),
+            "handoff": handoff,
+            "idempotent": False,
+        }
+
+    def record_svn_live_gate_receipt(
+        self,
+        event_id: str,
+        receipt_path: str,
+    ) -> dict[str, Any]:
+        self._require_runtime_identity()
+        event = self._load_event(event_id)
+        gate = event.get("svn_release_gate") or {}
+        if not isinstance(gate, dict) or not gate:
+            raise GateError("SVN release-gate handoff has not been requested")
+        normalized_receipt_path = Path(str(receipt_path or "")).resolve()
+        if gate.get("status") in {"CLEAN", "BLOCKED"}:
+            if str(gate.get("receipt_source_path") or "") != str(
+                normalized_receipt_path
+            ):
+                raise GateError(
+                    "a different SVN release-gate receipt is already recorded"
+                )
+            verified = self._verify_svn_release_gate_receipt_adapter(
+                event,
+                normalized_receipt_path,
+            )
+            stored = read_json(Path(str(gate.get("receipt_path") or "")))
+            if not isinstance(stored, dict) or workflow_digest(stored) != workflow_digest(
+                verified
+            ):
+                raise GateError("stored SVN release-gate receipt drifted")
+            return {
+                "event_id": event_id,
+                "status": event["status"],
+                "svn_release_gate_status": gate["status"],
+                "receipt": stored,
+                "idempotent": True,
+            }
+        if (
+            gate.get("status") != "PENDING"
+            or event.get("status") != "SVN_RELEASE_GATE_REQUESTED"
+        ):
+            raise GateError(
+                "SVN release-gate receipt cannot be recorded from the current state"
+            )
+        self._verify_frozen_final_material(event)
+        verified = self._verify_svn_release_gate_receipt_adapter(
+            event,
+            normalized_receipt_path,
+        )
+        stored_receipt_path = (
+            self._event_dir(event_id) / "svn-live-verified-receipt.json"
+        )
+        write_json(stored_receipt_path, verified)
+        gate.update(
+            {
+                "status": verified["verdict"],
+                "receipt_source_path": str(normalized_receipt_path),
+                "receipt_path": str(stored_receipt_path),
+                "receipt_sha256": workflow_digest(verified),
+                "verified_at": verified["verified_at"],
+                "evidence_ref": verified["evidence_ref"],
+                "pipeline_id": verified["pipeline_id"],
+                "job_id": verified["job_id"],
+                "commit_sha": verified["commit_sha"],
+            }
+        )
+        event["svn_release_gate"] = gate
+        if verified["verdict"] == "CLEAN":
+            restored_status = str(gate.get("origin_status") or "RELEASE_READY")
+            if restored_status not in {
+                "RELEASE_READY",
+                "PRE_RELEASE_REQUESTED",
+            }:
+                raise GateError("SVN release-gate origin status is invalid")
+            self._transition(
+                event,
+                restored_status,
+                "independently verified SVN release gate returned CLEAN",
+            )
+            next_action = "request release authorization"
+        else:
+            self._transition(
+                event,
+                "RELEASE_BLOCKED",
+                "independently verified SVN release gate returned BLOCKED",
+            )
+            next_action = "create a corrected submission round"
+        self._append_control_event(
+            event,
+            "SVN_RELEASE_GATE_VERIFIED",
+            verified,
+        )
+        self._save_event(event)
+        return {
+            "event_id": event_id,
+            "status": event["status"],
+            "svn_release_gate_status": verified["verdict"],
+            "receipt_path": str(stored_receipt_path),
+            "receipt": verified,
+            "next_action": next_action,
+            "idempotent": False,
+        }
+
+    def _require_clean_svn_release_gate(
+        self,
+        event: dict[str, Any],
+    ) -> None:
+        config = self._svn_release_gate_config()
+        if config.get("required") is not True:
+            return
+        gate = event.get("svn_release_gate") or {}
+        if not isinstance(gate, dict) or gate.get("status") != "CLEAN":
+            raise GateError(
+                "a verified CLEAN SVN release-gate receipt is required before authorization"
+            )
+        self._verify_frozen_final_material(event)
+        receipt_source_path = Path(
+            str(gate.get("receipt_source_path") or "")
+        )
+        verified = self._verify_svn_release_gate_receipt_adapter(
+            event,
+            receipt_source_path,
+        )
+        stored_path = Path(str(gate.get("receipt_path") or ""))
+        stored = read_json(stored_path)
+        if (
+            verified.get("verdict") != "CLEAN"
+            or not isinstance(stored, dict)
+            or workflow_digest(stored) != gate.get("receipt_sha256")
+            or workflow_digest(verified) != gate.get("receipt_sha256")
+        ):
+            raise GateError(
+                "SVN release-gate CLEAN receipt changed or is no longer verified"
+            )
+
     def _verified_pre_release_handoff(
         self,
         event: dict[str, Any],
@@ -1343,7 +1885,9 @@ class ProductionReleaseController(HardenedReleaseGateController):
         requested_by: str,
         target_scope: str,
     ) -> dict[str, Any]:
+        self._require_runtime_identity()
         event = self._load_event(event_id)
+        self._require_clean_svn_release_gate(event)
         if event.get("status") == "RELEASE_AUTHORIZATION_REQUIRED":
             existing = self._signed_authorization_request(event)
             normalized_scope = ",".join(self._parse_target_scope(target_scope))
@@ -1513,6 +2057,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         manifest_s_digest: str,
         manifest_r_digest: str,
     ) -> dict[str, Any]:
+        self._require_runtime_identity()
         event = self._load_event(event_id)
         if event.get("status") != "RELEASE_AUTHORIZATION_REQUIRED":
             raise GateError(
@@ -1597,6 +2142,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         self,
         event_id: str,
     ) -> dict[str, Any]:
+        self._require_runtime_identity()
         event = self._load_event(event_id)
         if event.get("status") == "RELEASE_AUTHORIZED":
             credential = self._verify_authorization_credential(event)
@@ -1692,6 +2238,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         approval_evidence_ref: str,
         authorization_config: dict[str, Any],
     ) -> dict[str, Any]:
+        self._require_runtime_identity()
         ttl_seconds = int(authorization_config.get("ttl_seconds") or 3600)
         if ttl_seconds < 60 or ttl_seconds > 86400:
             raise GateError(
@@ -2246,11 +2793,30 @@ class ProductionReleaseController(HardenedReleaseGateController):
         except KeyError as exc:
             return None, f"adapter command uses an unknown placeholder: {exc}"
         try:
+            child_environment = None
+            if command_id == "deploy":
+                production = self._production_config()
+                authorization = production.get("authorization") or {}
+                key_env = str(authorization.get("key_env") or "").strip()
+                if not key_env:
+                    return None, "adapter credential is unavailable"
+                try:
+                    self._require_runtime_identity()
+                    authorization_value = self._resolve_signing_secret(
+                        authorization,
+                        "authorization",
+                    )
+                except GateError:
+                    return None, "adapter credential is unavailable"
+                child_environment = dict(os.environ)
+                child_environment.update(self._environ)
+                child_environment[key_env] = authorization_value
             completed = subprocess.run(
                 expanded,
                 capture_output=True,
                 text=True,
                 shell=False,
+                env=child_environment,
                 timeout=max(1, int(timeout_seconds)),
                 check=False,
             )
@@ -2475,6 +3041,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         return rollback
 
     def run_deployment_stage(self, event_id: str, stage: str) -> dict[str, Any]:
+        self._require_runtime_identity()
         stage = str(stage or "").strip()
         if stage not in REQUIRED_DEPLOYMENT_STAGES:
             raise GateError(f"stage must be one of: {', '.join(REQUIRED_DEPLOYMENT_STAGES)}")
@@ -2670,6 +3237,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
             failure,
         )
     def run_production_readback(self, event_id: str) -> dict[str, Any]:
+        self._require_runtime_identity()
         event = self._load_event(event_id)
         if event.get("status") != "PRODUCTION_DEPLOYED":
             raise GateError(
@@ -3275,6 +3843,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         }
 
     def deliver_production_report(self, event_id: str) -> dict[str, Any]:
+        self._require_runtime_identity()
         report = self.generate_production_report(event_id)
         event = self._load_event(event_id)
         delivery = self._production_report_delivery_config()
@@ -3540,6 +4109,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         return chain
 
     def generate_production_report(self, event_id: str) -> dict[str, Any]:
+        self._require_runtime_identity()
         event = self._load_event(event_id)
         chain = self._verify_completed_release_evidence(event)
         event_dir = self._event_dir(event_id)

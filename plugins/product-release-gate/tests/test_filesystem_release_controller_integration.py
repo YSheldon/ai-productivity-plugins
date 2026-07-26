@@ -14,6 +14,7 @@ sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from bootstrap_filesystem_production import bootstrap_filesystem_production
 from filesystem_release_adapter import FilesystemReleaseAdapter
+from release_gate_credentials import runtime_principal_sha256
 from release_gate_production import ProductionReleaseController
 
 
@@ -21,6 +22,9 @@ AUTH_ENV = "TEST_FILESYSTEM_CONTROLLER_AUTH_KEY"
 AUDIT_ENV = "TEST_FILESYSTEM_CONTROLLER_AUDIT_KEY"
 AUTH_KEY = "controller-filesystem-authorization-key-32-bytes"
 AUDIT_KEY = "controller-filesystem-audit-key-at-least-32-bytes"
+AUTH_TARGET = "ProductReleaseGate/test-authorization/v1"
+AUDIT_TARGET = "ProductReleaseGate/test-audit/v1"
+RUNTIME_PRINCIPAL = "windows-sid:S-1-5-21-filesystem-controller"
 
 
 class FilesystemReleaseControllerIntegrationTests(unittest.TestCase):
@@ -83,6 +87,7 @@ print(json.dumps({
         config["production"]["authorization"].update(
             {
                 "key_env": AUTH_ENV,
+                "credential_target": AUTH_TARGET,
                 "ttl_seconds": 3600,
                 "verify_command": [
                     sys.executable,
@@ -95,12 +100,29 @@ print(json.dumps({
                 "timeout_seconds": 30,
             }
         )
-        config["production"]["audit"] = {"key_env": AUDIT_ENV}
+        config["production"]["audit"] = {
+            "key_env": AUDIT_ENV,
+            "credential_target": AUDIT_TARGET,
+        }
+        config["runtime"]["identity_binding"]["principal_sha256"] = (
+            runtime_principal_sha256(RUNTIME_PRINCIPAL)
+        )
         self.config_path.write_text(
             json.dumps(config, indent=2) + "\n",
             encoding="utf-8",
         )
-        self.controller = ProductionReleaseController(str(self.config_path))
+        os.environ.pop(AUTH_ENV, None)
+        os.environ.pop(AUDIT_ENV, None)
+        self.credentials = {
+            AUTH_TARGET: AUTH_KEY,
+            AUDIT_TARGET: AUDIT_KEY,
+        }
+        self.controller = ProductionReleaseController(
+            str(self.config_path),
+            credential_reader=self.credentials.get,
+            environ={},
+            runtime_principal_provider=lambda: RUNTIME_PRINCIPAL,
+        )
 
     def tearDown(self) -> None:
         if self.previous_auth is None:
@@ -136,6 +158,8 @@ print(json.dumps({
             rollback_ref=f"rollback:{version}",
             risk_level="standard",
         )
+        self.controller.config["policy"]["require_signature"] = False
+        self.controller.config["policy"]["require_cloud_scan"] = False
         submission = self.controller.run_submission_gate(event_id)
         self.assertEqual("PASS", submission["overall"])
         self.controller.record_test_result(
@@ -149,6 +173,20 @@ print(json.dumps({
         )
         release = self.controller.run_release_gate(event_id)
         self.assertEqual("RELEASE_READY", release["status"])
+        # Submission uses unsigned local fixtures. After the release gate has
+        # frozen the event, switch the in-memory policy to the production
+        # integrity contract so deployment tests exercise the hardened
+        # preflight without invoking a real cloud-scan service.
+        self.controller.config["policy"]["require_signature"] = True
+        self.controller.config["policy"]["require_cloud_scan"] = True
+        self.controller.config["signature"]["expected_thumbprints"] = [
+            "A" * 40
+        ]
+        self.controller.config["cloud_scan"]["command"] = [
+            sys.executable,
+            "-c",
+            "print('{\"verdict\":\"CLEAN\"}')",
+        ]
         return self.controller.get_event(event_id)["event"]
 
     def _authorize(self, event_id: str) -> dict[str, object]:
@@ -228,16 +266,16 @@ print(json.dumps({
         )
 
     def test_real_adapter_completes_three_stages_readback_and_report(self) -> None:
-        preflight = self.controller.production_preflight(
-            include_report_delivery=False
-        )
-        self.assertTrue(preflight["ready"], preflight)
         event = self._run_verified_release(
             "event-filesystem-v1",
             version="v1",
             content=b"production-v1",
         )
 
+        preflight = self.controller.production_preflight(
+            include_report_delivery=False
+        )
+        self.assertTrue(preflight["ready"], preflight)
         for stage in self.targets:
             self.assertEqual(
                 b"production-v1",

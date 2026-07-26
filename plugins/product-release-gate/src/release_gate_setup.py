@@ -16,6 +16,10 @@ from release_gate_approval_mail import (
 from release_gate_core import default_config
 from release_gate_production import ProductionReleaseController
 from release_gate_runtime import ReleaseGateWorkflowRuntime
+from release_gate_credentials import (
+    DEFAULT_AUDIT_CREDENTIAL_TARGET,
+    DEFAULT_AUTHORIZATION_CREDENTIAL_TARGET,
+)
 from release_gate_scheduler import ReleaseGateScheduler
 
 
@@ -25,6 +29,9 @@ if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
 from scripts.bootstrap_dependencies import bootstrap_profile  # noqa: E402
+from scripts.provision_windows_credentials import (  # noqa: E402
+    provision_credentials,
+)
 
 
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -53,6 +60,7 @@ class SetupError(RuntimeError):
 
 BootstrapRunner = Callable[..., Mapping[str, Any]]
 MailGatewayFactory = Callable[[Path, str], Any]
+CredentialProvisioner = Callable[[Path], Mapping[str, Any]]
 
 
 def _default_verifier_config_path(
@@ -89,6 +97,7 @@ class ReleaseGateSetup:
         runtime_factory: Callable[[Any, Path], Any] | None = None,
         bootstrap_runner: BootstrapRunner = bootstrap_profile,
         mail_gateway_factory: MailGatewayFactory | None = None,
+        credential_provisioner: CredentialProvisioner = provision_credentials,
         environ: Mapping[str, str] | None = None,
     ) -> None:
         self.config_path = Path(config_path).resolve(strict=False)
@@ -108,6 +117,7 @@ class ReleaseGateSetup:
                 dependency_lock_sha256=lock_digest,
             )
         )
+        self.credential_provisioner = credential_provisioner
         self.environ = dict(os.environ if environ is None else environ)
 
     def run(
@@ -200,6 +210,7 @@ class ReleaseGateSetup:
             )
         self._write_config(config)
 
+        credential_status = self._initialize_credentials()
         controller = self.controller_factory(self.config_path)
         preflight = controller.unified_approval_preflight()
         if not preflight.get("ready"):
@@ -208,6 +219,7 @@ class ReleaseGateSetup:
                 "CAPABILITY_BLOCKED",
                 f"unified approval preflight failed: {missing or 'unknown capability'}",
             )
+        production_preflight = controller.production_preflight()
         runtime_config = config.get("runtime") or {}
         configured_mode = str(
             runtime_config.get("scheduler_mode") or scheduler_mode or "auto"
@@ -241,6 +253,9 @@ class ReleaseGateSetup:
             "dependencies_changed": bootstrap.get("fresh_task_required") is True,
             "bootstrap": bootstrap,
             "preflight": preflight,
+            "credential_status": credential_status,
+            "production_preflight": production_preflight,
+            "production_activation_ready": production_preflight.get("ready") is True,
             "scheduler": installed,
             "first_run": first_run,
             "scheduler_status": scheduler_status,
@@ -272,6 +287,10 @@ class ReleaseGateSetup:
             "state_dir": str((root / "state").resolve(strict=False)),
             "poll_minutes": 60,
             "scheduler_mode": scheduler_mode,
+            "identity_binding": {
+                "required": True,
+                "principal_sha256": "",
+            },
             "auto_authorize_verified_pre_release": True,
             "auto_deploy_authorized_releases": False,
             "auto_generate_production_report": False,
@@ -280,7 +299,10 @@ class ReleaseGateSetup:
         }
         production = config.setdefault("production", {})
         production["enabled"] = True
-        production["audit"] = {"key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY"}
+        production["audit"] = {
+            "key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY",
+            "credential_target": DEFAULT_AUDIT_CREDENTIAL_TARGET,
+        }
         production["approval_workflow"] = self._workflow_binding(
             dependency_lock=dependency_lock,
             dependency_lock_sha256=dependency_lock_sha256,
@@ -314,8 +336,19 @@ class ReleaseGateSetup:
     ) -> dict[str, Any]:
         production = config.setdefault("production", {})
         production["enabled"] = True
-        production.setdefault(
-            "audit", {"key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY"}
+        authorization = production.get("authorization")
+        if isinstance(authorization, dict):
+            authorization.setdefault(
+                "credential_target",
+                DEFAULT_AUTHORIZATION_CREDENTIAL_TARGET,
+            )
+        audit = production.setdefault(
+            "audit",
+            {"key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY"},
+        )
+        audit.setdefault(
+            "credential_target",
+            DEFAULT_AUDIT_CREDENTIAL_TARGET,
         )
         production["approval_workflow"] = self._workflow_binding(
             dependency_lock=dependency_lock,
@@ -344,6 +377,16 @@ class ReleaseGateSetup:
             "state_dir",
             str((self.config_path.parent / "state").resolve(strict=False)),
         )
+        identity_binding = runtime.setdefault("identity_binding", {})
+        if not isinstance(identity_binding, dict):
+            raise SetupError(
+                "INVALID_CONFIG",
+                "runtime.identity_binding configuration must be an object",
+            )
+        identity_binding["required"] = True
+        identity_binding["principal_sha256"] = str(
+            identity_binding.get("principal_sha256") or ""
+        ).strip().lower()
         runtime.setdefault("poll_minutes", 60)
         runtime["scheduler_mode"] = str(
             runtime.get("scheduler_mode") or scheduler_mode
@@ -522,6 +565,57 @@ class ReleaseGateSetup:
         except OSError:
             pass
         os.replace(temporary, self.config_path)
+
+    def _initialize_credentials(self) -> dict[str, Any]:
+        try:
+            raw = dict(self.credential_provisioner(self.config_path))
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise SetupError(
+                "CREDENTIAL_PROVISIONING_BLOCKED",
+                f"production credential initialization failed: {exc}",
+            ) from exc
+
+        evidence = {
+            "status": str(raw.get("status") or "CAPABILITY_BLOCKED"),
+            "ready": raw.get("ready") is True,
+            "authorization_credential_present": (
+                raw.get("authorization_credential_present") is True
+            ),
+            "audit_credential_present": raw.get("audit_credential_present") is True,
+            "credentials_distinct": raw.get("credentials_distinct") is True,
+            "secret_values_returned": raw.get("secret_values_returned") is True,
+            "credential_values_printed": raw.get("credential_values_printed") is True,
+            "runtime_identity_required": raw.get("runtime_identity_required") is True,
+            "runtime_identity_bound": raw.get("runtime_identity_bound") is True,
+            "runtime_identity_matches": raw.get("runtime_identity_matches") is True,
+            "principal_values_returned": raw.get("principal_values_returned") is True,
+            "credentials_created": int(raw.get("credentials_created") or 0),
+            "credentials_reused": int(raw.get("credentials_reused") or 0),
+            "runtime_identity_rebound": raw.get("runtime_identity_rebound") is True,
+        }
+        safe = bool(
+            evidence["status"] == "ready"
+            and evidence["ready"]
+            and evidence["authorization_credential_present"]
+            and evidence["audit_credential_present"]
+            and evidence["credentials_distinct"]
+            and not evidence["secret_values_returned"]
+            and not evidence["credential_values_printed"]
+            and evidence["runtime_identity_required"]
+            and evidence["runtime_identity_bound"]
+            and evidence["runtime_identity_matches"]
+            and not evidence["principal_values_returned"]
+            and not evidence["runtime_identity_rebound"]
+            and 0 <= evidence["credentials_created"] <= 2
+            and 0 <= evidence["credentials_reused"] <= 2
+            and evidence["credentials_created"] + evidence["credentials_reused"] == 2
+        )
+        if not safe:
+            raise SetupError(
+                "CREDENTIAL_PROVISIONING_BLOCKED",
+                "production credentials or runtime identity did not pass safe initialization",
+            )
+        return evidence
 
     def _scheduler_factory(
         self,

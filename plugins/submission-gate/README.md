@@ -1,6 +1,6 @@
 # Submission Gate
 
-`submission-gate` provides four surfaces: MCP, Skill, standalone CLI, and unattended OS scheduling. It scans one configured mailbox for `【提测】` mail, validates the signed machine block and `X-RD-*` headers, creates the authoritative event through the locked `product-release-gate` CLI, runs the submission gate, and sends a PASS or BLOCKED response mail.
+`submission-gate` provides four surfaces: MCP, Skill, standalone CLI, and unattended OS scheduling. It scans one configured mailbox for `【提测】` mail, validates structured content and `X-RD-*` headers, creates the authoritative event through the locked `product-release-gate` CLI, runs the submission gate, and sends a PASS or BLOCKED response mail.
 
 Key properties:
 
@@ -12,4 +12,5 @@ Key properties:
 - Codex is optional
 - CLI fallback and unattended scheduler use the same controller and idempotent store
 - duplicate mail is ignored by `uidvalidity + uid + message_id + event_id + round_id`
+- HMAC is optional: valid HMAC is marked `合规插件发起（已验证）`; missing HMAC is marked unverified and continues; a claimed but invalid HMAC fails closed
 - zero effective checks or missing required integrations fail closed

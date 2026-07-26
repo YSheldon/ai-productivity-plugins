@@ -398,6 +398,18 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(doctor["ready"])
         self.assertEqual("CAPABILITY_BLOCKED", doctor["production"]["status"])
 
+    def test_doctor_requires_preflight_when_production_is_enabled(self) -> None:
+        self.controller.production_ready = False
+        runtime = ReleaseGateWorkflowRuntime(
+            self.controller,
+            self.root / "config.json",
+        )
+
+        doctor = runtime.doctor()
+
+        self.assertFalse(doctor["ready"])
+        self.assertEqual("CAPABILITY_BLOCKED", doctor["production"]["status"])
+
     def test_report_automation_flags_fail_closed_when_dependencies_are_missing(self) -> None:
         self.controller.config["runtime"].update(
             {

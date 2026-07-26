@@ -4,6 +4,10 @@
     "state_dir": "%LOCALAPPDATA%\\product-release-gate\\state",
     "poll_minutes": 60,
     "scheduler_mode": "auto",
+    "identity_binding": {
+      "required": true,
+      "principal_sha256": ""
+    },
     "auto_authorize_verified_pre_release": false,
     "auto_deploy_authorized_releases": false,
     "auto_generate_production_report": false,
@@ -58,8 +62,31 @@
       "verify_command": [],
       "timeout_seconds": 120
     },
+    "svn_release_gate": {
+      "required": false,
+      "expected_project_id": 59,
+      "verify_command": [
+        "C:\\Python313\\python.exe",
+        "C:\\path\\to\\verify_gitlab_svn_gate_receipt.py",
+        "--receipt",
+        "{receipt_path}",
+        "--handoff",
+        "{handoff_path}",
+        "--event-id",
+        "{event_id}",
+        "--request-digest",
+        "{request_sha256}",
+        "--manifest-r-digest",
+        "{manifest_r_digest}",
+        "--gitlab-project-id",
+        "{expected_project_id}",
+        "--json"
+      ],
+      "timeout_seconds": 120
+    },
     "authorization": {
       "key_env": "PRODUCT_RELEASE_GATE_AUTH_KEY",
+      "credential_target": "ProductReleaseGate/authorization/v1",
       "ttl_seconds": 3600,
       "verify_command": [
         "C:\\path\\to\\feishu-approval-adapter.exe",
@@ -79,7 +106,8 @@
       "timeout_seconds": 120
     },
     "audit": {
-      "key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY"
+      "key_env": "PRODUCT_RELEASE_GATE_AUDIT_KEY",
+      "credential_target": "ProductReleaseGate/audit/v1"
     },
     "deployment": {
       "stages": [

@@ -139,3 +139,20 @@ def test_cli_read_message_preserves_shared_release_workflow_payload(monkeypatch,
         "ok": True,
         "result": {"uid": "42", "release_workflow_headers": expected_headers},
     }
+
+
+def test_cli_serializes_non_ascii_results_as_ascii_json(monkeypatch, capsys) -> None:  # noqa: ANN001
+    monkeypatch.setitem(
+        CLI_MODULE.server.TOOLS["imap_smtp_mail_list_accounts"],
+        "handler",
+        lambda _arguments: CLI_MODULE.server.tool_result({"note": "\u53d1\u5e03\u7533\u8bf7"}),
+    )
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(json.dumps({"tool": "list_accounts", "arguments": {}})),
+    )
+    assert CLI_MODULE.main() == 0
+    raw = capsys.readouterr().out
+    assert raw.isascii()
+    assert json.loads(raw)["result"]["note"] == "\u53d1\u5e03\u7533\u8bf7"

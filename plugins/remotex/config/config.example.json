@@ -3,6 +3,7 @@
   "defaults": {
     "ssh": "windows-ssh-lab",
     "rdp": "windows-lab",
+    "windows-guest": "windows-guest-lab",
     "vsphere": "esxi-lab",
     "vmware-workstation": "local-workstation-vm"
   },
@@ -15,6 +16,7 @@
       "platform": "windows",
       "queue_resource": "lab:windows-vm",
       "queue_lease_seconds": 14400,
+      "vm_identity": "lab-windows-vm",
       "credential": {
         "source": "ssh-agent",
         "identity_file": "~/.ssh/id_ed25519"
@@ -47,6 +49,7 @@
       "port": 3389,
       "queue_resource": "lab:windows-vm",
       "queue_lease_seconds": 14400,
+      "vm_identity": "lab-windows-vm",
       "credential": {
         "source": "windows-credential-manager",
         "target": "TERMSRV/windows.example.internal"
@@ -55,6 +58,23 @@
       "fullscreen": false,
       "width": 1600,
       "height": 900
+    },
+    "windows-guest-lab": {
+      "kind": "windows-guest",
+      "host": "windows.example.internal",
+      "port": 5985,
+      "transport": "winrm",
+      "authentication": "kerberos",
+      "queue_resource": "lab:windows-vm",
+      "queue_lease_seconds": 14400,
+      "vm_identity": "lab-windows-vm",
+      "guest_machine_id": "WINDOWS-LAB",
+      "staging_root": "C:\\RemoteX\\Staging",
+      "powershell_path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "credential": {
+        "source": "windows-credential-manager",
+        "target": "RemoteX/windows-guest-lab"
+      }
     },
     "esxi-lab": {
       "kind": "esxi",
@@ -74,8 +94,10 @@
     "local-workstation-vm": {
       "kind": "vmware-workstation",
       "host_type": "ws",
-      "queue_resource": "lab:local-workstation-vm",
+      "queue_resource": "lab:windows-vm",
       "queue_lease_seconds": 14400,
+      "vm_identity": "lab-windows-vm",
+      "vmware_uuid": "00112233-4455-6677-8899-aabbccddeeff",
       "vmrun_path": "C:/Program Files (x86)/VMware/VMware Workstation/vmrun.exe",
       "vmx_path": "D:/Virtual Machines/example/example.vmx"
     }

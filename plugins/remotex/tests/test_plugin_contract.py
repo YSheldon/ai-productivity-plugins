@@ -24,10 +24,13 @@ class PluginContractTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        remotex_entry = next(item for item in marketplace["plugins"] if item["name"] == "remotex")
+        remotex_entry = next(
+            item for item in marketplace["plugins"] if item["name"] == "remotex"
+        )
         legacy_entry = next(item for item in marketplace["plugins"] if item["name"] == "ssh")
         self.assertEqual(manifest["name"], "remotex")
         self.assertEqual(manifest["version"], remotex_mcp.SERVER_VERSION)
+        self.assertEqual(manifest["version"], "0.4.0")
         self.assertEqual(remotex_entry["source"]["path"], "./plugins/remotex")
         self.assertEqual(remotex_entry["policy"]["installation"], "AVAILABLE")
         self.assertEqual(remotex_entry["policy"]["authentication"], "ON_USE")
@@ -41,21 +44,38 @@ class PluginContractTests(unittest.TestCase):
         for forbidden in ('"password":', '"secret":', '"token":', '"private_key":'):
             self.assertNotIn(forbidden, serialized)
         self.assertEqual(config["version"], 1)
+        self.assertEqual(config["defaults"]["windows-guest"], "windows-guest-lab")
+
         windows_ssh = config["profiles"]["windows-ssh-lab"]
         windows_rdp = config["profiles"]["windows-lab"]
+        windows_guest = config["profiles"]["windows-guest-lab"]
+        workstation = config["profiles"]["local-workstation-vm"]
         self.assertEqual(windows_ssh["platform"], "windows")
         self.assertEqual(windows_ssh["host_key_policy"], "managed")
         self.assertEqual(
-            windows_ssh["queue_resource"],
-            windows_rdp["queue_resource"],
+            {
+                windows_ssh["queue_resource"],
+                windows_rdp["queue_resource"],
+                windows_guest["queue_resource"],
+                workstation["queue_resource"],
+            },
+            {"lab:windows-vm"},
         )
+        self.assertEqual(
+            {
+                windows_ssh["vm_identity"],
+                windows_rdp["vm_identity"],
+                windows_guest["vm_identity"],
+                workstation["vm_identity"],
+            },
+            {"lab-windows-vm"},
+        )
+        self.assertEqual(windows_guest["credential"]["source"], "windows-credential-manager")
+        self.assertEqual(windows_guest["guest_machine_id"], "WINDOWS-LAB")
         self.assertEqual(windows_ssh["queue_lease_seconds"], 14400)
-        self.assertIn("queue_resource", config["profiles"]["windows-lab"])
-        self.assertIn("queue_resource", config["profiles"]["esxi-lab"])
-        self.assertIn("queue_resource", config["profiles"]["local-workstation-vm"])
         self.assertEqual(
             {profile["kind"] for profile in config["profiles"].values()},
-            {"ssh", "rdp", "esxi", "vmware-workstation"},
+            {"ssh", "rdp", "windows-guest", "esxi", "vmware-workstation"},
         )
 
     def test_declared_plugin_assets_exist(self) -> None:

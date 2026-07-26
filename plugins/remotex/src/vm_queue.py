@@ -19,7 +19,7 @@ STATE_VERSION = 1
 LOCK_TIMEOUT_SECONDS = 5.0
 MAX_RESOURCE_LENGTH = 512
 REQUESTER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,127}$")
-SUPPORTED_KINDS = {"rdp", "vsphere", "vmware-workstation"}
+SUPPORTED_KINDS = {"rdp", "vsphere", "vmware-workstation", "windows-guest"}
 _PROCESS_LOCKS: set[str] = set()
 _PROCESS_LOCKS_GUARD = threading.Lock()
 
@@ -514,6 +514,12 @@ def resolve_profile_resource(
         if os.name == "nt":
             normalized = normalized.casefold()
         resource = configured_resource or f"vmware:{normalized}"
+    elif kind == "windows-guest":
+        if virtual_machine not in (None, ""):
+            raise core.ToolError("virtual_machine is not valid for a Windows guest profile")
+        host = core.validate_host(raw.get("host"))
+        port = core.validate_port(raw.get("port"), 5985)
+        resource = configured_resource or f"windows-guest:{host}:{port}"
     else:
         selected_vm = core.validate_selector(virtual_machine, "virtual_machine")
         if configured_resource:

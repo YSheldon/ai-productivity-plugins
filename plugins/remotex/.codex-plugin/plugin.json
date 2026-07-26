@@ -1,7 +1,7 @@
 {
   "name": "remotex",
-  "version": "0.3.0",
-  "description": "Operate SSH, RDP, vSphere/ESXi, and VMware Workstation targets with native script transport, verified file transfer, resumable tasks, credential references, host-key governance, and renewable non-preemptive VM leases.",
+  "version": "0.4.0",
+  "description": "Operate SSH, RDP, Windows guests, vSphere/ESXi, and VMware Workstation targets with bounded execution, verified transfer, composite VM identity, snapshots, and cooperative leases.",
   "author": {
     "name": "Sheldon",
     "url": "https://github.com/YSheldon"
@@ -13,18 +13,20 @@
     "remote-management",
     "ssh",
     "powershell",
+    "winrm",
     "rdp",
     "esxi",
     "vsphere",
     "vmware-workstation",
-    "sftp"
+    "sftp",
+    "snapshot"
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "RemoteX",
     "shortDescription": "Operate remote systems with bounded execution",
-    "longDescription": "Use local OpenSSH, Remote Desktop, govc, and vmrun clients through named profiles, native script transport, verified SFTP, credential references, managed host keys, resumable tasks, tamper-evident audit records, and renewable FIFO VM leases.",
+    "longDescription": "Use local OpenSSH, Remote Desktop, PowerShell WinRM, govc, and vmrun clients through named profiles, composite VM identity, preflight-bound snapshots, credential references, host-key governance, tamper-evident audit records, and renewable FIFO VM leases.",
     "developerName": "Sheldon",
     "category": "Developer Tools",
     "capabilities": [

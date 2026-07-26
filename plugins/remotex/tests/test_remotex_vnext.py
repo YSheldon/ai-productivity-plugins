@@ -686,13 +686,13 @@ class StatusAndAuditTests(unittest.TestCase):
                         "script": "Write-Output do-not-record",
                         "environment_refs": {"TOKEN": "LOCAL_SECRET"},
                     },
-                    "0.3.0",
+                    remotex_mcp.SERVER_VERSION,
                 )
                 audit_log.finish(
                     operation,
                     "remotex_ssh_run_script",
                     core.tool_result({"ok": True, "exitCode": 0}),
-                    "0.3.0",
+                    remotex_mcp.SERVER_VERSION,
                     started,
                 )
                 exported = payload(audit_log.export({}))

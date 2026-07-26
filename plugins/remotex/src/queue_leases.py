@@ -346,6 +346,81 @@ def queue_renew(args: dict[str, Any]) -> dict[str, Any]:
     return core.tool_result(result)
 
 
+def queue_heartbeat(args: dict[str, Any]) -> dict[str, Any]:
+    target = _target(args)
+    requester = vm_queue.validate_requester(args.get("requester"))
+    seconds = _configured_lease(target["profile"], args.get("lease_seconds"))
+    with vm_queue._resource_operation_lock(target["resource"]):
+        active = _expire_locked(target["resource"])
+        _ORIGINAL_REQUIRE_OWNER(target["resource"], requester)
+        if active and active["requester"] != requester:
+            raise core.ToolError(
+                f"VM lease belongs to {active['requester']}; {requester} cannot heartbeat it"
+            )
+        event = "lease-heartbeat" if active else "lease-heartbeat-migrated"
+        lease = _set_lease(target["resource"], requester, seconds, event)
+    result = vm_queue.inspect(target["resource"], requester)
+    result.update({key: value for key, value in target.items() if key != "resource"})
+    result["heartbeatStatus"] = "renewed" if active else "migrated-legacy-owner"
+    result["heartbeatAt"] = lease["issuedAt"]
+    result["lease"] = _lease_view(lease)
+    return core.tool_result(result)
+
+
+def queue_recover_stale(args: dict[str, Any]) -> dict[str, Any]:
+    target = _target(args)
+    requester = vm_queue.validate_requester(args.get("requester"))
+    if args.get("confirm") is not True:
+        raise core.ToolError(
+            "confirm=true is required to recover a stale VM lease; recovery never transfers ownership"
+        )
+    with vm_queue._resource_operation_lock(target["resource"]):
+        with _locked() as (lease_file, leases):
+            record = leases["leases"].get(target["resource"])
+            if not isinstance(record, dict):
+                raise core.ToolError(
+                    "stale-owner-recovery-refused: no active lease exists for this VM resource"
+                )
+            expires = _parse_timestamp(record.get("expiresAt"), "expiresAt")
+            if expires > _now():
+                raise core.ToolError(
+                    "stale-owner-recovery-refused: the current VM lease has not expired"
+                )
+            stale_owner = vm_queue.validate_requester(record.get("requester"))
+            with vm_queue._locked_state() as (queue_file, queue_state):
+                entry = queue_state["resources"].get(target["resource"])
+                owner = entry.get("owner") if isinstance(entry, dict) else None
+                if not isinstance(owner, dict) or owner.get("requester") != stale_owner:
+                    raise core.ToolError(
+                        "stale-owner-recovery-refused: queue owner does not match the expired lease"
+                    )
+                entry["owner"] = None
+                if not entry.get("waiters"):
+                    queue_state["resources"].pop(target["resource"], None)
+                vm_queue._write_state(queue_file, queue_state)
+            leases["leases"].pop(target["resource"], None)
+            _event(
+                leases,
+                "stale-owner-recovered",
+                target["resource"],
+                requester,
+                staleOwner=stale_owner,
+                expiredAt=record["expiresAt"],
+            )
+            _write(lease_file, leases)
+    result = vm_queue.inspect(target["resource"], requester)
+    result.update({key: value for key, value in target.items() if key != "resource"})
+    result["recoveryStatus"] = "recovered-unowned"
+    result["recoveredOwner"] = stale_owner
+    result["lease"] = None
+    result["nextAction"] = (
+        "notify-first-waiter-to-confirm-claim"
+        if result.get("next_waiter")
+        else "request-and-confirm-claim"
+    )
+    return core.tool_result(result)
+
+
 def queue_release(args: dict[str, Any]) -> dict[str, Any]:
     target = _target(args)
     requester = vm_queue.validate_requester(args.get("requester"))
@@ -443,7 +518,8 @@ PROFILE_PROPERTY = {
     "profile": {
         "type": "string",
         "description": (
-            "Required SSH, RDP, vSphere/ESXi, or VMware Workstation profile name."
+            "Required SSH, RDP, Windows guest, vSphere/ESXi, or VMware Workstation "
+            "profile name."
         ),
     },
     "virtual_machine": {
@@ -518,6 +594,34 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": queue_renew,
+    },
+    "remotex_vm_queue_heartbeat": {
+        "description": "Record an owner heartbeat and extend its bounded lease without transferring ownership.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **PROFILE_PROPERTY,
+                **REQUESTER_PROPERTY,
+                **LEASE_PROPERTY,
+            },
+            "required": ["profile", "requester"],
+            "additionalProperties": False,
+        },
+        "handler": queue_heartbeat,
+    },
+    "remotex_vm_queue_recover_stale": {
+        "description": "Explicitly recover an expired owner lease as unowned; it never assigns a waiter.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **PROFILE_PROPERTY,
+                **REQUESTER_PROPERTY,
+                "confirm": {"type": "boolean"},
+            },
+            "required": ["profile", "requester", "confirm"],
+            "additionalProperties": False,
+        },
+        "handler": queue_recover_stale,
     },
     "remotex_vm_queue_release": {
         "description": "Release ownership and prompt, but never auto-assign, the first waiter.",

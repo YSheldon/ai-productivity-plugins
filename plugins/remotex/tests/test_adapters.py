@@ -123,14 +123,42 @@ class AdapterTests(unittest.TestCase):
     def test_vmware_start_defaults_to_nogui(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             vmx = Path(directory) / "example.vmx"
-            vmx.write_text("config.version = \"8\"", encoding="utf-8")
+            vmx.write_text(
+                'config.version = "8"\nuuid.bios = "00112233-4455-6677-8899-aabbccddeeff"\n',
+                encoding="utf-8",
+            )
             path = self._config(
                 directory,
                 {
+                    "rdp": {
+                        "kind": "rdp",
+                        "host": "windows.example",
+                        "queue_resource": "vmware:test",
+                        "vm_identity": "windows-vm",
+                        "credential": {
+                            "source": "windows-credential-manager",
+                            "target": "TERMSRV/windows.example",
+                        },
+                    },
+                    "guest": {
+                        "kind": "windows-guest",
+                        "host": "windows.example",
+                        "queue_resource": "vmware:test",
+                        "vm_identity": "windows-vm",
+                        "guest_machine_id": "WINDOWS-VM",
+                        "staging_root": "C:\\RemoteX\\Staging",
+                        "credential": {
+                            "source": "windows-credential-manager",
+                            "target": "RemoteX/guest",
+                        },
+                    },
                     "vm": {
                         "kind": "vmware-workstation",
                         "vmx_path": str(vmx),
-                    }
+                        "queue_resource": "vmware:test",
+                        "vm_identity": "windows-vm",
+                        "vmware_uuid": "00112233-4455-6677-8899-aabbccddeeff",
+                    },
                 },
                 {"vmware-workstation": "vm"},
             )

@@ -30,6 +30,8 @@ KIND_ALIASES = {
     "vmware": "vmware-workstation",
     "vmware-workstation": "vmware-workstation",
     "workstation": "vmware-workstation",
+    "windows-guest": "windows-guest",
+    "winrm": "windows-guest",
 }
 
 FORBIDDEN_LITERAL_SECRET_KEYS = {

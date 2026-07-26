@@ -1,154 +1,116 @@
 # RemoteX
 
-RemoteX provides one profile model for SSH, Windows Remote Desktop, vSphere/ESXi, and VMware Workstation. It wraps established local clients instead of implementing those protocols:
+RemoteX provides named profiles for SSH, Windows Remote Desktop, authenticated Windows guest management, vSphere or ESXi, and VMware Workstation. It uses established local clients:
 
-- OpenSSH: `ssh`, `sftp`, `scp`, `ssh-add`, `ssh-keygen`, and `ssh-keyscan`
-- RDP: Windows `mstsc` and Windows Credential Manager
-- vSphere/ESXi: `govc`
-- VMware Workstation: `vmrun`
+- ssh and sftp for SSH profiles
+- mstsc for RDP profiles
+- local PowerShell WinRM sessions for Windows guest profiles
+- govc for vSphere or ESXi API profiles
+- vmrun for VMware Workstation profiles
 
-The MCP entry point requires `node` and Python 3.10 or newer on `PATH`. On Windows, the launcher prefers `py -3`, then checks `python3` and `python`. On other platforms it checks `python3` and `python`.
+RemoteX does not accept passwords, tokens, private-key bodies, or other secret values as tool arguments. Configuration contains endpoints, safe client settings, paths, queue aliases, identity bindings, and credential references only.
 
-RemoteX does not accept passwords, tokens, private-key bodies, or other secret values as tool arguments. Configuration contains endpoints, safe client settings, paths, queue aliases, and credential references only.
+## Setup
 
-## Configuration
+Copy config/config.example.json to ~/.config/remotex/config.json, or set REMOTEX_CONFIG to another protected JSON file. Run remotex_status with the intended profile before connecting. Selected-profile readiness is the target boundary; aggregate readiness reports all configured profiles separately.
 
-Copy `config/config.example.json` to `~/.config/remotex/config.json`, or set `REMOTEX_CONFIG` to another protected JSON file. Run `remotex_status` with the intended `profile` before connecting. The response separates selected-profile readiness from the aggregate state of every configured profile.
+RemoteX reads the old SSH_CONFIG file or ~/.config/codex-ssh/config.json when the RemoteX config does not exist. Existing SSH_HOST and SSH_USER environment configuration is also recognized. This compatibility path is read-only.
 
-RemoteX reads the old `SSH_CONFIG` file or `~/.config/codex-ssh/config.json` when the RemoteX config does not exist. Existing `SSH_HOST` and `SSH_USER` environment configuration is also recognized. This compatibility path is read-only.
+## Credentials
 
-### SSH
+RemoteX accepts only credential references:
 
-Set `platform` to `windows`, `posix`, or `auto`. Use an `identity-file` credential reference or `ssh-agent`. Batch mode, public-key authentication, disabled password authentication, and strict host-key checking are enforced.
+- SSH Agent, managed identity-file paths, or named environment variables for SSH
+- Windows Credential Manager entries named TERMSRV/host for RDP
+- Windows Credential Manager Generic Credentials or native Windows integrated authentication for Windows guest WinRM
+- Windows Credential Manager or named environment references for vSphere or ESXi
 
-An agent-backed profile may include an optional key path for `remotex_ssh_agent_add`:
+Do not put a password in a profile, tool argument, script, shell command, VMX path, audit record, or standard output. RemoteX never uses VMware vmrun -gp or -gu guest-password arguments.
 
-```json
-{
-  "source": "ssh-agent",
-  "identity_file": "~/.ssh/id_ed25519"
-}
-```
+For RDP, create the matching TERMSRV/host entry with the Windows Credential Manager UI. remotex_rdp_open fails closed when it is absent, then starts mstsc without receiving or forwarding a password.
 
-The key path is passed to OpenSSH. RemoteX does not read or return private-key contents.
+For a Windows guest profile, use a Generic Credential such as RemoteX/windows-guest-lab, or windows-integrated when the current Windows identity is authorized. RemoteX passes credential material only through a local PowerShell stdin envelope and redacts it from process output, errors, receipts, and audit records.
 
-`host_key_policy` supports:
+## Composite VM Identity
 
-- `known-hosts`: OpenSSH enforces the configured `known_hosts_file`.
-- `managed`: RemoteX also scans the endpoint and requires an exact match with its local approved-fingerprint registry. Unregistered or changed keys block connections.
+Any mutating VMware Workstation or Windows guest operation requires a vm_identity group. The group must contain exactly one of each:
 
-For `managed`, first call `remotex_ssh_host_key_status`. Verify a displayed fingerprint out of band, then call `remotex_ssh_host_key_approve` with that exact fingerprint and `confirm=true`. A changed key additionally requires `rotation=true`. `strict_host_key_checking=yes` is mandatory.
+- VMware Workstation profile with vmx_path and vmware_uuid
+- RDP profile
+- Windows guest profile with guest_machine_id
 
-### RDP
+Every member must use the same exact queue_resource. RemoteX reads the VMX UUID before a VMware mutation, records the RDP and guest endpoint bindings, and probes the authenticated Windows guest machine identifier before guest mutations. A VMX UUID, guest machine identifier, endpoint configuration, or queue mismatch fails closed before the operation starts.
 
-Create a Windows Credential Manager entry whose target matches the configured `TERMSRV/<host>` value. Use the Credential Manager UI so the password is not placed in chat, JSON, or shell history. `remotex_rdp_open` fails closed when the entry is absent, then starts `mstsc` without receiving or forwarding a password.
+Use sanitized stable identifiers only: vm_identity and guest_machine_id accept ASCII letters, digits, dots, underscores, and hyphens; vmware_uuid must be a 128-bit VMware UUID.
 
-### vSphere and ESXi
+remotex_status exposes a per-profile capability matrix for power, snapshot, guest_exec, guest_copy, and reboot_wait, with a failure code when a required client, credential reference, or identity binding is unavailable.
 
-Install `govc`, then reference either a Windows Generic Credential or two environment-variable names:
+## Shared VM Queue
 
-```json
-{
-  "source": "environment",
-  "username_env": "REMOTEX_ESXI_USERNAME",
-  "password_env": "REMOTEX_ESXI_PASSWORD"
-}
-```
+RemoteX maintains a persistent, process-safe FIFO queue for shared VM access. SSH, RDP, Windows guest, VMware Workstation, and vSphere profiles that address the same VM must use one queue_resource.
 
-For Windows Credential Manager, create a Generic Credential with a non-RDP target such as `RemoteX/esxi-lab`. RemoteX reads it only in memory and passes it to `govc` through the child-process environment. TLS verification is enabled by default. Prefer a CA file instead of `tls.insecure`.
+The default queue state is under the local RemoteX state directory. REMOTEX_VM_QUEUE_FILE and REMOTEX_VM_QUEUE_LEASE_FILE override these protected local paths.
 
-### VMware Workstation
+1. Call remotex_vm_queue_status with the target profile.
+2. Call remotex_vm_queue_request with a stable ASCII requester.
+3. If another requester owns it, report the FIFO position and stop.
+4. If unowned, request it, obtain confirmation, then call remotex_vm_queue_claim with confirm=true.
+5. Pass the same requester to every mutating operation.
+6. Call remotex_vm_queue_heartbeat or remotex_vm_queue_renew before lease expiry.
+7. Call remotex_vm_queue_release after the work is complete.
 
-Point a profile at `vmrun.exe` and a `.vmx` file. Local Workstation inventory and power operations use the current Windows session and do not require a separate plugin credential.
+Leases default to four hours and may be configured from 60 seconds to seven days. Expiry never assigns a waiter. remotex_vm_queue_recover_stale requires confirm=true, verifies that the expired lease still matches the queue owner, and releases it only to the unowned state. It records the stale owner recovery and never silently transfers ownership.
 
-## Native Script Execution
+The queue coordinates RemoteX processes on one machine. It is not an authorization boundary and cannot detect clients that connect directly outside RemoteX.
 
-Use `remotex_ssh_run_script` for PowerShell, `pwsh`, `cmd`, `sh`, or `bash`. The fixed launcher is the only remote command placed in the SSH argument vector. Script text and resolved environment values travel through SSH stdin, not command-line arguments.
+## Windows Guest Operations
 
-Windows execution uses a PowerShell wrapper, UTF-8 transport, temporary `.ps1` or `.cmd` files where required, and a Windows Job Object. POSIX execution uses a temporary script and an isolated process group. The result reports exit code, stdout, stderr, timeout state, duration, local and remote PIDs, detected encodings, raw byte counts, truncation flags, process-tree termination, and applied limits.
+Windows guest profiles use WinRM only, with Kerberos or Negotiate authentication. Before any guest operation, RemoteX probes an authenticated machine and boot identity. Guest scripts are sent through a fixed local PowerShell wrapper, bounded by timeout, memory, process-count, and output limits.
 
-Optional limits include wall time, CPU time, memory, process count, and stdout/stderr bytes. A Windows Job Object assignment failure is a hard stop. POSIX hosts must provide `setsid`; RemoteX fails closed when it cannot create a separate process group. Timeout or output-limit termination targets the full local and remote process tree.
+Use remotex_windows_guest_preflight before snapshot or test-sensitive work. It runs a PowerShell 2.0-compatible read-only probe with a caller-supplied policy. The bounded receipt includes operating system and architecture, PowerShell and .NET versions, required KB and cmdlet checks, pending reboot state, free system-drive space, guest UTC and boot identity, and declared process, service, driver, and ETW inactivity checks.
 
-Map remote environment names to local references with `environment_refs`. Supported sources are named environment variables and Windows Credential Manager fields. Values are resolved only for execution, injected over stdin, redacted from output, and represented in audit records by reference metadata.
+Each failed condition is returned independently in failureCodes. A passing preflight receipt is hash-bound to the composite VM identity and expires according to its declared maximum age.
 
-## Verified File Transfer
+Use remotex_windows_guest_run_script for bounded PowerShell. It exports no output by default; output_allowlist can expose only named scalar JSON fields. Use remotex_windows_guest_copy_to and remotex_windows_guest_copy_from only with a declared relative_path below staging_root; both return size and SHA-256 readback rather than file contents. remotex_windows_guest_reboot requires confirm=true and succeeds only after a newly authenticated boot identity is observed.
 
-`remotex_ssh_copy_to` and `remotex_ssh_copy_from` use SFTP first. Windows paths with spaces, Chinese characters, parentheses, or apostrophes are preserved as requested. SCP is used only when SFTP is unavailable and the path can be represented safely without shell interpretation.
+## VMware Workstation Snapshots
 
-Transfer controls:
+Use remotex_vmware_list_snapshots for read-only inventory. Snapshot mutations require the queue owner, a valid composite identity, an existing fresh passing Windows guest preflight receipt, and exact inventory readback:
 
-- `recursive`: enable directory transfer.
-- `overwrite`: `fail`, `replace`, or file-only `resume`.
-- `verify`: `none`, `size`, or `sha256`; the default is `sha256`.
+1. Run remotex_windows_guest_preflight and retain receiptSha256.
+2. Call remotex_vmware_snapshot_create with a safe exact snapshot_name, an idempotency_key, and that receipt hash.
+3. Use the same key and name to retry safely; changing the name for the same key fails.
+4. Call remotex_vmware_snapshot_revert or remotex_vmware_snapshot_delete only with confirm=true.
 
-Results include requested and actual paths, local and remote sizes and hashes, protocol, integrity outcome, transferred bytes, duration, and retry count. A completed transfer whose requested verification does not match is an error.
+RemoteX rejects path-like, ambiguous, duplicate, or untracked snapshot names. Revert and delete work only for snapshots previously created by RemoteX under the same VM identity. Every operation returns bounded client metadata, inventory before and after hashes, exact target readback, receipt hash, timeout or return code state, and rawOutputExported=false.
 
-## Resumable Tasks
+## SSH, RDP, And vSphere
 
-Use `remotex_ssh_task_start`, `remotex_ssh_task_status`, `remotex_ssh_task_cancel`, and `remotex_ssh_task_collect` for work that must survive the initiating MCP call.
+For host_key_policy=managed, call remotex_ssh_host_key_status before the first SSH connection. Verify the fingerprint out of band, then call remotex_ssh_host_key_approve with the exact value and confirm=true. A changed key additionally requires rotation=true; do not weaken strict host-key checking.
 
-The task manager stores a script hash, fixed command arguments, limits, public credential-reference metadata, and state. It does not persist script text or resolved secret values in the task specification. Transient stdin and secret files are removed when the worker reads them. Cancellation is idempotent and terminates the worker process tree.
+Use remotex_ssh_run_script for PowerShell, pwsh, cmd, sh, or bash. The fixed launcher is the only remote command placed in the SSH argument vector. Script text and resolved environment values travel through SSH stdin. remotex_ssh_copy_to and remotex_ssh_copy_from use SFTP first and return requested and actual paths, byte counts, hashes, and integrity state.
 
-## Local FIFO Queue And Leases
+Use remotex_rdp_test to distinguish TCP reachability from saved-credential readiness. Use remotex_vsphere_about for a read-only endpoint check and remotex_vsphere_list_vms for inventory. remotex_vsphere_power requires an explicit profile, inventory path, action, and queue owner. Keep TLS verification enabled and prefer a configured CA.
 
-RemoteX maintains a persistent, process-safe FIFO queue for shared VM access. SSH, RDP, VMware Workstation, and vSphere profiles that refer to the same VM must use the same `queue_resource`.
+## Audit And Completion
 
-The default queue state is `%LOCALAPPDATA%\RemoteX\vm-queue.json` on Windows and `${XDG_STATE_HOME:-~/.local/state}/remotex/vm-queue.json` elsewhere. Lease state is stored beside it. `REMOTEX_VM_QUEUE_FILE` and `REMOTEX_VM_QUEUE_LEASE_FILE` override those protected local paths.
+Every MCP tool call writes start and finish records to a local hash-linked JSONL ledger. The default path is under the local RemoteX state directory; REMOTEX_AUDIT_FILE overrides it. Use remotex_audit_export when an operation needs local provenance or chain verification.
 
-Use this workflow:
+Records contain operation and session identifiers, tool name, timestamps, selected non-secret request metadata, result state, duration, previous-record hash, and current-record hash. Scripts are represented by SHA-256. Raw script output, file contents, credentials, and credential-manager values are excluded.
 
-1. Call `remotex_vm_queue_status` with the target profile.
-2. Call `remotex_vm_queue_request` with a stable ASCII `requester`.
-3. If the resource is unowned and this requester is first, show the returned prompt and obtain confirmation.
-4. Call `remotex_vm_queue_claim` with `confirm=true`.
-5. Pass the same `requester` to SSH side effects, RDP launch, or VM power operations.
-6. Call `remotex_vm_queue_renew` for long work.
-7. Release ownership after use. If a waiter exists, notify the first waiter; ownership is never transferred silently.
+Report reachability, credential readiness, composite identity status, queue ownership, command acceptance, client return code, timeout, receipt hash, integrity verification, and target readback separately. Starting a GUI, accepting a command, or receiving exit code zero is not proof that the remote system reached the requested final state.
 
-Leases default to four hours and may be configured from 60 seconds to seven days. Expiry releases an owner but does not assign a waiter. The first waiter must still explicitly confirm and claim. Legacy unleased ownership remains valid, is clearly marked, and can be migrated in place with `remotex_vm_queue_renew`.
+## Tool Summary
 
-The resource operation lock remains held for the duration of synchronous SSH or VM operations. Resumable SSH task workers reacquire and validate the persisted owner before execution. Another requester cannot preempt, release, or bypass an active owner.
+- remotex_status
+- SSH: test, command or script execution, transfer, resumable tasks, agent and host-key governance
+- RDP: remotex_rdp_test and remotex_rdp_open
+- Windows guest: test, preflight, bounded script, verified copy, authenticated reboot wait
+- vSphere or ESXi: about, VM inventory, power
+- VMware Workstation: running inventory, power, snapshot list, create, revert, delete
+- Queue: status, request, claim, renew, heartbeat, stale recovery, release, cancel
+- remotex_audit_export
 
-This queue coordinates RemoteX processes on one machine. It is not an authorization boundary and cannot detect clients that connect directly outside RemoteX.
+## Boundaries
 
-## Audit Ledger
-
-Every MCP tool call writes start and finish records to a local hash-linked JSONL ledger. The default path is under the local RemoteX state directory; set `REMOTEX_AUDIT_FILE` to override it.
-
-Records contain operation and session identifiers, tool name, profile metadata, timestamps, result status, duration, previous-record hash, and current-record hash. Scripts are represented by SHA-256, and credential values are excluded. `remotex_audit_export` verifies the chain before returning bounded records.
-
-The chain detects modification, reordering, and gaps between retained records. Without an external anchor it cannot prove that the entire file was not truncated or replaced.
-
-## Tools
-
-- `remotex_status`
-- `remotex_ssh_test`, `remotex_ssh_run_command`, `remotex_ssh_run_script`
-- `remotex_ssh_copy_to`, `remotex_ssh_copy_from`
-- `remotex_ssh_task_start`, `remotex_ssh_task_status`, `remotex_ssh_task_cancel`, `remotex_ssh_task_collect`
-- `remotex_ssh_host_key_status`, `remotex_ssh_host_key_approve`
-- `remotex_ssh_agent_list`, `remotex_ssh_agent_add`, `remotex_ssh_agent_remove`
-- `remotex_ssh_key_fingerprint`
-- `remotex_rdp_test`, `remotex_rdp_open`
-- `remotex_vsphere_about`, `remotex_vsphere_list_vms`, `remotex_vsphere_power`
-- `remotex_vmware_list_running`, `remotex_vmware_power`
-- `remotex_vm_queue_status`, `remotex_vm_queue_request`, `remotex_vm_queue_claim`
-- `remotex_vm_queue_renew`, `remotex_vm_queue_release`, `remotex_vm_queue_cancel`
-- `remotex_audit_export`
-
-Connection tests, queue inspection, host-key inspection, audit export, and inventory operations are read-only. Commands, scripts, file transfers, RDP launch, VM power changes, queue mutation, host-key approval, and task cancellation have side effects.
-
-## Security Boundaries
-
-- Literal secret fields such as `password`, `secret`, `token`, and private-key data are rejected at config load time.
-- External programs are invoked without a local shell and with fixed option boundaries.
-- SSH password and keyboard-interactive authentication are disabled.
-- Managed SSH host keys block unregistered endpoints and unapproved changes.
-- Script and secret values do not enter SSH command-line arguments.
-- Output capture is byte-safe, bounded, encoding-aware, and secret-redacted.
-- SFTP paths are quoted as protocol data; unsafe SCP fallback paths are rejected.
-- RDP and VM power operations fail closed when credentials or queue ownership are unavailable.
-- SSH side effects require the same queue owner when their profile declares `queue_resource`.
-- Queue files use OS locks and atomic replacement; invalid state blocks operations.
-- Local audit hashes detect ledger modification, reordering, and internal gaps.
-
-RemoteX does not make remote commands intrinsically safe, replace remote authorization, prevent direct out-of-band access, or prove a final remote state without a separate readback.
+RemoteX does not make remote commands intrinsically safe, replace remote authorization, prevent direct out-of-band access, prove a state not covered by an explicit readback, or turn a local cooperative queue into a distributed lock. Use a disposable VM integration environment for real guest, snapshot, and reboot validation before a production rollout.

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import remotex_core as core
+import vm_identity
 import vm_queue
 import windows_credentials
 
@@ -53,8 +54,16 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
             raise core.ToolError("RDP width and height must be integers") from exc
         if not 640 <= width <= 16384 or not 480 <= height <= 16384:
             raise core.ToolError("RDP width and height are outside the supported range")
+    identity = vm_identity.binding_for_profile(
+        name,
+        raw,
+        require_identity=False,
+        require_guest_profile=False,
+    )
+    bound_vmx_path = vm_identity.verify_bound_vmx(identity, bundle) if identity else None
     return {
         "profile": name,
+        "raw": raw,
         "config_source": bundle.source,
         "host": host,
         "port": core.validate_port(raw.get("port"), DEFAULT_PORT),
@@ -65,6 +74,8 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
         "width": width,
         "height": height,
         "mstsc_path": raw.get("mstsc_path"),
+        "vmIdentity": identity,
+        "boundVmxPath": str(bound_vmx_path) if bound_vmx_path else None,
     }
 
 
@@ -93,6 +104,12 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
             result["rdp_file_exists"] = rdp_file.is_file()
             if not rdp_file.is_file():
                 errors.append("rdp_file does not exist")
+        identity = vm_identity.status_for_profile(name, raw)
+        result["vmIdentity"] = identity
+        if raw.get("vm_identity") not in (None, "") and not identity.get("ready"):
+            errors.append(str(identity.get("error") or "VM identity binding is invalid"))
+        elif identity.get("ready"):
+            result["bound_vmx_path"] = str(vm_identity.verify_bound_vmx(identity))
     except (core.ToolError, ValueError) as exc:
         errors.append(str(exc))
     if not result["client_available"]:
@@ -120,6 +137,7 @@ def test_connection(args: dict[str, Any]) -> dict[str, Any]:
             "port": cfg["port"],
             "tcp_reachable": reachable,
             "credential_present": _credential_present(cfg["credential_target"]),
+            "vmIdentity": cfg["vmIdentity"],
             "error": error,
         }
     )
@@ -176,6 +194,7 @@ def open_connection(args: dict[str, Any]) -> dict[str, Any]:
             "host": cfg["host"],
             "port": cfg["port"],
             "credential_target": cfg["credential_target"],
+            "vmIdentity": cfg["vmIdentity"],
             "queue_resource": ownership["resource"],
             "queue_owner": ownership["owner"]["requester"],
             "process_id": process.pid,

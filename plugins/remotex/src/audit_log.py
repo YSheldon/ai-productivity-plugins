@@ -187,6 +187,11 @@ def summarize_arguments(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
             "virtual_machine",
             "resource",
             "task_id",
+            "snapshot_name",
+            "idempotency_key",
+            "preflight_receipt_sha256",
+            "run_id",
+            "confirm",
         )
         if key in arguments
     }
@@ -195,7 +200,7 @@ def summarize_arguments(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
             text = core._text(arguments.get(key))
             summary[f"{key}Sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
             summary[f"{key}Bytes"] = len(text.encode("utf-8"))
-    for key in ("local_path", "remote_path"):
+    for key in ("local_path", "remote_path", "relative_path"):
         if key in arguments:
             summary[key] = core.redact_text(arguments[key])
     if "environment_refs" in arguments:
@@ -238,6 +243,17 @@ def summarize_result(result: dict[str, Any]) -> dict[str, Any]:
             "claim_status",
             "release_status",
             "renew_status",
+            "heartbeatStatus",
+            "recoveryStatus",
+            "requestAccepted",
+            "clientReturnCode",
+            "targetStateReadback",
+            "exactSnapshotMatch",
+            "receiptSha256",
+            "failureCode",
+            "integrityMatched",
+            "newAuthenticatedSessionReady",
+            "oldBootIdentityDisappeared",
         ):
             if key in payload:
                 summary[key] = payload[key]

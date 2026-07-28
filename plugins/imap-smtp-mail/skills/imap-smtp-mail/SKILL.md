@@ -16,7 +16,8 @@ The plugin is protocol-based, so prefer IMAP search and message reads before mak
 - The password should be an authorization code, app password, or client password.
 - For Tencent Exmail, tell the user to open `设置 > 账户 > 客户端专用密码` and generate a client-specific password, then open `设置 > 客户端设置` and enable the IMAP/SMTP service. The setup wizard must receive the client-specific password, not the normal web login password.
 - Prefer `imap_smtp_mail_start_setup` for setup so users do not need to edit JSON.
-- The account config is saved to `~/.imap-smtp-mail/accounts.json` by the setup wizard. On Windows, credentials are protected with CurrentUser DPAPI before they are written, and the file ACL is restricted after every write. The path can still be overridden with `IMAP_SMTP_MAIL_CONFIG` or single-account environment variables.
+- The account config is saved to `~/.imap-smtp-mail/accounts.json` by the setup wizard. On Windows, credentials are protected with CurrentUser DPAPI before they are written; the temporary encrypted config is ACL-hardened through trusted `SystemRoot` tools before atomic replacement. The path can be overridden with `IMAP_SMTP_MAIL_CONFIG` or single-account environment variables.
+- If setup reports a local Windows credential persistence compatibility error, tell the user that the account was not saved, advise them to repair the local Windows environment, and have them reopen the wizard instead of resubmitting the form.
 
 ## Workflow
 

@@ -23,7 +23,6 @@ import ssl
 import subprocess
 import sys
 import tempfile
-import tempfile
 import threading
 import time
 import traceback
@@ -35,7 +34,7 @@ from typing import Any, Callable
 
 
 SERVER_NAME = "imap-smtp-mail"
-SERVER_VERSION = "0.3.0"
+SERVER_VERSION = "0.3.1"
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 DEFAULT_CONFIG_PATH = pathlib.Path.home() / ".imap-smtp-mail" / "accounts.json"
 DEFAULT_ATTACHMENT_DIR = pathlib.Path.home() / "Downloads" / "imap-smtp-mail-attachments"
@@ -162,6 +161,11 @@ def env_first(*names: str) -> str | None:
     return None
 
 
+def configured_config_path() -> pathlib.Path:
+    """Return the configured local account store path."""
+    return expand_path(env_first("IMAP_SMTP_MAIL_CONFIG")) or DEFAULT_CONFIG_PATH
+
+
 def load_json_file(path: pathlib.Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -185,13 +189,42 @@ def _require_windows_dpapi() -> None:
         raise ToolError("Windows DPAPI credentials are only available on Windows.")
 
 
+def _windows_error_code(error: OSError) -> int | None:
+    code = getattr(error, "winerror", None)
+    if code is None:
+        code = getattr(error, "errno", None)
+    return int(code) if isinstance(code, int) else None
+
+
+def _load_windows_library(name: str, action: str) -> Any:
+    try:
+        return ctypes.WinDLL(name, use_last_error=True)
+    except OSError as exc:
+        code = _windows_error_code(exc)
+        code_text = f" (Windows error {code})" if code is not None else ""
+        raise ToolError(
+            f"Windows DPAPI cannot {action}{code_text}. No account configuration was saved. "
+            "Repair the local Windows environment, then reopen the setup wizard."
+        ) from None
+
+
+def _raise_dpapi_failure(action: str, *, saving: bool) -> None:
+    code = ctypes.get_last_error()
+    code_text = f" (Windows error {code})" if code else ""
+    saved_text = " No account configuration was saved." if saving else ""
+    raise ToolError(
+        f"Windows DPAPI could not {action}{code_text}.{saved_text} "
+        "Repair the local Windows profile, then reopen the setup wizard."
+    )
+
+
 def protect_password_dpapi(password: str) -> str:
     _require_windows_dpapi()
     plaintext_blob, plaintext_buffer = _blob_from_bytes(password.encode("utf-8"))
     entropy_blob, entropy_buffer = _blob_from_bytes(DPAPI_ENTROPY)
     protected_blob = _DataBlob()
-    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    crypt32 = _load_windows_library("crypt32", "load the encryption component")
+    kernel32 = _load_windows_library("kernel32", "load the memory-management component")
     success = crypt32.CryptProtectData(
         ctypes.byref(plaintext_blob),
         SERVER_NAME,
@@ -203,7 +236,7 @@ def protect_password_dpapi(password: str) -> str:
     )
     del plaintext_buffer, entropy_buffer
     if not success:
-        raise ctypes.WinError(ctypes.get_last_error())
+        _raise_dpapi_failure("encrypt the mailbox credential", saving=True)
     try:
         protected = ctypes.string_at(protected_blob.pbData, protected_blob.cbData)
         return DPAPI_PREFIX + base64.b64encode(protected).decode("ascii")
@@ -222,8 +255,8 @@ def unprotect_password_dpapi(value: str) -> str:
     protected_blob, protected_buffer = _blob_from_bytes(protected)
     entropy_blob, entropy_buffer = _blob_from_bytes(DPAPI_ENTROPY)
     plaintext_blob = _DataBlob()
-    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    crypt32 = _load_windows_library("crypt32", "load the encryption component")
+    kernel32 = _load_windows_library("kernel32", "load the memory-management component")
     success = crypt32.CryptUnprotectData(
         ctypes.byref(protected_blob),
         None,
@@ -235,7 +268,7 @@ def unprotect_password_dpapi(value: str) -> str:
     )
     del protected_buffer, entropy_buffer
     if not success:
-        raise ctypes.WinError(ctypes.get_last_error())
+        _raise_dpapi_failure("decrypt the saved mailbox credential", saving=False)
     try:
         plaintext = ctypes.string_at(plaintext_blob.pbData, plaintext_blob.cbData)
         return plaintext.decode("utf-8")
@@ -268,7 +301,7 @@ def load_raw_accounts() -> tuple[list[dict[str, Any]], str | None]:
         accounts = payload.get("accounts", payload) if isinstance(payload, dict) else payload
         source = "IMAP_SMTP_MAIL_ACCOUNTS_JSON"
     else:
-        config_path = expand_path(env_first("IMAP_SMTP_MAIL_CONFIG")) or DEFAULT_CONFIG_PATH
+        config_path = configured_config_path()
         if config_path.exists():
             payload = load_json_file(config_path)
             accounts = payload.get("accounts", payload) if isinstance(payload, dict) else payload
@@ -389,22 +422,58 @@ def load_config_payload(path: pathlib.Path) -> dict[str, Any]:
     raise ToolError(f"{path} must be a JSON object or array.")
 
 
+def _windows_system_executable(name: str) -> str:
+    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    if root:
+        for directory_name in ("System32", "Sysnative"):
+            candidate = pathlib.Path(root) / directory_name / name
+            if candidate.is_file():
+                return str(candidate)
+    raise ToolError(
+        f"Windows credential hardening cannot locate {name} below SystemRoot. "
+        "No account configuration was saved. Repair the local Windows environment, "
+        "then reopen the setup wizard."
+    )
+
+
+def _run_windows_system_tool(name: str, arguments: list[str], action: str) -> Any:
+    executable = _windows_system_executable(name)
+    try:
+        return subprocess.run(
+            [executable, *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        code = _windows_error_code(exc)
+        code_text = f" (Windows error {code})" if code is not None else ""
+        raise ToolError(
+            f"Windows credential hardening cannot {action}{code_text}. "
+            "No account configuration was saved. Repair the local Windows environment, "
+            "then reopen the setup wizard."
+        ) from None
+
+
 def harden_windows_config_acl(path: pathlib.Path) -> None:
     if os.name != "nt":
         return
-    identity = subprocess.run(
-        ["whoami.exe", "/user", "/fo", "csv", "/nh"],
-        capture_output=True,
-        text=True,
-        check=False,
+    identity = _run_windows_system_tool(
+        "whoami.exe",
+        ["/user", "/fo", "csv", "/nh"],
+        "resolve the current Windows user",
     )
     sid_match = re.search(r"\bS-\d-(?:\d+-)+\d+\b", identity.stdout)
     if identity.returncode != 0 or sid_match is None:
-        raise ToolError("Unable to resolve the current Windows user SID for credential ACL hardening.")
+        raise ToolError(
+            "Unable to resolve the current Windows user SID for credential ACL hardening. "
+            "No account configuration was saved. Repair the local Windows environment, "
+            "then reopen the setup wizard."
+        )
 
-    acl = subprocess.run(
+    acl = _run_windows_system_tool(
+        "icacls.exe",
         [
-            "icacls.exe",
             str(path),
             "/inheritance:r",
             "/grant:r",
@@ -412,13 +481,13 @@ def harden_windows_config_acl(path: pathlib.Path) -> None:
             "*S-1-5-18:(F)",
             "*S-1-5-32-544:(F)",
         ],
-        capture_output=True,
-        text=True,
-        check=False,
+        "secure the credential configuration",
     )
     if acl.returncode != 0:
-        detail = (acl.stderr or acl.stdout).strip()
-        raise ToolError(f"Unable to harden the credential config ACL: {detail}")
+        raise ToolError(
+            "Unable to harden the credential config ACL. No account configuration was saved. "
+            "Repair the local Windows environment, then reopen the setup wizard."
+        )
 
 
 def write_config_payload(path: pathlib.Path, payload: dict[str, Any]) -> None:
@@ -440,19 +509,20 @@ def write_config_payload(path: pathlib.Path, payload: dict[str, Any]) -> None:
             )
             temporary.flush()
             os.fsync(temporary.fileno())
+        harden_windows_config_acl(temporary_path)
         os.replace(temporary_path, path)
         temporary_path = None
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
-    harden_windows_config_acl(path)
     try:
         os.chmod(path, 0o600)
     except OSError:
         pass
 
 
-def migrate_plaintext_passwords(path: pathlib.Path = DEFAULT_CONFIG_PATH) -> int:
+def migrate_plaintext_passwords(path: pathlib.Path | None = None) -> int:
+    path = path or configured_config_path()
     payload = load_config_payload(path)
     accounts = payload.setdefault("accounts", [])
     migrated = 0
@@ -470,7 +540,8 @@ def migrate_plaintext_passwords(path: pathlib.Path = DEFAULT_CONFIG_PATH) -> int
     return migrated
 
 
-def upsert_raw_account(raw_account: dict[str, Any], path: pathlib.Path = DEFAULT_CONFIG_PATH) -> None:
+def upsert_raw_account(raw_account: dict[str, Any], path: pathlib.Path | None = None) -> None:
+    path = path or configured_config_path()
     secured_account = secure_raw_account_password(raw_account)
     normalize_account(secured_account)
     payload = load_config_payload(path)
@@ -490,7 +561,8 @@ def resolve_account(name: str | None = None) -> dict[str, Any]:
     accounts, _ = load_accounts()
     if not accounts:
         raise ToolError(
-            "No email accounts configured. Create ~/.imap-smtp-mail/accounts.json or set IMAP_SMTP_MAIL_* variables."
+            "No email accounts configured. Create ~/.imap-smtp-mail/accounts.json or set "
+            "IMAP_SMTP_MAIL_CONFIG / IMAP_SMTP_MAIL_* variables."
         )
     if name:
         for account in accounts:
@@ -1306,6 +1378,19 @@ def render_result_page(title: str, body: str, ok: bool = True) -> str:
 </html>"""
 
 
+def safe_persistence_error_message(error: Exception) -> str:
+    if isinstance(error, ToolError):
+        return str(error)
+    if isinstance(error, OSError):
+        code = _windows_error_code(error)
+        code_text = f"（Windows 错误 {code}）" if code is not None else ""
+        return (
+            f"本机加密凭据保存失败{code_text}。账号未保存；请修复本地 Windows 环境后"
+            "重新打开配置向导，不要重复提交。"
+        )
+    return "本机加密凭据保存失败。账号未保存；请修复本地 Windows 环境后重新打开配置向导，不要重复提交。"
+
+
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -1368,7 +1453,19 @@ class SetupWizardHandler(http.server.BaseHTTPRequestHandler):
                     checks.append("SMTP 发信登录通过")
                 finally:
                     client.quit()
-            upsert_raw_account(raw_account, DEFAULT_CONFIG_PATH)
+            try:
+                upsert_raw_account(raw_account)
+            except Exception as exc:
+                self.send_html(
+                    render_setup_page(
+                        self.server.token,
+                        provider=self.first(form, "provider") or self.server.default_provider,
+                        account_name=self.first(form, "name") or self.server.default_account_name,
+                        message=f"保存失败：{safe_persistence_error_message(exc)}",
+                    ),
+                    400,
+                )
+                return
             check_text = "，".join(checks) if checks else "未执行连接测试"
             self.send_html(
                 render_result_page(
@@ -1378,13 +1475,23 @@ class SetupWizardHandler(http.server.BaseHTTPRequestHandler):
                 )
             )
             threading.Thread(target=self.shutdown_later, daemon=True).start()
-        except Exception as exc:
+        except ToolError as exc:
             self.send_html(
                 render_setup_page(
                     self.server.token,
                     provider=self.first(form, "provider") or self.server.default_provider,
                     account_name=self.first(form, "name") or self.server.default_account_name,
                     message=f"保存失败：{exc}",
+                ),
+                400,
+            )
+        except Exception:
+            self.send_html(
+                render_setup_page(
+                    self.server.token,
+                    provider=self.first(form, "provider") or self.server.default_provider,
+                    account_name=self.first(form, "name") or self.server.default_account_name,
+                    message="保存失败：邮箱连接或本机配置未完成。请检查网络或本机环境后重新打开配置向导。",
                 ),
                 400,
             )
@@ -1493,7 +1600,7 @@ def start_setup_wizard(args: dict[str, Any]) -> dict[str, Any]:
             "url": url,
             "opened_browser": opened,
             "expires_in_seconds": ttl_seconds,
-            "config_path": str(DEFAULT_CONFIG_PATH),
+            "config_path": str(configured_config_path()),
             "note": "Open this local URL to configure an account without editing JSON. Use a mailbox authorization code or client password.",
         }
     )
@@ -1544,6 +1651,7 @@ def list_accounts(_: dict[str, Any]) -> dict[str, Any]:
     return tool_result(
         {
             "config_source": source,
+            "config_path": str(configured_config_path()),
             "default_config_path": str(DEFAULT_CONFIG_PATH),
             "accounts": [public_account(account) for account in accounts],
             "setup_hint": "If no accounts are configured, call imap_smtp_mail_start_setup to open the local setup wizard.",

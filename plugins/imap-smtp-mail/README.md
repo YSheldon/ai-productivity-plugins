@@ -9,8 +9,8 @@ and custom enterprise mailboxes can all be configured with the same account form
 
 ## Version
 
-Current plugin/server release: `0.3.0`.
-Changelog note: `0.3.0` adds an allowlisted `release_workflow_headers` readback payload with duplicate-conflict, control-character, and length validation. `0.2.0` added authenticated thread evidence, constrained reply-thread headers, and the locked CLI bridge.
+Current plugin/server release: `0.3.1`.
+Changelog note: `0.3.1` resolves Windows ACL utilities from trusted `SystemRoot` paths instead of the launcher `PATH`, hardens the temporary encrypted config before atomic replacement, honors `IMAP_SMTP_MAIL_CONFIG` in the wizard and migration command, and returns a safe local compatibility message when saving cannot start. `0.3.0` adds an allowlisted `release_workflow_headers` readback payload with duplicate-conflict, control-character, and length validation. `0.2.0` added authenticated thread evidence, constrained reply-thread headers, and the locked CLI bridge.
 
 ## MVP Scope
 
@@ -40,7 +40,7 @@ The recommended path is the local setup wizard. After installing the plugin, ask
 打开邮箱配置向导
 ```
 
-The plugin starts a local browser page on `127.0.0.1`. Choose the provider, enter the email address and mailbox authorization code, then click save. On Windows, the wizard protects the credential with CurrentUser DPAPI and restricts the account file ACL to the current user, SYSTEM, and Administrators.
+The plugin starts a local browser page on `127.0.0.1`. Choose the provider, enter the email address and mailbox authorization code, then click save. On Windows, the wizard protects the credential with CurrentUser DPAPI, resolves ACL utilities from trusted `SystemRoot` paths rather than the launcher `PATH`, and restricts the account file ACL to the current user, SYSTEM, and Administrators before atomically replacing the old file. If that local prerequisite fails, the account is not saved; repair the Windows environment and reopen the wizard instead of repeatedly submitting the form.
 
 You can also run the wizard directly:
 
@@ -133,7 +133,7 @@ The CLI accepts only `list_accounts`, `test_connection`, `search_messages`, `rea
 
 - Do not commit real account configuration.
 - Prefer provider authorization codes over account passwords.
-- On Windows, the setup wizard and `migrate-credentials` store credentials as CurrentUser DPAPI ciphertext rather than plaintext JSON and re-harden the account file ACL after every write.
+- On Windows, the setup wizard and `migrate-credentials` store credentials as CurrentUser DPAPI ciphertext rather than plaintext JSON. The temporary encrypted file is ACL-hardened using trusted `SystemRoot` tools before atomic replacement; a hardening failure leaves the prior account file unchanged.
 - Prefer the local setup wizard over sending passwords or authorization codes in a Codex chat message.
 - Keep sending as an explicit action. The `imap_smtp_mail_send_email` tool defaults to `dry_run`, which writes a mailbox draft unless `preview_only` is set.
 - Reply threading is intentionally constrained: `message_id` and `in_reply_to` must be single RFC Message-IDs, `references` are normalized to RFC IDs, and arbitrary headers are rejected unless they use the `X-RD-*` prefix. Draft/send previews echo the effective `message_id` so callers can verify which value was used.

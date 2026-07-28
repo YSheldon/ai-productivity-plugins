@@ -4,16 +4,44 @@ on:
   pull_request:
     paths:
       - ".github/workflows/release-gate-ci.yml"
+      - "contracts/release-approval/**"
+      - "shared/release_workflow_core/**"
+      - "plugins/imap-smtp-mail/**"
+      - "plugins/test-submission/**"
+      - "plugins/submission-gate/**"
+      - "plugins/pre-release/**"
       - "plugins/release-gate/**"
+      - "plugins/release-approval/**"
+      - "plugins/release-approval-verifier/**"
       - "plugins/product-release-gate/**"
+      - "plugins/rd-flywheel/**"
+      - "plugins/gitlab/**"
+      - "tests/test_release_workflow_*.py"
+      - "tests/test_release_approval_*.py"
+      - "tests/test_product_material_workflow_*.py"
+      - "tools/sync_release_workflow_core.py"
       - "pytest.ini"
   push:
     branches:
       - main
     paths:
       - ".github/workflows/release-gate-ci.yml"
+      - "contracts/release-approval/**"
+      - "shared/release_workflow_core/**"
+      - "plugins/imap-smtp-mail/**"
+      - "plugins/test-submission/**"
+      - "plugins/submission-gate/**"
+      - "plugins/pre-release/**"
       - "plugins/release-gate/**"
+      - "plugins/release-approval/**"
+      - "plugins/release-approval-verifier/**"
       - "plugins/product-release-gate/**"
+      - "plugins/rd-flywheel/**"
+      - "plugins/gitlab/**"
+      - "tests/test_release_workflow_*.py"
+      - "tests/test_release_approval_*.py"
+      - "tests/test_product_material_workflow_*.py"
+      - "tools/sync_release_workflow_core.py"
       - "pytest.ini"
   workflow_dispatch:
 
@@ -28,7 +56,7 @@ jobs:
   release-gates:
     name: Windows release gate regression
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -41,22 +69,33 @@ jobs:
       - name: Install test dependency
         run: python -m pip install --disable-pip-version-check pytest==8.3.5
 
-      - name: Compile release gate sources
+      - name: Compile release workflow sources
         run: >-
           python -m compileall -q
+          shared/release_workflow_core
+          plugins/imap-smtp-mail/src
+          plugins/test-submission/src
+          plugins/submission-gate/src
+          plugins/pre-release/src
           plugins/release-gate/src
+          plugins/release-approval/src
+          plugins/release-approval-verifier/src
           plugins/product-release-gate/src
           plugins/product-release-gate/scripts
+          plugins/rd-flywheel/src
+          plugins/gitlab/src
 
-      - name: Test mailbox release gate
-        shell: cmd
-        run: python -m pytest plugins/release-gate/tests -q --tb=short
+      - name: Test complete release workflow
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/release-gate-ci | Out-Null
+          python -m pytest -q --tb=short --junitxml=artifacts/release-gate-ci/junit.xml
 
-      - name: Test production release gate
+      - name: Upload release workflow test evidence
         if: always()
-        shell: cmd
-        run: >-
-          python -m unittest discover
-          -s plugins/product-release-gate/tests
-          -p "test_*.py"
-          -q
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-ci-${{ github.run_id }}
+          path: artifacts/release-gate-ci/junit.xml
+          if-no-files-found: error
+          retention-days: 30

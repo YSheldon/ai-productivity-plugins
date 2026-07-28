@@ -121,8 +121,11 @@ class ImapSmtpMailCliGateway:
         try:
             completed = self.runner(
                 list(self.command),
-                input=json.dumps(request, ensure_ascii=False),
+                # Keep the CLI pipe independent of the Windows console code page.
+                # json.loads() in the locked mail bridge restores non-ASCII content.
+                input=json.dumps(request, ensure_ascii=True),
                 text=True,
+                encoding="utf-8",
                 capture_output=True,
                 shell=False,
                 timeout=self.timeout_seconds,

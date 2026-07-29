@@ -343,7 +343,7 @@ def test_manifest_uses_cross_platform_node_launcher() -> None:
     manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
     mcp = json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8"))
     server = mcp["mcpServers"]["gitlab"]
-    assert manifest["version"] == "0.3.0"
+    assert manifest["version"] == "0.3.1"
     assert server == {"command": "node", "args": ["./scripts/run_mcp.js"], "cwd": "."}
 
 

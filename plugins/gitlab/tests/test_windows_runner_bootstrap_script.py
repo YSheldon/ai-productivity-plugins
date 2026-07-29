@@ -104,3 +104,32 @@ def test_bootstrap_launcher_pins_script_before_elevation() -> None:
     assert "Get-FileHash -LiteralPath $path -Algorithm SHA256" in launcher
     assert "-Verb RunAs" in launcher
     assert "Bootstrap SHA256 mismatch" in launcher
+    assert "run_windows_project_runner_bootstrap_elevated.ps1" in launcher
+    assert "EXPECTED_WRAPPER_SHA256=" in launcher
+    assert "PmgRunnerProvisioningDiagnostic/v1" in launcher
+
+
+def test_elevated_wrapper_emits_only_sanitized_failure_evidence() -> None:
+    wrapper = (
+        SCRIPT.parent / "run_windows_project_runner_bootstrap_elevated.ps1"
+    ).read_text(encoding="utf-8")
+
+    required = (
+        "#Requires -RunAsAdministrator",
+        "PmgRunnerProvisioningDiagnostic/v1",
+        "E_PINNED_DOWNLOAD",
+        "E_PYTHON_RUNTIME",
+        "E_PLUGIN_INSTALL",
+        "E_MANAGER_CREDENTIAL",
+        "E_RUNNER_PROVISION",
+        "E_RUNNER_ATTESTATION",
+        "E_BOOTSTRAP_FAILED",
+        "bootstrap_sha256",
+        "Diagnostic path does not match the fixed bootstrap artifact location",
+    )
+    for fragment in required:
+        assert fragment in wrapper
+
+    assert "error_message" not in wrapper
+    assert "Exception.ToString" not in wrapper
+    assert "StackTrace" not in wrapper

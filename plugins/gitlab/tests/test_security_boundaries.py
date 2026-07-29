@@ -370,4 +370,4 @@ def test_node_launcher_initializes_the_mcp_server() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     response = json.loads(completed.stdout.splitlines()[0])
-    assert response["result"]["serverInfo"] == {"name": "gitlab", "version": "0.3.0"}
+    assert response["result"]["serverInfo"] == {"name": "gitlab", "version": "0.3.1"}

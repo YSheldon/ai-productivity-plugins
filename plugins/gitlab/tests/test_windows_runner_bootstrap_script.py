@@ -90,3 +90,17 @@ def test_bootstrap_parses_in_powershell_when_available() -> None:
         capture_output=True,
         text=True,
     )
+
+
+def test_bootstrap_launcher_pins_script_before_elevation() -> None:
+    launcher = (
+        SCRIPT.parent / "run_windows_project_runner_bootstrap.cmd"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "EXPECTED_SHA256=0cb81ec7fdb703459b5e0f86dcdd69917e1ba51bb87df46915ad33ff4e0e1dc4"
+        in launcher
+    )
+    assert "Get-FileHash -LiteralPath $path -Algorithm SHA256" in launcher
+    assert "-Verb RunAs" in launcher
+    assert "Bootstrap SHA256 mismatch" in launcher

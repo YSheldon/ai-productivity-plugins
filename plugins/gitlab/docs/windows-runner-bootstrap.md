@@ -26,7 +26,7 @@ policy and signed `gitlab-runner.exe` have been initialized.
 
 1. Initialize the reviewed policy and signed Runner binary.
 2. Place this script in an operator-controlled staging directory.
-3. Run it from PowerShell 7 as administrator.
+3. Run `scripts/run_windows_project_runner_bootstrap.cmd`; it verifies the pinned script hash before requesting elevation.
 4. When prompted, enter a short-lived project-scoped token with GitLab
    `create_runner` and `manage_runner` permissions.
 5. Keep the generated `artifacts/runner-provisioning-result.json` and its

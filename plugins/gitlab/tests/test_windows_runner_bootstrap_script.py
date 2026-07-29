@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "bootstrap_windows_project_runner.ps1"
+
+
+def test_bootstrap_pins_all_remote_inputs() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert "$PluginCommit = '9d0a8bf75f810a4f2dee0a86467a7c4487ab9baf'" in text
+    assert (
+        "$PythonInstallerSha256 = "
+        "'c54d9b9bbb8a36e6489363ddd01139707fd781d72f1f9e90c7ec65d0061368e0'"
+        in text
+    )
+    assert "$PythonSignerThumbprint = '9BA3C2E210C7E8296C5056515BFC0B0BBA78AC48'" in text
+
+    expected_plugin_hashes = {
+        "3a6a718a28cba0cc481d788b905b139d62c450e56869505b0ae3ddc1050f19a2",
+        "45281b9dfaa660f986206f036f52cf40f362b484b9a5ba416b6874bac6b57dd1",
+        "cafa86ab5862a19cee0f916de6f414a20f9cb4b66d94774adf5267064a5fd556",
+        "55fdbb5fb30f581257034e6fb58f684796aa9b2ab552514110ae22a9e8378215",
+    }
+    assert expected_plugin_hashes.issubset(set(re.findall(r"[0-9a-f]{64}", text)))
+    assert "raw.githubusercontent.com/YSheldon/ai-productivity-plugins/{0}/" in text
+    assert "raw.githubusercontent.com/YSheldon/ai-productivity-plugins/main/" not in text
+
+
+def test_bootstrap_preserves_privilege_and_secret_boundaries() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    required = (
+        "#Requires -RunAsAdministrator",
+        "Get-AuthenticodeSignature",
+        "Set-ProtectedTreeAcl",
+        "ProgramFiles",
+        "token-set --policy-name",
+        "token-status",
+        "manager_credential_present_after_ready = $false",
+        "ProductMaterialGateRunnerIdentity/v1",
+        "NT AUTHORITY\\NetworkService",
+        "-I -S -B",
+    )
+    for fragment in required:
+        assert fragment in text
+
+    forbidden = (
+        "--insecure",
+        "verify=False",
+        "PasswordAuthentication",
+        "GITLAB_TOKEN=",
+        "registration_token",
+        "runner_token",
+    )
+    for fragment in forbidden:
+        assert fragment not in text
+
+
+def test_bootstrap_fails_closed_on_nonready_or_credential_cleanup_failure() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert "$lifecycle.ready -ne $true" in text
+    assert "$tokenStatusAfter.token_present -ne $false" in text
+    assert "$service.State -ne 'Running'" in text
+    assert "$service.StartMode -ne 'Auto'" in text
+    assert "$identity.stage -ne 'ready'" in text

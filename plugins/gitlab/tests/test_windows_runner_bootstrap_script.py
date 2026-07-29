@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -67,3 +69,24 @@ def test_bootstrap_fails_closed_on_nonready_or_credential_cleanup_failure() -> N
     assert "$service.State -ne 'Running'" in text
     assert "$service.StartMode -ne 'Auto'" in text
     assert "$identity.stage -ne 'ready'" in text
+
+
+def test_bootstrap_parses_in_powershell_when_available() -> None:
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        return
+
+    escaped_path = str(SCRIPT).replace("'", "''")
+    command = (
+        "$tokens=$null;$errors=$null;"
+        f"[System.Management.Automation.Language.Parser]::ParseFile('{escaped_path}',"
+        "[ref]$tokens,[ref]$errors)|Out-Null;"
+        "if($errors.Count -gt 0){"
+        "$errors|ForEach-Object{Write-Error $_.Message};exit 1}"
+    )
+    subprocess.run(
+        [pwsh, "-NoProfile", "-Command", command],
+        check=True,
+        capture_output=True,
+        text=True,
+    )

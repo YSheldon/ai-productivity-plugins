@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -22,6 +23,11 @@ HOST_KEY_POLICIES = {"known-hosts", "managed"}
 META_PREFIX = "__REMOTEX_META__"
 WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 SAFE_SCP_PATH = re.compile(r"^[A-Za-z0-9_./:\\-]+$")
+SAFE_AUTH_METHOD = re.compile(r"^[A-Za-z0-9@._+-]{1,128}$")
+AUTHENTICATION_DENIED = re.compile(
+    r"permission denied(?:\s*\((?P<methods>[^)]*)\))?",
+    re.IGNORECASE,
+)
 
 
 WINDOWS_WRAPPER = r"""
@@ -355,8 +361,124 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _connection_result(cfg: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _public_key_evidence(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    if cfg["credential_source"] != "identity-file":
+        return None
+    identity_file = cfg.get("identity_file")
+    if not identity_file:
+        return {"state": "unavailable"}
+    public_key_file = Path(f"{identity_file}.pub")
+    try:
+        lines = public_key_file.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return {"state": "missing"}
+    except (OSError, UnicodeError):
+        return {"state": "unavailable"}
+    for line in lines:
+        value = line.strip()
+        if not value or value.startswith("#"):
+            continue
+        fields = value.split()
+        if len(fields) < 2 or not SAFE_AUTH_METHOD.fullmatch(fields[0]):
+            return {"state": "invalid"}
+        try:
+            public_key_blob = base64.b64decode(fields[1], validate=True)
+        except (ValueError, binascii.Error):
+            return {"state": "invalid"}
+        if not public_key_blob:
+            return {"state": "invalid"}
+        fingerprint = base64.b64encode(
+            hashlib.sha256(public_key_blob).digest()
+        ).decode("ascii").rstrip("=")
+        return {
+            "state": "available",
+            "algorithm": fields[0],
+            "fingerprint": f"SHA256:{fingerprint}",
+        }
+    return {"state": "missing"}
+
+
+def _server_advertised_methods(stderr: str) -> list[str]:
+    match = AUTHENTICATION_DENIED.search(stderr)
+    methods = match.group("methods") if match else None
+    if not methods:
+        return []
+    result: list[str] = []
+    for raw_method in methods.split(","):
+        method = raw_method.strip().lower()
+        if method and SAFE_AUTH_METHOD.fullmatch(method) and method not in result:
+            result.append(method)
+    return result
+
+
+def _authentication_evidence(cfg: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any]:
+    authenticated = outcome["returncode"] == 0 and not outcome["timed_out"]
+    result: dict[str, Any] = {
+        "state": "authenticated" if authenticated else "not-verified",
+        "verified": authenticated,
+        "credentialSource": cfg["credential_source"],
+        "passwordFallbackAllowed": False,
+    }
+    public_key = _public_key_evidence(cfg)
+    if public_key is not None:
+        result["publicKey"] = public_key
+    if authenticated:
+        return result
+    if outcome["timed_out"]:
+        result.update(
+            {
+                "failureCode": "connection-timeout",
+                "nextStep": (
+                    "Verify network reachability and host-key policy, then rerun "
+                    "remotex_ssh_test."
+                ),
+            }
+        )
+        return result
+    stderr = str(outcome.get("stderr") or "")
+    if AUTHENTICATION_DENIED.search(stderr):
+        if cfg["credential_source"] == "identity-file":
+            failure_code = "configured-public-key-rejected"
+            next_step = (
+                "Authorize the configured public key on the target through an approved "
+                "out-of-band channel, then rerun remotex_ssh_test. RemoteX does not fall "
+                "back to password authentication."
+            )
+        else:
+            failure_code = "ssh-agent-identity-rejected"
+            next_step = (
+                "Confirm the intended public key is loaded in the SSH agent and authorized "
+                "on the target, then rerun remotex_ssh_test. RemoteX does not fall back to "
+                "password authentication."
+            )
+        result.update(
+            {
+                "state": "rejected",
+                "failureCode": failure_code,
+                "serverAdvertisedMethods": _server_advertised_methods(stderr),
+                "nextStep": next_step,
+            }
+        )
+        return result
+    result.update(
+        {
+            "failureCode": "ssh-connection-not-verified",
+            "nextStep": (
+                "Review the sanitized SSH stderr, verify the endpoint and host-key policy, "
+                "then rerun remotex_ssh_test."
+            ),
+        }
+    )
+    return result
+
+
+def _connection_result(
+    cfg: dict[str, Any],
+    outcome: dict[str, Any],
+    *,
+    authentication_attempt: bool = False,
+) -> dict[str, Any]:
+    result = {
         "ok": outcome["returncode"] == 0 and not outcome["timed_out"],
         "profile": cfg["profile"],
         "host": cfg["host"],
@@ -383,6 +505,9 @@ def _connection_result(cfg: dict[str, Any], outcome: dict[str, Any]) -> dict[str
         "peakMemoryBytes": outcome.get("peak_memory_bytes"),
         "resourceLimits": outcome.get("resource_limits"),
     }
+    if authentication_attempt:
+        result["authentication"] = _authentication_evidence(cfg, outcome)
+    return result
 
 
 def _limits(args: dict[str, Any]) -> dict[str, Any]:
@@ -643,7 +768,9 @@ def test_connection(args: dict[str, Any]) -> dict[str, Any]:
         legacy.ssh_arguments(cfg, timeout, "hostname"),
         timeout=timeout,
     )
-    return core.tool_result(_connection_result(cfg, outcome))
+    return core.tool_result(
+        _connection_result(cfg, outcome, authentication_attempt=True)
+    )
 
 
 def run_command(args: dict[str, Any]) -> dict[str, Any]:
@@ -1206,7 +1333,10 @@ REQUESTER_PROPERTY = {
 
 TOOLS: dict[str, dict[str, Any]] = {
     "remotex_ssh_test": {
-        "description": "Test a configured SSH profile with strict host-key and public-key-only defaults.",
+        "description": (
+            "Test a configured SSH profile with strict host-key and public-key-only defaults, "
+            "returning server-side authentication evidence."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {**COMMON_PROFILE, **COMMON_TIMEOUT},

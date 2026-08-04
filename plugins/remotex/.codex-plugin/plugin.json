@@ -1,6 +1,6 @@
 {
   "name": "remotex",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Operate SSH, RDP, Windows guests, vSphere/ESXi, and VMware Workstation targets with bounded execution, verified transfer, composite VM identity, snapshots, and cooperative leases.",
   "author": {
     "name": "Sheldon",

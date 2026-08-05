@@ -20,7 +20,7 @@ import windows_guest
 
 
 SERVER_NAME = "remotex"
-SERVER_VERSION = "0.4.0"
+SERVER_VERSION = "0.4.1"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 queue_leases.install_hooks()
 
@@ -93,6 +93,21 @@ def status(args: dict[str, Any]) -> dict[str, Any]:
                         errors.append(message)
                     profile_status["errors"] = errors
                     profile_status["ready"] = False
+                profile_status.setdefault(
+                    "readinessScope",
+                    "local-configuration-and-host-key",
+                )
+                profile_status.setdefault(
+                    "authentication",
+                    {
+                        "state": "not-tested",
+                        "verified": False,
+                        "nextStep": (
+                            "Run remotex_ssh_test to verify server-side public-key "
+                            "authorization."
+                        ),
+                    },
+                )
             profiles.append(profile_status)
         except core.ToolError as exc:
             profiles.append(
@@ -135,6 +150,14 @@ def status(args: dict[str, Any]) -> dict[str, Any]:
         "overallStatus": overall_status,
         "selectedProfile": selected,
         "selectedProfileReady": bool(selected.get("ready")) if selected else None,
+        "selectedProfileReadinessScope": (
+            selected.get("readinessScope") if selected else None
+        ),
+        "selectedProfileAuthenticationVerified": (
+            bool((selected.get("authentication") or {}).get("verified"))
+            if selected
+            else None
+        ),
         "config": {
             "path": str(bundle.path),
             "source": bundle.source,
@@ -171,7 +194,8 @@ TOOLS: dict[str, dict[str, Any]] = {
     "remotex_status": {
         "description": (
             "Return collection-wide and selected-profile readiness, host-key governance, "
-            "queue leases, and cleanup prompts without opening a connection."
+            "queue leases, and cleanup prompts without opening a connection. SSH readiness "
+            "is local only; use remotex_ssh_test to verify server-side authorization."
         ),
         "inputSchema": {
             "type": "object",

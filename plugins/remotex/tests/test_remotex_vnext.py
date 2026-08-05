@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import sys
@@ -563,6 +564,130 @@ class QueueLeaseTests(unittest.TestCase):
         self.assertNotEqual(after["lease"].get("state"), "legacy-unleased")
 
 
+class SshAuthenticationDiagnosticTests(unittest.TestCase):
+    def _cfg(self, identity_file: Path) -> dict:
+        return {
+            "profile": "lab",
+            "host": "lab.example",
+            "user": "operator",
+            "port": 22,
+            "credential_source": "identity-file",
+            "identity_file": identity_file,
+            "known_hosts_file": None,
+            "strict_host_key_checking": "yes",
+            "identities_only": True,
+            "connect_timeout_seconds": 10,
+            "platform": "posix",
+        }
+
+    @staticmethod
+    def _execution_outcome(returncode: int, stderr: str = "") -> dict:
+        return {
+            "returncode": returncode,
+            "timed_out": False,
+            "stdout": "lab" if returncode == 0 else "",
+            "stderr": stderr,
+            "duration_ms": 5,
+            "process_id": 10,
+            "stdout_bytes": 3 if returncode == 0 else 0,
+            "stderr_bytes": len(stderr.encode("utf-8")),
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+            "stdout_encoding": "utf-8",
+            "stderr_encoding": "utf-8",
+            "process_tree_terminated": False,
+            "terminated_process_ids": [],
+            "termination_reason": None,
+            "peak_memory_bytes": None,
+            "resource_limits": {},
+        }
+
+    def test_rejected_identity_reports_safe_authorization_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            identity_file = Path(directory) / "id_ed25519"
+            identity_file.write_text("private-fixture-material", encoding="utf-8")
+            public_key_blob = b"fixture-public-key"
+            public_key = base64.b64encode(public_key_blob).decode("ascii")
+            Path(f"{identity_file}.pub").write_text(
+                f"ssh-ed25519 {public_key} fixture@host\\n",
+                encoding="utf-8",
+            )
+            cfg = self._cfg(identity_file)
+            outcome = self._execution_outcome(
+                255,
+                "operator@lab.example: Permission denied (publickey,gssapi-keyex,password).\\n",
+            )
+            with mock.patch.object(ssh_vnext, "connection_config", return_value=cfg):
+                with mock.patch.object(ssh_vnext, "_enforce_host_key"):
+                    with mock.patch.object(
+                        ssh_vnext.legacy,
+                        "ssh_arguments",
+                        return_value=["ssh", "hostname"],
+                    ):
+                        with mock.patch.object(
+                            ssh_vnext.execution,
+                            "run_process",
+                            return_value=outcome,
+                        ):
+                            result = payload(
+                                ssh_vnext.test_connection({"profile": "lab"})
+                            )
+        fingerprint = base64.b64encode(
+            hashlib.sha256(public_key_blob).digest()
+        ).decode("ascii").rstrip("=")
+        authentication = result["authentication"]
+        self.assertFalse(result["ok"])
+        self.assertEqual(authentication["state"], "rejected")
+        self.assertFalse(authentication["verified"])
+        self.assertEqual(
+            authentication["failureCode"],
+            "configured-public-key-rejected",
+        )
+        self.assertEqual(
+            authentication["publicKey"]["fingerprint"],
+            f"SHA256:{fingerprint}",
+        )
+        self.assertEqual(
+            authentication["serverAdvertisedMethods"],
+            ["publickey", "gssapi-keyex", "password"],
+        )
+        self.assertFalse(authentication["passwordFallbackAllowed"])
+        serialized = json.dumps(result)
+        self.assertNotIn("private-fixture-material", serialized)
+        self.assertNotIn("fixture@host", serialized)
+
+    def test_successful_test_reports_verified_authentication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            identity_file = Path(directory) / "id_ed25519"
+            identity_file.write_text("private-fixture-material", encoding="utf-8")
+            Path(f"{identity_file}.pub").write_text(
+                "ssh-ed25519 Zml4dHVyZS1wdWJsaWMta2V5 fixture@host\\n",
+                encoding="utf-8",
+            )
+            cfg = self._cfg(identity_file)
+            with mock.patch.object(ssh_vnext, "connection_config", return_value=cfg):
+                with mock.patch.object(ssh_vnext, "_enforce_host_key"):
+                    with mock.patch.object(
+                        ssh_vnext.legacy,
+                        "ssh_arguments",
+                        return_value=["ssh", "hostname"],
+                    ):
+                        with mock.patch.object(
+                            ssh_vnext.execution,
+                            "run_process",
+                            return_value=self._execution_outcome(0),
+                        ):
+                            result = payload(
+                                ssh_vnext.test_connection({"profile": "lab"})
+                            )
+        authentication = result["authentication"]
+        self.assertTrue(result["ok"])
+        self.assertEqual(authentication["state"], "authenticated")
+        self.assertTrue(authentication["verified"])
+        self.assertNotIn("failureCode", authentication)
+        self.assertFalse(authentication["passwordFallbackAllowed"])
+
+
 class StatusAndAuditTests(unittest.TestCase):
     def test_selected_profile_readiness_is_independent_from_overall_status(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -617,6 +742,15 @@ class StatusAndAuditTests(unittest.TestCase):
         self.assertEqual(result["overallStatus"], "not-ready")
         self.assertFalse(result["ok"])
         self.assertTrue(result["selectedProfileReady"])
+        self.assertEqual(
+            result["selectedProfileReadinessScope"],
+            "local-configuration-and-host-key",
+        )
+        self.assertFalse(result["selectedProfileAuthenticationVerified"])
+        self.assertEqual(
+            result["selectedProfile"]["authentication"]["state"],
+            "not-tested",
+        )
         self.assertEqual(result["selectedProfile"]["profile"], "good")
 
     def test_managed_unregistered_profile_is_not_reported_ready(self) -> None:

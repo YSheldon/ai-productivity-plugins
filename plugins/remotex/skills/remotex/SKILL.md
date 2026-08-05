@@ -9,7 +9,7 @@ Use this skill for remote-system and virtual-machine work that should reuse name
 
 ## Required First Step
 
-Call remotex_status with the intended profile. Use selectedProfileReady as the boundary for that target and report overallStatus separately. A missing client, profile, credential reference, host-key registration, identity binding, or queue file is a configuration gap, not proof of invalid credentials.
+Call remotex_status with the intended profile. For SSH, selectedProfileReady proves only local configuration, client availability, and host-key readiness; it does not prove that the server has authorized the selected public key. Run remotex_ssh_test to verify server-side authentication, then report overallStatus separately. A missing client, profile, credential reference, host-key registration, identity binding, or queue file is a configuration gap, not proof of invalid credentials.
 
 Never ask the user to paste a password, token, authorization code, private key, or credential-manager export into chat. RemoteX accepts credential references from SSH Agent, identity-file paths, Windows Credential Manager, Windows integrated authentication, or named environment variables.
 
@@ -58,6 +58,8 @@ Retry only with the same key and name. A same-key different-name request is a co
 ## SSH, RDP, And vSphere
 
 For host_key_policy=managed, call remotex_ssh_host_key_status before the first connection. Show fingerprints and require out-of-band verification before remotex_ssh_host_key_approve. Do not weaken strict host-key checking.
+
+remotex_ssh_test is public-key only. When it returns configured-public-key-rejected, use authentication.publicKey.fingerprint when available to authorize the configured key through an approved out-of-band channel, then rerun the test. Do not request or use a password fallback.
 
 Use remotex_ssh_run_script for PowerShell, pwsh, cmd, sh, or bash. Script text and referenced environment values travel through stdin. For transfer, preserve verify=sha256 unless there is a documented reason to use another mode.
 

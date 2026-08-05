@@ -12,7 +12,7 @@ RemoteX does not accept passwords, tokens, private-key bodies, or other secret v
 
 ## Setup
 
-Copy config/config.example.json to ~/.config/remotex/config.json, or set REMOTEX_CONFIG to another protected JSON file. Run remotex_status with the intended profile before connecting. Selected-profile readiness is the target boundary; aggregate readiness reports all configured profiles separately.
+Copy config/config.example.json to ~/.config/remotex/config.json, or set REMOTEX_CONFIG to another protected JSON file. Run remotex_status with the intended profile before connecting. For SSH profiles, selected-profile readiness proves local configuration and host-key policy only; run remotex_ssh_test to verify that the server accepts the configured public key. Aggregate readiness reports all configured profiles separately.
 
 RemoteX reads the old SSH_CONFIG file or ~/.config/codex-ssh/config.json when the RemoteX config does not exist. Existing SSH_HOST and SSH_USER environment configuration is also recognized. This compatibility path is read-only.
 
@@ -20,7 +20,7 @@ RemoteX reads the old SSH_CONFIG file or ~/.config/codex-ssh/config.json when th
 
 RemoteX accepts only credential references:
 
-- SSH Agent, managed identity-file paths, or named environment variables for SSH
+- SSH Agent, managed identity-file paths, or named environment variables for SSH. RemoteX uses public-key authentication only and never falls back to password or keyboard-interactive prompts.
 - Windows Credential Manager entries named TERMSRV/host for RDP
 - Windows Credential Manager Generic Credentials or native Windows integrated authentication for Windows guest WinRM
 - Windows Credential Manager or named environment references for vSphere or ESXi
@@ -89,6 +89,8 @@ RemoteX rejects path-like, ambiguous, duplicate, or untracked snapshot names. Re
 For host_key_policy=managed, call remotex_ssh_host_key_status before the first SSH connection. Verify the fingerprint out of band, then call remotex_ssh_host_key_approve with the exact value and confirm=true. A changed key additionally requires rotation=true; do not weaken strict host-key checking.
 
 Use remotex_ssh_run_script for PowerShell, pwsh, cmd, sh, or bash. The fixed launcher is the only remote command placed in the SSH argument vector. Script text and resolved environment values travel through SSH stdin. remotex_ssh_copy_to and remotex_ssh_copy_from use SFTP first and return requested and actual paths, byte counts, hashes, and integrity state.
+
+remotex_ssh_test returns server-side authentication evidence. If authentication.failureCode is configured-public-key-rejected, the local profile is valid but the target has rejected that identity. Authorize authentication.publicKey.fingerprint through an approved out-of-band channel, then rerun the test. The response also identifies the server-advertised authentication methods and confirms that password fallback was not attempted.
 
 Use remotex_rdp_test to distinguish TCP reachability from saved-credential readiness. Use remotex_vsphere_about for a read-only endpoint check and remotex_vsphere_list_vms for inventory. remotex_vsphere_power requires an explicit profile, inventory path, action, and queue owner. Keep TLS verification enabled and prefer a configured CA.
 

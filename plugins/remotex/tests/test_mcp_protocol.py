@@ -22,15 +22,20 @@ class MCPProtocolTests(unittest.TestCase):
             }
         )
         self.assertEqual(response["result"]["serverInfo"]["name"], "remotex")
-        self.assertEqual(response["result"]["serverInfo"]["version"], "0.4.0")
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.4.1")
 
     def test_tools_list_has_all_adapters(self) -> None:
         response = remotex_mcp.handle_request(
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
         )
-        names = {tool["name"] for tool in response["result"]["tools"]}
+        tools = {tool["name"]: tool for tool in response["result"]["tools"]}
+        names = set(tools)
         self.assertIn("remotex_status", names)
         self.assertIn("remotex_ssh_test", names)
+        self.assertIn(
+            "server-side authentication evidence",
+            tools["remotex_ssh_test"]["description"],
+        )
         self.assertIn("remotex_rdp_open", names)
         self.assertIn("remotex_vsphere_list_vms", names)
         self.assertIn("remotex_vmware_power", names)

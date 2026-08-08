@@ -6,28 +6,26 @@ Use this checklist to confirm the accepted architecture is in place and that the
 
 This checklist does not claim a production deployment.
 
-## Verified Evidence (2026-07-18)
+## Verified Evidence (2026-08-07)
 
-- Plugin hardening commits: `64e0a68`, `99d1715`, `cdbb363`, and `4c39493`; the product CI Windows trust-anchor hardening commit is `abaaf9595273da6f7e8948fb0e38af2f4b414034`.
-- Default-branch publication was independently read back: GitHub plugin marketplace `main` at `bb9cfc644a8c09bc43976454ab1ed93c65753e83`; GitLab product CI `main` at `abaaf9595273da6f7e8948fb0e38af2f4b414034`. The `ci.skip` push created pipeline `636` with status `skipped`, zero jobs, and no `live_gate` execution.
-- GitLab runner `2` is online and idle on Linux/amd64 and carries the exact `product-material-gate-protected` tag, but it is associated only with projects `20` and `55`; it cannot accept project `59` jobs and is not a Windows production gate runner.
-- Project `59` is currently associated with runner `1`, which is online and idle on Windows/amd64 with tags `KSign-F1-runner`, `nextsign-windows-protected`, and `windows`. Runner `1` has `run_untagged=true`, `locked=false`, and associations with projects `10`, `11`, `47`, `53`, `57`, and `59`; it is a shared signing runner and must not be reused as the material-gate execution plane.
-- The local `product-material-gate-runner` configuration targets a Windows shell executor, but its registration token is invalid and the runner is not running; it is not an online or provisioned production runner.
-- GitLab project `59` has zero CI variables; no protected scan, SVN retrieval, or deployment variable has been provisioned there.
-- Offline suite: `807` JUnit cases with zero failures, errors, or skips; final JUnit SHA-256: `A846B0FC47AB528CD10D2ABC06D91D761C05855C31B9281FA87D67F7DF4E195C`.
-- Workflow plugin versions under test: `product-release-gate` `0.3.4`, `pre-release` `0.1.4`, and `release-gate` `0.1.4`.
-- Installed GitLab plugin: `gitlab@ai-productivity-plugins` `0.1.5`; runtime source/cache files match `9/9`, MCP initialization and read-only GitLab connection passed, and token, runner-registration, and GitLab CI-variable value redaction were verified.
-- The enterprise mailbox passed IMAP and SMTP login checks; its persisted credential uses Windows CurrentUser DPAPI with no plaintext password field or unexpected non-owner write ACL.
-- Security boundary: GitLab client blocks absolute URLs and redirects, redacts structured sensitive fields, and resolves system PowerShell with Win32 `GetSystemDirectoryW` before using the Schannel fallback; the helper receives credentials only on stdin and fails closed.
-- Base evidence summary: `C:\Work\AI\AutoEMail\artifacts\product-release-gate\production-readiness-verification-2026-07-17.json` (SHA-256 `64FBA5D76322D9CFD6CA43AE2016274BF02539DBFE2BE55CCF84032BF592D039`).
-- Final JUnit evidence: `C:\Work\AI\AutoEMail\artifacts\product-release-gate\plugin-offline-tests-2026-07-18-release-workflow-final.xml` (SHA-256 `A846B0FC47AB528CD10D2ABC06D91D761C05855C31B9281FA87D67F7DF4E195C`).
+- GitHub plugin marketplace `main` was refreshed at `6e8cf1cd4d7ccde19870d9ae2bd32d0225ea9cea`. The complete configured test suite passed locally with `992 passed` and `45 subtests passed`.
+- GitLab product CI merge request `!24` passed its merge-request pipeline `1919` and was merged to protected `main` as `84f2161c6c7d6da9b8e14c7132a7f414e9fa1d88`.
+- The GitLab CI repository passed locally with `242 passed`, `3 skipped`, and `39 subtests passed`. The three skips are Windows symlink-privilege cases; live-launcher, policy, bundle, trust, request-binding, and deployment tests were not skipped.
+- Main pipeline `1921` passed Linux unit tests, Windows unit tests, Runner1 binary staging, and controlled fixture `CLEAN` and `BLOCKED` jobs. It is waiting only on the three expected manual production jobs: Runner1 OpenSSH bootstrap, Runner1 install/provisioning, and `live_gate`.
+- Runner `20` is an online Windows/amd64 test Runner locked exclusively to project `59`, has `run_untagged=false`, and carries only the non-production `windows` and `product-material-gate-ci-test` tags. It is valid test evidence and cannot run `live_gate`.
+- Runner `2` provides Linux test and fixture evidence. It is not a production Runner.
+- Runner `1` is an online protected Windows bootstrap plane but remains shared across signing and other projects. It may bootstrap the isolated Runner1 policy; it is not the final `live_gate` execution plane.
+- Runner `8` is protected, locked, and project-exclusive, but it is not the operator-approved remote production host and does not carry the exact `product-material-gate-windows-runner1` identity/tag contract. It is not accepted for production evidence.
+- Project `59` has the two protected OpenSSH bootstrap inputs. Production SVN retrieval, live request/handoff, deployment authority, report delivery, and dedicated Runner1 evidence are not yet provisioned or verified.
+- The authoritative cloud-scan contract is the unauthenticated SVN Version Scan API at `POST /api/v1/scans` plus `GET /api/v1/scans/{scan_id}`. `PMG_CLOUD_SCAN_TOKEN` is neither required nor sent. Fixture coverage is complete; real protected-runner `CLEAN` and controlled `BLOCKED` evidence is still required.
+- The enterprise mailbox previously passed IMAP and SMTP login and exact Message-ID readback checks. Production report delivery must still be reverified under the final scheduler identity and locked dependency set.
 
 ## Explicitly Deferred
 
-- Real `/api/v1/scans` validation is not executed because that endpoint is not implemented.
-- Provisioning and registering a new Windows production runner that is exclusive to project `59` remain deferred; neither online shared runner is eligible, and the local gate-runner configuration is not operational.
-- Provisioning the protected scan, SVN retrieval, and deployment variables remains deferred.
-- GitLab `live_gate` execution and all protected production deployment stages remain deferred; production deployment is not complete.
+- Provision and attest the exact `product-material-gate-windows-runner1` service on the approved remote Windows host; no existing Runner currently satisfies that complete identity contract.
+- Install and attest the protected gate bundle built from authenticated `main`, then provision the locked live request, Runner configuration, SVN read-only retrieval boundary, TLS trust, and approval handoff.
+- Execute one real protected `CLEAN` scan and one controlled protected `BLOCKED` scan against `/api/v1/scans`, preserving the scan IDs and GitLab/local receipt bindings.
+- Complete release authorization, pre-production, canary, full production, final readback, production-report delivery/readback, and the four-stage rollback rehearsal. Production deployment is not complete until all of these receipts pass independent readback.
 
 ## Architecture Acceptance
 
@@ -92,18 +90,19 @@ This checklist does not claim a production deployment.
 
 - [x] A real mailbox is provisioned and accessible.
 - [x] Feishu permissions are provisioned and verified.
-- [ ] GitLab protected scan, SVN retrieval, and deployment variables are provisioned.
+- [ ] GitLab/host SVN retrieval, deployment authority, live request/handoff, and report-delivery inputs are provisioned. No cloud-scan token is required or permitted.
 - [ ] A new Windows/amd64 runner is registered exclusively to project `59`, bound to the protected `live_gate` tag, and online to accept release jobs.
 - [ ] Any administrator approval required by the environment is complete.
 - [x] Credentials are managed outside the docs and outside the workflow artifacts.
 
 ## Blocked-State Readiness
 
-- [x] CA trust can be read back from the local trust store.
+- [ ] The approved remote production host trusts the exact GitLab, SVN, and cloud-scan TLS chains, and the trust evidence has been read back from that host.
 - [ ] The SVN protected credential is bound and auditable without exposing the secret.
 - [ ] GitLab readback proves the selected gate runner is Windows/amd64, protected, exclusive and locked to project `59`, unable to run untagged work, online/idle, and bound to the exact `live_gate` tag.
 - [x] Repository provenance can be reconstructed from the frozen task, module, version, locator or path, fixed revision, and retrieval instructions.
 - [ ] A non-skipped `live_gate` pipeline has produced job and artifact evidence and that evidence has been read back.
+- [ ] Real `/api/v1/scans` `CLEAN` and controlled `BLOCKED` results are bound to their fixed SVN source/revision, scan IDs, and protected gate receipts.
 
 ## Not Accepted
 

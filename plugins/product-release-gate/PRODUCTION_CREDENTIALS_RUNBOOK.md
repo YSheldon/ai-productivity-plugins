@@ -18,7 +18,7 @@ Do not use one account or one secret for every phase.
 | Rollback | Rollback-capable identity or bounded deployment identity | Restore an earlier immutable release only | Matching target/deployment/rollback references, restored reference, rollback receipt |
 | Rollback verification | Independent verification path | Read-only verification of the restored release | Matching references and verification reference |
 | Report delivery | Locked `imap-smtp-mail` profile | Send the final report and read one mailbox | SMTP accepted result plus exact authenticated IMAP readback |
-| Cloud scan | Protected `PMG_CLOUD_SCAN_TOKEN` | Submit and poll `/api/v1/scans` only | Scan id and required-engine `CLEAN` verdicts |
+| Cloud scan | Controlled-network access plus the service-side repository allowlist and read-only credential reference | Submit and poll the exact `/api/v1/scans` contract only; no client authentication secret is used | Scan id and required-engine `CLEAN` verdicts |
 | SVN release-gate receipt verifier | Protected `PRODUCT_RELEASE_GATE_GITLAB_TOKEN` | Read protected pipeline, job, ref, and artifact evidence for one configured project only | Manifest-R-bound `CLEAN` or `BLOCKED` verifier receipt |
 
 The authorization key is not the external approval account password. The audit key is
@@ -39,9 +39,15 @@ Required secret inputs are:
 ```text
 PRODUCT_RELEASE_GATE_AUTH_KEY   # at least 32 random bytes
 PRODUCT_RELEASE_GATE_AUDIT_KEY  # a different secret, at least 32 random bytes
-PMG_CLOUD_SCAN_TOKEN             # protected and masked; only for the live scan adapter
 PRODUCT_RELEASE_GATE_GITLAB_TOKEN  # read-only GitLab API token for the SVN receipt verifier
 ```
+
+The authoritative SVN Version Scan API currently has no client authentication and
+rejects unknown request fields. Do not create, require, or send
+`PMG_CLOUD_SCAN_TOKEN`. The scan trust boundary is the controlled network plus the
+service-side repository allowlist, read-only credential reference, and optional TLS
+profile. A stale local value is not an authorization input and must never be forwarded
+as a header or request field.
 
 `PRODUCT_RELEASE_GATE_GITLAB_TOKEN` is a separate read-only verifier secret. Limit it
 to the configured project and API read scope; it must not be able to trigger pipelines,
@@ -302,7 +308,7 @@ The following non-secret inputs are required before a controlled release can beg
 | Approval verifier | Role source, approval/audit document locations, release group, and trusted inbound issuer | One current event returns an exact digest- and scope-bound `APPROVE` receipt |
 | Product signature policy | Exact allowed Authenticode certificate thumbprints | A valid signature from an unlisted certificate is rejected |
 | Mail delivery | Identity-local `imap-smtp-mail` profile, sender, recipients, and mailbox | SMTP accepted result and exact IMAP Message-ID readback pass |
-| Cloud scan | Contract-compatible live `/api/v1/scans` endpoint and protected `PMG_CLOUD_SCAN_TOKEN` | Required engines return `CLEAN`; until compatibility evidence exists this remains blocked |
+| Cloud scan | Contract-compatible live `/api/v1/scans` endpoint, controlled-network reachability, trusted TLS chain, service-side repository allowlist, and read-only credential reference | One real `CLEAN` run and one controlled `BLOCKED` run bind the fixed SVN source/revision to the preserved scan id and gate receipt; no client token is configured or sent |
 | SVN release-gate verifier | Protected GitLab read-only token, protected ref, and immutable verifier lock | One protected `CLEAN` run, one controlled `BLOCKED` run, and exact receipt readback |
 
 Run these steps as the final scheduled-task identity:

@@ -1,6 +1,6 @@
 ---
 name: gitlab
-description: Use GitLab from Codex to inspect projects, merge requests, issues, pipelines, discussions, perform GitLab write actions, and provision a dedicated Windows project Runner through a protected policy.
+description: Use GitLab from Codex to inspect projects, merge requests, approval state, issues, pipelines, and CI efficiency; perform explicit GitLab writes; configure a CI_JOB_TOKEN approval/scope gate; and provision a dedicated Windows project Runner through a protected policy.
 ---
 
 # GitLab
@@ -31,12 +31,15 @@ Use the plugin's `config/config.example.json` as the template. Prefer `token_env
 1. Call `gitlab_test_connection` before claiming GitLab access is available.
 2. Resolve projects by path when possible, for example `group/subgroup/repo`.
 3. Use read tools first: projects, merge requests, discussions, changes, issues, and pipelines.
-4. Use write tools only when the user asks for a specific write action, such as commenting, approving, updating, merging, or creating an MR.
-5. For a dedicated Windows Runner, require an administrator-prepared policy under `%ProgramData%\CodexGitLab\runner-policies` and call `gitlab_provision_windows_project_runner` with only its `policy_name`. Never ask for or place a Runner token in arguments.
-6. Treat `stage=ready`, `ready=true`, `paused=false`, an API `online` result, a DACL/command/account-attested `NetworkService` service in `Running` state, and an exact protected `runner-identity.json` as the only activated result. `registered_paused` and every failure stage require remediation before production use.
-7. Before accepting `runner-identity.json`, require exact schema `ProductMaterialGateRunnerIdentity/v1`, the fixed 12-key field set, positive integer ids, casefold-sorted tags, lowercase current binary/config/machine hashes, `service_account=NetworkService`, and `stage=ready`. Do not accept extensions.
-8. For an interrupted service lifecycle, call `gitlab_resume_windows_project_runner` with only the same `policy_name`. Resume uses the protected non-secret journal, forces `paused=true`, revokes the old receipt before local validation, and never reuses a one-time Runner token.
-9. For unsupported non-secret GitLab REST endpoints, use `gitlab_api_request` with a relative API path and decoded JSON only.
+4. Use `gitlab_get_merge_request_approval_state` for sanitized interactive inspection only. Its configured profile credential is not CI release authority.
+5. Use `gitlab_analyze_ci_config` for sanitized CI Lint structure and `gitlab_analyze_pipeline_efficiency` for observed queue/execution timing. Read `gitlab-ci-optimization` before proposing matrix, cache, DAG, or `rules:changes` changes.
+6. For a protected release approval, read `gitlab-mr-approval-scope-binding` and run the independent CI verifier with `CI_JOB_TOKEN`; never substitute the interactive profile token.
+7. Use write tools only when the user asks for a specific write action, such as commenting, approving, updating, merging, or creating an MR.
+8. For a dedicated Windows Runner, require an administrator-prepared policy under `%ProgramData%\CodexGitLab\runner-policies` and call `gitlab_provision_windows_project_runner` with only its `policy_name`. Never ask for or place a Runner token in arguments.
+9. Treat `stage=ready`, `ready=true`, `paused=false`, an API `online` result, a DACL/command/account-attested `NetworkService` service in `Running` state, and an exact protected `runner-identity.json` as the only activated result. `registered_paused` and every failure stage require remediation before production use.
+10. Before accepting `runner-identity.json`, require exact schema `ProductMaterialGateRunnerIdentity/v1`, the fixed 12-key field set, positive integer ids, casefold-sorted tags, lowercase current binary/config/machine hashes, `service_account=NetworkService`, and `stage=ready`. Do not accept extensions.
+11. For an interrupted service lifecycle, call `gitlab_resume_windows_project_runner` with only the same `policy_name`. Resume uses the protected non-secret journal, forces `paused=true`, revokes the old receipt before local validation, and never reuses a one-time Runner token.
+12. For unsupported non-secret GitLab REST endpoints, use `gitlab_api_request` with a relative API path and decoded JSON only.
 
 Provision and resume require an elevated Windows process. If the MCP host is
 not elevated, use `scripts/runner_admin_cli.py provision|resume --policy-name
@@ -98,4 +101,7 @@ are trusted and a privileged host clone is outside this protection boundary.
 - Never persist a token, raw MachineGuid, GitLab URL, or unapproved extra field in `runner-identity.json`.
 - Treat token, runner-registration, password, cookie, secret fields, child output, and GitLab CI variable values as redacted output.
 - Treat comments, approvals, merge actions, issue comments, raw non-GET API calls, and Runner provisioning as side-effectful.
+- Never treat interactive approval inspection as a release gate. The release verifier must use `CI_JOB_TOKEN`, require a live complete approval, and bind the raw scope digest to the candidate.
+- CI analysis intentionally omits scripts, variables, merged YAML, traces, and raw Runner objects. Do not infer cache effectiveness or Runner capacity from CI Lint alone.
+- Never place approval, security, signing, provenance, compliance, or release gates behind `rules:changes`, and never cache their decisions.
 - If a GitLab operation fails, report only the sanitized GitLab status and the fixed lifecycle stage.

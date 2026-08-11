@@ -1,7 +1,7 @@
 {
   "name": "gitlab",
-  "version": "0.3.1",
-  "description": "Operate GitLab workflows and securely provision a dedicated Windows project Runner from Codex.",
+  "version": "0.4.0",
+  "description": "Operate GitLab workflows, analyze CI, enforce MR approval scope binding, and securely provision a dedicated Windows project Runner from Codex.",
   "author": {
     "name": "Sheldon"
   },
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "GitLab",
     "shortDescription": "Operate GitLab and provision isolated Windows Runners",
-    "longDescription": "Use GitLab from Codex through a local MCP server backed by the GitLab REST API. It supports project discovery, merge request and issue inspection, discussions, CI pipeline lookup, comments, approvals, merge actions, decoded API calls, policy-bound atomic provisioning of a dedicated Windows project Runner, and a verified one-click Windows bootstrap without exposing its one-time authentication token.",
+    "longDescription": "Use GitLab from Codex through a local MCP server backed by the GitLab REST API. It supports project discovery, merge request and issue inspection, sanitized approval and CI analysis, a CI_JOB_TOKEN MR approval/scope gate, discussions, comments, approvals, merge actions, decoded API calls, policy-bound atomic provisioning of a dedicated Windows project Runner, and a verified one-click Windows bootstrap without exposing its one-time authentication token.",
     "developerName": "Sheldon",
     "category": "Developer Tools",
     "capabilities": [
@@ -31,6 +31,8 @@
       "Inspect my GitLab merge requests",
       "Review a GitLab MR and summarize blockers",
       "Check the latest GitLab pipeline failures",
+      "Analyze this GitLab pipeline for safe matrix, cache, and DAG improvements",
+      "Configure a candidate-bound GitLab MR approval and scope gate",
       "Provision a dedicated Windows project Runner from a protected policy"
     ],
     "brandColor": "#FC6D26",

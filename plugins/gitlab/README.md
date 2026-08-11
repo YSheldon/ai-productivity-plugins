@@ -1,7 +1,10 @@
 # GitLab Codex Plugin
 
 This plugin exposes a local MCP server for GitLab REST API workflows. Version
-`0.3.0` adds a one-time Windows Credential Manager bootstrap for the Runner
+`0.4.0` adds sanitized MR approval inspection, CI configuration and pipeline
+efficiency analysis, plus a product-neutral CI-only approval/scope verifier
+that uses `CI_JOB_TOKEN` and binds the reviewed scope SHA-256 to the candidate.
+Version `0.3.0` adds a one-time Windows Credential Manager bootstrap for the Runner
 manager token: the token is never accepted in command arguments or persisted
 in JSON, is supplied only while the administration CLI invokes GitLab, and is
 cleared automatically after a verified `ready` result. Version `0.2.9` adds an
@@ -51,6 +54,43 @@ The default header is `PRIVATE-TOKEN`, which works for GitLab personal access
 tokens. Set `auth_header` to `Authorization` to send `Bearer <token>`, or
 `JOB-TOKEN` for GitLab CI job tokens. Creating a project Runner requires a token
 whose GitLab identity can manage Runners for the policy-bound project.
+
+## MR Approval and Scope Binding
+
+`gitlab_get_merge_request_approval_state` provides sanitized interactive
+inspection through the configured profile. It deliberately returns
+`authoritative_for_release=false`: a profile token must not become a release
+approval shortcut.
+
+For release authority, configure a protected MR approval rule and run
+`scripts/verify_mr_approval_scope.py` inside an MR pipeline. The independent
+verifier accepts only `CI_JOB_TOKEN`, requires `approved=true` and
+`approvals_left=0`, verifies the live MR IID, candidate SHA, and target branch,
+then validates and hashes the file referenced by `GITLAB_APPROVAL_SCOPE_FILE`.
+The credential-free scope can be committed in the reviewed MR; a
+protected File variable is optional only when GitLab exposes it to that MR
+pipeline. See `docs/mr-approval-scope-gate.md` for the generic scope contract,
+CI example, and platform boundaries.
+
+Compatibility is fail closed: GitLab's current official job-token and
+fine-grained endpoint lists do not include the MR `/approvals` endpoint. This
+live mode therefore requires an instance that explicitly supports that exact
+job-token call. Stock instances are expected to return 401/403/404; do not
+substitute a PAT or pipeline boolean. The linked document describes the
+protected-branch post-merge alternative and its different evidence boundary.
+
+## CI Optimization Analysis
+
+`gitlab_analyze_ci_config` uses GitLab's CI Lint API and returns only structural
+job metadata. Scripts, variables, includes, and merged YAML are excluded.
+`gitlab_analyze_pipeline_efficiency` reports sanitized observed queue,
+execution, wall-clock, concurrency, and stage metrics without traces or raw
+Runner objects.
+
+Use these observations before changing matrix builds, cache keys, `needs` DAGs,
+or `rules:changes`. CI Lint cannot prove Runner capacity or cache effectiveness,
+and security or release gates must never be skipped by change rules or restored
+from cache. See `docs/ci-optimization-analysis.md`.
 
 ## Dedicated Windows Runner Provisioning
 
@@ -212,4 +252,6 @@ claim to resist a privileged host clone.
 - Structured tool results and JSON error bodies recursively redact token, password, secret, cookie, runner-registration fields, and GitLab CI variable values while preserving non-secret metadata.
 - Opaque `raw=true` responses are disabled because base64 bodies cannot be safely inspected or redacted. Every non-GET global, user, project, or group Runner-management path is blocked from the generic API tool; use a policy-bound dedicated tool instead.
 - Unexpected exception details and all GitLab Runner stdout/stderr are suppressed. Supply GitLab authentication only through the configured environment variable or profile.
+- Interactive MR approval inspection is not release authority. The CI gate accepts only `CI_JOB_TOKEN`, blocks redirects, rejects malformed/non-2xx responses, and never returns approver identities.
+- CI analysis never returns scripts, variables, merged YAML, job traces, user records, or raw Runner objects.
 - If Python strict TLS rejects a Windows enterprise certificate chain, the plugin falls back to Schannel through a bundled non-redirecting helper launched by Windows PowerShell resolved from the Win32 system directory. Credentials are passed over stdin, never in process arguments.

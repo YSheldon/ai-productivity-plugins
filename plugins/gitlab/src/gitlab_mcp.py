@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import ntpath
 import os
 import re
@@ -11,6 +12,7 @@ import time
 import tomllib
 import subprocess
 import sys
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
@@ -20,7 +22,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 
 SERVER_NAME = "gitlab"
-SERVER_VERSION = "0.3.1"
+SERVER_VERSION = "0.4.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -32,6 +34,7 @@ RUNNER_POLICY_NAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])
 RUNNER_SERVICE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$")
 RUNNER_TAG_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$")
 SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 RUNNER_ACCESS_LEVELS = frozenset({"not_protected", "ref_protected"})
 PROTECTED_LIVE_RUNNER_TAGS = frozenset(
     {"product-material-gate-protected", "product-material-gate-windows-dedicated"}
@@ -510,6 +513,93 @@ def get_merge_request(args: dict[str, Any]) -> dict[str, Any]:
     return tool_result(client(args).request("GET", path))
 
 
+def exact_integer(value: Any) -> bool:
+    return type(value) is int
+
+
+def positive_resource_id(args: dict[str, Any], name: str) -> int:
+    value = args.get(name)
+    if exact_integer(value):
+        result = value
+    elif isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value):
+        result = int(value)
+    else:
+        raise ToolError(f"{name} must be a positive integer")
+    if result < 1:
+        raise ToolError(f"{name} must be a positive integer")
+    return result
+
+
+def get_merge_request_approval_state(args: dict[str, Any]) -> dict[str, Any]:
+    project_value = args.get("project")
+    project = encode_project(project_value)
+    iid = positive_resource_id(args, "iid")
+    path = f"/projects/{project}/merge_requests/{iid}"
+    gl = client(args)
+    merge_request = gl.request("GET", path)
+    approvals = gl.request("GET", path + "/approvals")
+    if not isinstance(merge_request, dict) or not isinstance(approvals, dict):
+        raise ToolError("GitLab merge request approval response is malformed")
+
+    candidate_sha = merge_request.get("sha")
+    target_branch = merge_request.get("target_branch")
+    state = merge_request.get("state")
+    approved = approvals.get("approved")
+    approvals_left = approvals.get("approvals_left")
+    approvals_required = approvals.get("approvals_required")
+    if (
+        not exact_integer(merge_request.get("iid"))
+        or merge_request.get("iid") != iid
+        or not isinstance(candidate_sha, str)
+        or COMMIT_SHA_PATTERN.fullmatch(candidate_sha) is None
+        or not isinstance(target_branch, str)
+        or not target_branch
+        or not isinstance(state, str)
+        or type(approved) is not bool
+        or not exact_integer(approvals_left)
+        or approvals_left < 0
+        or not exact_integer(approvals_required)
+        or approvals_required < 0
+    ):
+        raise ToolError("GitLab merge request approval response is malformed")
+
+    expected_candidate = args.get("expected_candidate_sha")
+    if expected_candidate is not None:
+        expected_candidate = str(expected_candidate).strip()
+        if COMMIT_SHA_PATTERN.fullmatch(expected_candidate) is None:
+            raise ToolError("expected_candidate_sha must be a 40-character commit SHA")
+    expected_target = args.get("expected_target_branch")
+    if expected_target is not None:
+        expected_target = str(expected_target).strip()
+        if not expected_target:
+            raise ToolError("expected_target_branch must not be empty")
+
+    result: dict[str, Any] = {
+        "project": str(project_value),
+        "merge_request_iid": iid,
+        "state": state,
+        "candidate_sha": candidate_sha,
+        "target_branch": target_branch,
+        "approved": approved,
+        "approvals_left": approvals_left,
+        "approvals_required": approvals_required,
+        "meets_required_approval": bool(
+            approved and approvals_left == 0 and approvals_required >= 1
+        ),
+    }
+    if expected_candidate is not None:
+        result["candidate_matches_expected"] = candidate_sha.casefold() == expected_candidate.casefold()
+    if expected_target is not None:
+        result["target_branch_matches_expected"] = target_branch == expected_target
+    result.update(
+        {
+            "authoritative_for_release": False,
+            "authentication_boundary": "configured-profile-not-ci-job-token",
+        }
+    )
+    return tool_result(result)
+
+
 def list_merge_request_changes(args: dict[str, Any]) -> dict[str, Any]:
     path = f"/projects/{encode_project(args.get('project'))}/merge_requests/{int(args['iid'])}/changes"
     return tool_result(client(args).request("GET", path))
@@ -653,6 +743,278 @@ def list_pipeline_jobs(args: dict[str, Any]) -> dict[str, Any]:
     params = optional_params({"scope": args.get("scope"), "per_page": limit_from_args(args, 50)})
     path = f"/projects/{encode_project(args.get('project'))}/pipelines/{int(args['pipeline_id'])}/jobs"
     return tool_result(client(args).request("GET", path, params))
+
+
+def sanitized_lint_messages(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ToolError(f"GitLab CI lint {field} response is malformed")
+    credential_assignment = re.compile(
+        r"(?im)\b(authorization|job[-_ ]?token|password|private[-_ ]?token|secret|token)"
+        r"(\s*[:=]\s*|\s+).*$"
+    )
+    return [credential_assignment.sub(r"\1\2[REDACTED]", item[:1000]) for item in value[:100]]
+
+
+def sanitized_need_names(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ToolError("GitLab CI lint job needs response is malformed")
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            name = item
+        elif isinstance(item, dict) and isinstance(item.get("name"), str):
+            name = item["name"]
+        else:
+            raise ToolError("GitLab CI lint job needs response is malformed")
+        if not name or len(name) > 255:
+            raise ToolError("GitLab CI lint job needs response is malformed")
+        result.append(name)
+    return result
+
+
+def analyze_ci_config(args: dict[str, Any]) -> dict[str, Any]:
+    project = encode_project(args.get("project"))
+    ref = str(args.get("ref") or "HEAD").strip()
+    if not ref or any(character in ref for character in ("\r", "\n", "\0")):
+        raise ToolError("ref must be a nonempty Git ref")
+    query = optional_params(
+        {
+            "content_ref": ref,
+            "include_jobs": True,
+            "dry_run": args.get("dry_run"),
+            "dry_run_ref": args.get("dry_run_ref"),
+        }
+    )
+    response_data = client(args).request("GET", f"/projects/{project}/ci/lint", query)
+    if not isinstance(response_data, dict) or type(response_data.get("valid")) is not bool:
+        raise ToolError("GitLab CI lint response is malformed")
+    jobs = response_data.get("jobs")
+    if not isinstance(jobs, list):
+        raise ToolError("GitLab CI lint jobs response is malformed")
+
+    summaries: list[dict[str, Any]] = []
+    stage_counts: dict[str, int] = {}
+    for job in jobs:
+        if not isinstance(job, dict):
+            raise ToolError("GitLab CI lint job response is malformed")
+        name = job.get("name")
+        stage = job.get("stage")
+        allow_failure = job.get("allow_failure", False)
+        when = job.get("when")
+        tags = job.get("tag_list", job.get("tags", []))
+        if (
+            not isinstance(name, str)
+            or not name
+            or len(name) > 255
+            or not isinstance(stage, str)
+            or not stage
+            or len(stage) > 255
+            or type(allow_failure) is not bool
+            or (when is not None and not isinstance(when, str))
+            or not isinstance(tags, list)
+            or any(not isinstance(tag, str) or len(tag) > 255 for tag in tags)
+        ):
+            raise ToolError("GitLab CI lint job response is malformed")
+        needs = sanitized_need_names(job.get("needs"))
+        summaries.append(
+            {
+                "name": name,
+                "stage": stage,
+                "tags": tags,
+                "when": when,
+                "allow_failure": allow_failure,
+                "needs": needs,
+                "has_only": "only" in job,
+                "has_except": "except" in job,
+            }
+        )
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+
+    recommendations: list[dict[str, str]] = []
+    needs_count = sum(bool(job["needs"]) for job in summaries)
+    if len(stage_counts) > 1 and needs_count == 0:
+        recommendations.append(
+            {
+                "id": "stage-only-scheduling",
+                "message": "Review independent jobs for needs-based DAG scheduling instead of stage-wide barriers.",
+            }
+        )
+    if any(job["allow_failure"] for job in summaries):
+        recommendations.append(
+            {
+                "id": "allow-failure-review",
+                "message": "Confirm every allow_failure job is intentionally non-blocking.",
+            }
+        )
+    recommendations.extend(
+        [
+            {
+                "id": "runner-capacity-observation-required",
+                "message": "CI lint cannot prove Runner capacity or queue behavior; analyze a real pipeline before changing parallelism.",
+            },
+            {
+                "id": "cache-and-rules-not-observable",
+                "message": "Inspect repository YAML separately for cache keys, rules:changes, and matrix definitions.",
+            },
+        ]
+    )
+    return tool_result(
+        {
+            "project": str(args.get("project")),
+            "ref": ref,
+            "valid": response_data["valid"],
+            "errors": sanitized_lint_messages(response_data.get("errors", []), "errors"),
+            "warnings": sanitized_lint_messages(response_data.get("warnings", []), "warnings"),
+            "job_count": len(summaries),
+            "stage_job_counts": stage_counts,
+            "jobs": summaries,
+            "recommendations": recommendations,
+            "analysis_limits": {
+                "cache_and_rules": "not_exposed_by_ci_lint_jobs",
+                "runner_capacity": "requires_observed_pipeline_timings",
+                "matrix_support": "depends_on_gitlab_version_and_repository_yaml",
+            },
+        }
+    )
+
+
+def parse_gitlab_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def nonnegative_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ToolError("GitLab pipeline job timing is malformed")
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise ToolError("GitLab pipeline job timing is malformed")
+    return number
+
+
+def analyze_pipeline_efficiency(args: dict[str, Any]) -> dict[str, Any]:
+    project = encode_project(args.get("project"))
+    pipeline_id = positive_resource_id(args, "pipeline_id")
+    path = f"/projects/{project}/pipelines/{pipeline_id}/jobs"
+    jobs = client(args).request(
+        "GET",
+        path,
+        {"per_page": MAX_LIMIT, "include_retried": "false"},
+    )
+    if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
+        raise ToolError("GitLab pipeline jobs response is malformed")
+
+    total_execution = 0.0
+    total_queue = 0.0
+    executed_count = 0
+    starts: list[datetime] = []
+    finishes: list[datetime] = []
+    stage_data: dict[str, dict[str, Any]] = {}
+    bottlenecks: list[dict[str, Any]] = []
+    for job in jobs:
+        name = job.get("name")
+        stage = job.get("stage")
+        job_id = job.get("id")
+        if not isinstance(name, str) or not name or not isinstance(stage, str) or not stage:
+            raise ToolError("GitLab pipeline job identity is malformed")
+        if not exact_integer(job_id) or job_id < 1:
+            raise ToolError("GitLab pipeline job identity is malformed")
+        duration = nonnegative_number(job.get("duration"))
+        queue_duration = nonnegative_number(job.get("queued_duration"))
+        started = parse_gitlab_timestamp(job.get("started_at"))
+        finished = parse_gitlab_timestamp(job.get("finished_at"))
+        if duration is None:
+            continue
+        if queue_duration is None:
+            created = parse_gitlab_timestamp(job.get("created_at"))
+            queue_duration = max(0.0, (started - created).total_seconds()) if started and created else 0.0
+        executed_count += 1
+        total_execution += duration
+        total_queue += queue_duration
+        if started is not None:
+            starts.append(started)
+        if finished is not None:
+            finishes.append(finished)
+        metrics = stage_data.setdefault(
+            stage,
+            {"stage": stage, "job_count": 0, "execution_seconds": 0.0, "queue_seconds": 0.0},
+        )
+        metrics["job_count"] += 1
+        metrics["execution_seconds"] += duration
+        metrics["queue_seconds"] += queue_duration
+        if queue_duration > 0:
+            bottlenecks.append(
+                {
+                    "job_id": job_id,
+                    "name": name,
+                    "stage": stage,
+                    "queue_seconds": round(queue_duration, 3),
+                    "execution_seconds": round(duration, 3),
+                }
+            )
+
+    wall_clock = 0.0
+    if starts and finishes:
+        wall_clock = max(0.0, (max(finishes) - min(starts)).total_seconds())
+    concurrency_ratio = round(total_execution / wall_clock, 3) if wall_clock > 0 else None
+    stage_metrics = []
+    for metrics in stage_data.values():
+        stage_metrics.append(
+            {
+                **metrics,
+                "execution_seconds": round(metrics["execution_seconds"], 3),
+                "queue_seconds": round(metrics["queue_seconds"], 3),
+            }
+        )
+    bottlenecks.sort(key=lambda item: (-item["queue_seconds"], item["job_id"]))
+
+    recommendations: list[dict[str, str]] = []
+    timing_total = total_execution + total_queue
+    if timing_total > 0 and total_queue / timing_total >= 0.25:
+        recommendations.append(
+            {
+                "id": "runner-capacity-review",
+                "message": "Observed queue time is material; check Runner availability before adding matrix parallelism.",
+            }
+        )
+    if executed_count > 1 and concurrency_ratio is not None and concurrency_ratio <= 1.1:
+        recommendations.append(
+            {
+                "id": "needs-dag-review",
+                "message": "Observed execution is mostly serial; inspect independent jobs for needs-based DAG scheduling.",
+            }
+        )
+    return tool_result(
+        {
+            "project": str(args.get("project")),
+            "pipeline_id": pipeline_id,
+            "job_count": len(jobs),
+            "executed_job_count": executed_count,
+            "total_execution_seconds": round(total_execution, 3),
+            "total_queue_seconds": round(total_queue, 3),
+            "pipeline_wall_clock_seconds": round(wall_clock, 3),
+            "execution_to_wall_clock_ratio": concurrency_ratio,
+            "stage_metrics": stage_metrics,
+            "queue_bottlenecks": bottlenecks[:10],
+            "recommendations": recommendations,
+            "analysis_limits": {
+                "job_page_limit": MAX_LIMIT,
+                "cache_effectiveness": "not_available_from_pipeline_jobs_api",
+                "critical_path": "approximate_without_dependency_graph",
+            },
+        }
+    )
 
 
 def get_repository_file(args: dict[str, Any]) -> dict[str, Any]:
@@ -2352,6 +2714,25 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
         "handler": get_merge_request,
     },
+    "gitlab_get_merge_request_approval_state": {
+        "description": "Inspect candidate-bound MR approval state with configured profile credentials; this is not a CI release authority check.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **COMMON_PROFILE,
+                **PROJECT_FIELD,
+                "iid": {"type": "integer", "minimum": 1},
+                "expected_candidate_sha": {
+                    "type": "string",
+                    "pattern": "^[0-9a-fA-F]{40}$",
+                },
+                "expected_target_branch": {"type": "string", "minLength": 1},
+            },
+            "required": ["project", "iid"],
+            "additionalProperties": False,
+        },
+        "handler": get_merge_request_approval_state,
+    },
     "gitlab_list_merge_request_changes": {
         "description": "Return changed files for a GitLab merge request.",
         "inputSchema": {
@@ -2546,6 +2927,36 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": list_pipeline_jobs,
+    },
+    "gitlab_analyze_ci_config": {
+        "description": "Analyze sanitized GitLab CI Lint job structure without returning scripts, variables, or merged YAML.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **COMMON_PROFILE,
+                **PROJECT_FIELD,
+                "ref": {"type": "string", "minLength": 1},
+                "dry_run": {"type": "boolean"},
+                "dry_run_ref": {"type": "string", "minLength": 1},
+            },
+            "required": ["project"],
+            "additionalProperties": False,
+        },
+        "handler": analyze_ci_config,
+    },
+    "gitlab_analyze_pipeline_efficiency": {
+        "description": "Analyze sanitized observed job execution and queue timings for one GitLab pipeline.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **COMMON_PROFILE,
+                **PROJECT_FIELD,
+                "pipeline_id": {"type": "integer", "minimum": 1},
+            },
+            "required": ["project", "pipeline_id"],
+            "additionalProperties": False,
+        },
+        "handler": analyze_pipeline_efficiency,
     },
     "gitlab_get_repository_file": {
         "description": "Read a file from a GitLab repository at a ref.",

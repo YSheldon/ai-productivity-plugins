@@ -13,7 +13,10 @@ _RFC3339_TIMESTAMP_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
 _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_RAW_SHA256_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _REQUEST_CONTRACT = "ReleaseAuthorizationRequest/v1"
+_AUTHORITY_SCOPES = frozenset(("PRODUCTION_RELEASE", "RD_FLYWHEEL_GOVERNANCE"))
+_GOVERNANCE_AUTHORITY_BOUNDARY = "DESIGN_CONSENT_ONLY"
 _TPage = TypeVar("_TPage")
 
 
@@ -22,8 +25,31 @@ class ProtocolError(ValueError):
 
 
 @dataclass(frozen=True)
+class GovernanceDecisionContext:
+    authority_boundary: str
+    missing_capability: str
+    originating_plugin: str
+    originating_event_id: str
+    checkpoint_digest: str
+    required_evidence: tuple[str, ...]
+    visual_companion_html_sha256: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "authority_boundary": self.authority_boundary,
+            "missing_capability": self.missing_capability,
+            "originating_plugin": self.originating_plugin,
+            "originating_event_id": self.originating_event_id,
+            "checkpoint_digest": self.checkpoint_digest,
+            "required_evidence": list(self.required_evidence),
+            "visual_companion_html_sha256": self.visual_companion_html_sha256,
+        }
+
+
+@dataclass(frozen=True)
 class ReleaseAuthorizationRequest:
     contract: str
+    authority_scope: str
     event_id: str
     round_id: int
     task: str
@@ -40,6 +66,8 @@ class ReleaseAuthorizationRequest:
     idempotency_key: str
     installed_role_id: str
     installed_role_email: str
+    governance_context: GovernanceDecisionContext | None = None
+    wire_payload_json: str = ""
 
 
 def canonical_json(payload: Any) -> str:
@@ -71,6 +99,112 @@ def _require_sha256_digest(payload: Mapping[str, Any], key: str) -> str:
     return value
 
 
+def _require_raw_sha256_digest(payload: Mapping[str, Any], key: str) -> str:
+    value = _require_non_empty_string(payload, key)
+    if not _RAW_SHA256_DIGEST_PATTERN.fullmatch(value):
+        raise ProtocolError(f"{key} must be 64 lowercase hexadecimal characters.")
+    return value
+
+
+def _require_unique_string_list(
+    payload: Mapping[str, Any],
+    key: str,
+    *,
+    maximum: int = 64,
+) -> tuple[str, ...]:
+    raw = payload.get(key)
+    if not isinstance(raw, list) or not raw:
+        raise ProtocolError(f"{key} must be a non-empty list.")
+    if len(raw) > maximum:
+        raise ProtocolError(f"{key} exceeds the supported item count.")
+    normalized = tuple(
+        value.strip()
+        for value in raw
+        if isinstance(value, str) and value.strip()
+    )
+    if len(normalized) != len(raw):
+        raise ProtocolError(f"{key} must contain only non-empty strings.")
+    if len(set(normalized)) != len(normalized):
+        raise ProtocolError(f"{key} must not contain duplicates.")
+    return normalized
+
+
+def _validate_governance_context(
+    payload: Mapping[str, Any],
+    *,
+    authority_scope: str,
+    task: str,
+    module: str,
+    manifest_r_digest: str,
+) -> GovernanceDecisionContext | None:
+    raw_context = payload.get("governance_context")
+    if authority_scope == "PRODUCTION_RELEASE":
+        if "governance_context" in payload:
+            raise ProtocolError(
+                "governance_context is only valid for RD_FLYWHEEL_GOVERNANCE requests."
+            )
+        return None
+    if not isinstance(raw_context, Mapping):
+        raise ProtocolError(
+            "governance_context is required for RD_FLYWHEEL_GOVERNANCE requests."
+        )
+
+    expected_keys = {
+        "authority_boundary",
+        "missing_capability",
+        "originating_plugin",
+        "originating_event_id",
+        "checkpoint_digest",
+        "required_evidence",
+        "visual_companion_html_sha256",
+    }
+    if set(raw_context) != expected_keys:
+        raise ProtocolError(
+            "governance_context must contain exactly the supported frozen decision fields."
+        )
+
+    authority_boundary = _require_non_empty_string(raw_context, "authority_boundary")
+    if authority_boundary != _GOVERNANCE_AUTHORITY_BOUNDARY:
+        raise ProtocolError("governance_context authority_boundary is invalid.")
+    missing_capability = _require_non_empty_string(raw_context, "missing_capability")
+    originating_plugin = _require_non_empty_string(raw_context, "originating_plugin")
+    originating_event_id = _require_non_empty_string(raw_context, "originating_event_id")
+    checkpoint_digest = _require_raw_sha256_digest(raw_context, "checkpoint_digest")
+    required_evidence = _require_unique_string_list(raw_context, "required_evidence")
+    visual_digest = _require_sha256_digest(raw_context, "visual_companion_html_sha256")
+
+    source_ref = _require_non_empty_string(payload, "source_ref")
+    top_level_checkpoint = _require_raw_sha256_digest(payload, "checkpoint_digest")
+    visual = payload.get("visual_companion")
+    if not isinstance(visual, Mapping) or set(visual) != {"html_sha256", "authority"}:
+        raise ProtocolError("visual_companion must contain html_sha256 and authority.")
+    visual_authority = _require_non_empty_string(visual, "authority")
+    visual_html_sha256 = _require_sha256_digest(visual, "html_sha256")
+
+    bindings = (
+        (missing_capability, task, "missing_capability/task"),
+        (originating_plugin, module, "originating_plugin/module"),
+        (originating_event_id, source_ref, "originating_event_id/source_ref"),
+        (checkpoint_digest, top_level_checkpoint, "checkpoint_digest"),
+        (visual_digest, visual_html_sha256, "visual_companion_html_sha256"),
+        (visual_digest, manifest_r_digest, "visual_companion/manifest_r_digest"),
+        (authority_boundary, visual_authority, "authority_boundary"),
+    )
+    for actual, expected, label in bindings:
+        if actual != expected:
+            raise ProtocolError(f"governance_context binding mismatch: {label}.")
+
+    return GovernanceDecisionContext(
+        authority_boundary=authority_boundary,
+        missing_capability=missing_capability,
+        originating_plugin=originating_plugin,
+        originating_event_id=originating_event_id,
+        checkpoint_digest=checkpoint_digest,
+        required_evidence=required_evidence,
+        visual_companion_html_sha256=visual_digest,
+    )
+
+
 def _parse_timestamp(value: str, *, field_name: str) -> datetime:
     if not _RFC3339_TIMESTAMP_PATTERN.fullmatch(value):
         raise ProtocolError(f"{field_name} must be an RFC 3339 timestamp.")
@@ -92,21 +226,17 @@ def validate_release_request(
     contract = _require_non_empty_string(payload, "contract")
     if contract != _REQUEST_CONTRACT:
         raise ProtocolError(f"contract must be the exact value {_REQUEST_CONTRACT}.")
+    authority_scope = _require_non_empty_string(payload, "authority_scope")
+    if authority_scope not in _AUTHORITY_SCOPES:
+        raise ProtocolError(
+            "authority_scope must be PRODUCTION_RELEASE or RD_FLYWHEEL_GOVERNANCE."
+        )
 
     round_id = payload.get("round_id")
     if not isinstance(round_id, int) or round_id <= 0:
         raise ProtocolError("round_id must be a positive round number.")
 
-    required_roles_value = payload.get("required_roles")
-    if not isinstance(required_roles_value, list) or not required_roles_value:
-        raise ProtocolError("required_roles must be a non-empty list.")
-    required_roles = tuple(
-        role.strip()
-        for role in required_roles_value
-        if isinstance(role, str) and role.strip()
-    )
-    if len(required_roles) != len(required_roles_value):
-        raise ProtocolError("required_roles must contain only non-empty strings.")
+    required_roles = _require_unique_string_list(payload, "required_roles")
     if installed_role_id not in required_roles:
         raise ProtocolError("installed role is not present in required_roles.")
 
@@ -132,6 +262,17 @@ def validate_release_request(
     if expires_at_utc <= comparison_now:
         raise ProtocolError("request is expired.")
 
+    task = _require_non_empty_string(payload, "task")
+    module = _require_non_empty_string(payload, "module")
+    manifest_r_digest = _require_sha256_digest(payload, "manifest_r_digest")
+    governance_context = _validate_governance_context(
+        payload,
+        authority_scope=authority_scope,
+        task=task,
+        module=module,
+        manifest_r_digest=manifest_r_digest,
+    )
+
     expected_digest = build_request_digest(payload)
     request_digest = _require_sha256_digest(payload, "request_digest")
     if request_digest != expected_digest:
@@ -139,12 +280,13 @@ def validate_release_request(
 
     return ReleaseAuthorizationRequest(
         contract=contract,
+        authority_scope=authority_scope,
         event_id=_require_non_empty_string(payload, "event_id"),
         round_id=round_id,
-        task=_require_non_empty_string(payload, "task"),
-        module=_require_non_empty_string(payload, "module"),
+        task=task,
+        module=module,
         manifest_s_digest=_require_sha256_digest(payload, "manifest_s_digest"),
-        manifest_r_digest=_require_sha256_digest(payload, "manifest_r_digest"),
+        manifest_r_digest=manifest_r_digest,
         manifest_digest=_require_sha256_digest(payload, "manifest_digest"),
         request_digest=request_digest,
         role_snapshot_digest=_require_sha256_digest(payload, "role_snapshot_digest"),
@@ -155,6 +297,8 @@ def validate_release_request(
         idempotency_key=_require_non_empty_string(payload, "idempotency_key"),
         installed_role_id=installed_role_id,
         installed_role_email=installed_role_email,
+        governance_context=governance_context,
+        wire_payload_json=canonical_json(payload),
     )
 
 

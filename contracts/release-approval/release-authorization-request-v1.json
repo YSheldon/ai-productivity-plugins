@@ -1,5 +1,6 @@
 {
   "contract": "ReleaseAuthorizationRequest/v1",
+  "authority_scope": "PRODUCTION_RELEASE",
   "event_id": "rel-2026-07-15-0001",
   "round_id": 1,
   "task": "Task 3",

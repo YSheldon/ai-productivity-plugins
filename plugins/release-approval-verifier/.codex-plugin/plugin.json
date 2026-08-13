@@ -1,6 +1,6 @@
 {
   "name": "release-approval-verifier",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Independent multi-role release verifier with MCP, Skill, standalone CLI, signed receipts, and unattended scheduling.",
   "author": {
     "name": "Sheldon"
@@ -15,6 +15,9 @@
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
+  "runtimeEntrypoints": [
+    "./src/verifier_cli.py"
+  ],
   "interface": {
     "displayName": "Release Approval Verifier",
     "shortDescription": "Independent verifier with four equivalent runtime surfaces",

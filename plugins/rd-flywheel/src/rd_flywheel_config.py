@@ -7,9 +7,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _UNEXPANDED_ENV_PATTERN = re.compile(r"%(?:[^%]+)%|\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\})")
 _FORBIDDEN_SECRET_KEYS = {
     "api_key",
@@ -54,6 +56,8 @@ _ROOT_KEYS = {
     "notification",
     "decision_role_source",
     "dependency_lock",
+    "dependency_lock_sha256",
+    "decision_verifier_config",
 }
 
 
@@ -74,6 +78,13 @@ class NotificationConfig:
 
 
 @dataclass(frozen=True)
+class DecisionRoleSourceConfig:
+    kind: str
+    document_url: str
+    heading: str
+
+
+@dataclass(frozen=True)
 class RDFlywheelConfig:
     schema_version: int
     governance_inbox: Path
@@ -85,8 +96,10 @@ class RDFlywheelConfig:
     agent_profile: str | None
     protected_merge: ProtectedMergeConfig
     notification: NotificationConfig | None
-    decision_role_source: str | None
+    decision_role_source: DecisionRoleSourceConfig | None
     dependency_lock: Path
+    dependency_lock_sha256: str
+    decision_verifier_config: Path
 
     @property
     def audit_dir(self) -> Path:
@@ -192,6 +205,13 @@ def _require_mapping(payload: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     return value
 
 
+def _absolute_http_url(value: str, *, field_name: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ConfigError(f"{field_name} must be an absolute HTTP(S) URL.")
+    return value
+
+
 def load_config(path: str | Path) -> RDFlywheelConfig:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -205,8 +225,8 @@ def load_config(path: str | Path) -> RDFlywheelConfig:
         raise ConfigError(f"unknown config fields: {', '.join(sorted(unexpected))}.")
 
     schema_version = payload.get("schema_version")
-    if schema_version != 1 or type(schema_version) is not int:
-        raise ConfigError("schema_version must be 1.")
+    if schema_version != 2 or type(schema_version) is not int:
+        raise ConfigError("schema_version must be 2.")
     poll_minutes = payload.get("poll_minutes", 60)
     if type(poll_minutes) is not int or not 5 <= poll_minutes <= 1440:
         raise ConfigError("poll_minutes must be an integer in 5..1440.")
@@ -256,11 +276,30 @@ def load_config(path: str | Path) -> RDFlywheelConfig:
     else:
         raise ConfigError("notification must be null or an object.")
 
-    role_source = payload.get("decision_role_source")
-    if role_source is not None and (
-        not isinstance(role_source, str) or not role_source.strip()
-    ):
-        raise ConfigError("decision_role_source must be null or a non-empty string.")
+    role_source_payload = payload.get("decision_role_source")
+    decision_role_source: DecisionRoleSourceConfig | None
+    if role_source_payload is None:
+        decision_role_source = None
+    elif isinstance(role_source_payload, Mapping):
+        source_type = _require_string(role_source_payload, "type").casefold()
+        if source_type != "feishu":
+            raise ConfigError("decision_role_source.type must be feishu.")
+        decision_role_source = DecisionRoleSourceConfig(
+            kind="feishu",
+            document_url=_absolute_http_url(
+                _require_string(role_source_payload, "document_url"),
+                field_name="decision_role_source.document_url",
+            ),
+            heading=_require_string(role_source_payload, "heading"),
+        )
+    else:
+        raise ConfigError(
+            "decision_role_source must be null or a Feishu source object."
+        )
+
+    dependency_lock_sha256 = _require_string(payload, "dependency_lock_sha256").lower()
+    if not _SHA256_PATTERN.fullmatch(dependency_lock_sha256):
+        raise ConfigError("dependency_lock_sha256 must be a lowercase SHA-256 digest.")
 
     return RDFlywheelConfig(
         schema_version=schema_version,
@@ -276,6 +315,10 @@ def load_config(path: str | Path) -> RDFlywheelConfig:
             protected_branch_required=protected_required,
         ),
         notification=notification,
-        decision_role_source=role_source.strip() if isinstance(role_source, str) else None,
+        decision_role_source=decision_role_source,
         dependency_lock=_expand_path(_require_string(payload, "dependency_lock")),
+        dependency_lock_sha256=dependency_lock_sha256,
+        decision_verifier_config=_expand_path(
+            _require_string(payload, "decision_verifier_config")
+        ),
     )

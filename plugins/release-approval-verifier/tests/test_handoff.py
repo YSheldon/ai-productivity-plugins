@@ -93,9 +93,12 @@ def _manifest_digest() -> str:
     ).hexdigest()
 
 
-def _request_payload() -> dict[str, Any]:
+def _request_payload(
+    *, authority_scope: str = "PRODUCTION_RELEASE"
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "contract": "ReleaseAuthorizationRequest/v1",
+        "authority_scope": authority_scope,
         "schema": "ReleaseAuthorizationRequest/v1",
         "event_id": "evt-handoff",
         "round_id": 1,
@@ -121,14 +124,36 @@ def _request_payload() -> dict[str, Any]:
         "idempotency_key": "release-approval:evt-handoff:1",
         "requested_at": "2026-07-16T01:00:00Z",
     }
+    if authority_scope == "RD_FLYWHEEL_GOVERNANCE":
+        payload["checkpoint_digest"] = "a" * 64
+        payload["visual_companion"] = {
+            "html_sha256": payload["manifest_r_digest"],
+            "authority": "DESIGN_CONSENT_ONLY",
+        }
+        payload["governance_context"] = {
+            "authority_boundary": "DESIGN_CONSENT_ONLY",
+            "missing_capability": payload["task"],
+            "originating_plugin": payload["module"],
+            "originating_event_id": payload["source_ref"],
+            "checkpoint_digest": payload["checkpoint_digest"],
+            "required_evidence": ["tests", "security_review", "release_readback"],
+            "visual_companion_html_sha256": payload["manifest_r_digest"],
+        }
     payload["request_digest"] = "sha256:" + hashlib.sha256(
         canonical_json(payload).encode("utf-8")
     ).hexdigest()
     return payload
 
 
-def _request_message(*, task: str = "Task 9") -> EmailMessage:
-    payload = _request_payload()
+def _request_message(
+    *,
+    task: str = "Task 9",
+    authority_scope: str = "PRODUCTION_RELEASE",
+    payload_override: dict[str, Any] | None = None,
+) -> EmailMessage:
+    payload = dict(payload_override) if payload_override is not None else _request_payload(
+        authority_scope=authority_scope
+    )
     if task != payload["task"]:
         payload["task"] = task
         payload["task_id"] = task
@@ -144,10 +169,16 @@ def _request_message(*, task: str = "Task 9") -> EmailMessage:
     message = EmailMessage()
     message["From"] = "Release Bot <bot@example.com>"
     message["To"] = "release@example.com"
-    message["Subject"] = "【发布申请】Task 9-release-approval-verifier-20260716"
+    prefix = (
+        "【研发飞轮决策】"
+        if authority_scope == "RD_FLYWHEEL_GOVERNANCE"
+        else "【发布申请】"
+    )
+    message["Subject"] = f"{prefix}Task 9-release-approval-verifier-20260716"
     message["Date"] = "Thu, 16 Jul 2026 01:00:00 +0000"
     message["Message-ID"] = str(payload["original_message_id"])
     message["X-RD-Contract"] = str(payload["contract"])
+    message["X-RD-Authority-Scope"] = str(payload["authority_scope"])
     message["X-RD-Event-Id"] = str(payload["event_id"])
     message["X-RD-Round-Id"] = str(payload["round_id"])
     message["X-RD-Task"] = str(payload["task"])
@@ -289,6 +320,59 @@ def test_verified_receipt_hands_off_once_and_marks_consumed_after_pre_release_re
     assert event["receipt"]["handoff_id"] == "pre-release:evt-handoff:1"
     assert "ReleaseAuthorizationCredential" not in json.dumps(first)
     assert "RELEASE_AUTHORIZED" not in json.dumps(first)
+
+
+def test_governance_approval_is_verified_without_product_gate_handoff(
+    tmp_path: Path,
+) -> None:
+    gate = GateReadyAdapter()
+    controller = _controller(
+        tmp_path,
+        gate,
+        request_messages=(
+            _request_message(authority_scope="RD_FLYWHEEL_GOVERNANCE"),
+        ),
+    )
+
+    result = controller.run_once()
+    event = controller.get_event(event_id="evt-handoff", round_id=1)
+
+    assert result["status"] == "ready"
+    assert result["receipt"]["status"] == "APPROVAL_VERIFIED"
+    assert result["receipt"]["authority_scope"] == "RD_FLYWHEEL_GOVERNANCE"
+    assert result["handoff"] == {
+        "status": "GOVERNANCE_VERIFIED",
+        "authority_scope": "RD_FLYWHEEL_GOVERNANCE",
+        "receipt_id": result["receipt"]["receipt_id"],
+        "consumed": False,
+    }
+    assert gate.calls == []
+    assert "PRE_RELEASE_REQUESTED" not in json.dumps(result)
+    assert event["request"]["governance_context"] == _request_payload(
+        authority_scope="RD_FLYWHEEL_GOVERNANCE"
+    )["governance_context"]
+
+
+def test_governance_context_drift_is_rejected_even_with_a_recomputed_request_digest(
+    tmp_path: Path,
+) -> None:
+    payload = _request_payload(authority_scope="RD_FLYWHEEL_GOVERNANCE")
+    context = dict(payload["governance_context"])
+    context["missing_capability"] = "different.capability"
+    payload["governance_context"] = context
+    payload["request_digest"] = "sha256:" + hashlib.sha256(
+        canonical_json(
+            {key: value for key, value in payload.items() if key != "request_digest"}
+        ).encode("utf-8")
+    ).hexdigest()
+    message = _request_message(
+        authority_scope="RD_FLYWHEEL_GOVERNANCE",
+        payload_override=payload,
+    )
+    controller = _controller(tmp_path, GateReadyAdapter())
+
+    with pytest.raises(RuntimeError, match="binding drifted"):
+        controller._extract_request_payload(message)  # noqa: SLF001
 
 
 def test_verified_receipt_without_gate_capability_keeps_receipt_and_emits_replayable_capability_event(tmp_path: Path) -> None:

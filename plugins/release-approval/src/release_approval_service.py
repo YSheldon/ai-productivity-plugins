@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
 import os
 import re
@@ -496,25 +497,107 @@ class ReleaseApprovalService:
             raise ReleaseApprovalServiceError("page session is expired.")
 
     def _render_page_html(self, *, request: ReleaseAuthorizationRequest) -> str:
+        governance = request.authority_scope == "RD_FLYWHEEL_GOVERNANCE"
+        title = "研发飞轮治理决策" if governance else "生产发布审批"
+        boundary = (
+            "本次确认仅授权治理设计与能力建设，不代表测试通过、发布授权、生产凭证或生产部署。"
+            if governance
+            else "本页只采集角色审批证据；最终发布授权必须由独立验证器和产品发布门禁共同签发。"
+        )
+        context = request.governance_context
+        if governance and context is None:
+            raise ReleaseApprovalServiceError(
+                "governance confirmation page requires a frozen governance context."
+            )
+        context_html: list[str] = []
+        if context is not None:
+            evidence_items = "".join(
+                f"<li><span>{index:02d}</span>{html.escape(kind)}</li>"
+                for index, kind in enumerate(context.required_evidence, start=1)
+            )
+            context_html = [
+                '<section class="panel visual-companion">',
+                '<div class="eyebrow">VISUAL COMPANION</div>',
+                "<h2>需要确认的能力建设边界</h2>",
+                '<div class="facts">',
+                '<div class="fact primary"><small>能力缺口</small><strong>'
+                + html.escape(context.missing_capability)
+                + "</strong></div>",
+                '<div class="fact"><small>来源插件</small><strong>'
+                + html.escape(context.originating_plugin)
+                + "</strong></div>",
+                '<div class="fact"><small>来源事件</small><code>'
+                + html.escape(context.originating_event_id)
+                + "</code></div>",
+                '<div class="fact"><small>权限边界</small><strong>'
+                + html.escape(context.authority_boundary)
+                + "</strong></div>",
+                "</div>",
+                "<h3>完成后必须提供的生产证据</h3>",
+                f'<ol class="evidence">{evidence_items}</ol>',
+                '<div class="digest-grid">',
+                '<div><small>原始检查点 SHA-256</small><code>'
+                + html.escape(context.checkpoint_digest)
+                + "</code></div>",
+                '<div><small>Visual Companion SHA-256</small><code>'
+                + html.escape(context.visual_companion_html_sha256)
+                + "</code></div>",
+                "</div>",
+                "</section>",
+            ]
+        required_roles = " · ".join(html.escape(role) for role in request.required_roles)
         return "\n".join(
             [
                 "<!doctype html>",
-                "<html>",
-                "<head><meta charset=\"utf-8\"><title>Release approval</title></head>",
-                "<body>",
-                f"<h1>Release approval for {request.event_id}</h1>",
-                f"<p>Role: {request.installed_role_id}</p>",
-                f"<p>Task: {request.task}</p>",
-                "<form method=\"post\">",
-                f"<input type=\"hidden\" name=\"event_id\" value=\"{request.event_id}\">",
+                '<html lang="zh-CN">',
+                f'<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>',
+                "<style>"
+                ":root{--ink:#102b35;--muted:#577078;--teal:#0b6b69;--mint:#dcefee;--line:#c9dcdd;--amber:#d48b13;--paper:#f3f7f6}"
+                "*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% 5%,#d5ebe8 0,transparent 32%),var(--paper);color:var(--ink);font-family:'Segoe UI','Microsoft YaHei',sans-serif}"
+                ".shell{width:min(980px,calc(100% - 32px));margin:32px auto 64px}.hero{position:relative;overflow:hidden;padding:40px 44px;border-radius:24px 24px 0 0;background:linear-gradient(125deg,#073844,#0b6b69 70%,#17867c);color:#fff}"
+                ".hero:after{content:'';position:absolute;width:260px;height:260px;right:-65px;top:-110px;border:42px solid rgba(255,255,255,.09);border-radius:50%}.kicker,.eyebrow{font-size:12px;font-weight:800;letter-spacing:.16em}.hero h1{margin:10px 0 8px;font-size:34px}.hero p{margin:0;opacity:.85}.scope{display:inline-block;margin-top:20px;padding:8px 12px;border:1px solid rgba(255,255,255,.45);border-radius:999px;font:700 12px Consolas,monospace}"
+                ".content{padding:28px;background:#fff;border:1px solid var(--line);border-top:0;border-radius:0 0 24px 24px;box-shadow:0 18px 55px rgba(20,57,64,.12)}"
+                ".boundary{padding:16px 18px;border-left:5px solid var(--amber);background:#fff7e4;border-radius:8px;font-weight:700}.panel{margin-top:22px;padding:24px;border:1px solid var(--line);border-radius:16px;background:#fff}.visual-companion{background:linear-gradient(180deg,#f7fbfa,#fff)}"
+                ".eyebrow{color:var(--teal)}h2{margin:7px 0 18px;font-size:23px}h3{margin:24px 0 10px}.facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.fact{min-height:82px;padding:14px;background:#edf6f5;border-radius:12px}.fact.primary{grid-column:1/-1;background:var(--mint)}small{display:block;margin-bottom:7px;color:var(--muted);font-size:12px}strong,code{overflow-wrap:anywhere}code{font-family:Consolas,monospace;font-size:12px}"
+                ".evidence{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:0;list-style:none}.evidence li{display:flex;gap:9px;align-items:center;padding:10px 12px;border:1px solid #d8e5e5;border-radius:10px}.evidence span{color:var(--teal);font:700 11px Consolas,monospace}.digest-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px}.digest-grid>div{padding:12px;border-top:2px solid var(--teal);background:#f5f8f8}"
+                ".meta-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.meta-grid div{padding:10px 0;border-bottom:1px solid #e5eeee}.decision-set{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:16px 0}.choice{display:block;padding:14px;border:1px solid var(--line);border-radius:12px;font-weight:700;cursor:pointer}.choice:has(input:checked){border-color:var(--teal);background:var(--mint)}textarea{width:100%;min-height:92px;padding:12px;border:1px solid var(--line);border-radius:10px;font:inherit}button{margin-top:14px;padding:12px 22px;border:0;border-radius:10px;background:var(--teal);color:#fff;font-weight:800;cursor:pointer}.audit{margin-top:16px;color:var(--muted);font-size:12px}"
+                "@media(max-width:680px){.hero{padding:30px 24px}.hero h1{font-size:27px}.content{padding:18px}.facts,.evidence,.digest-grid,.meta-grid,.decision-set{grid-template-columns:1fr}.fact.primary{grid-column:auto}}"
+                "</style></head>",
+                '<body><main class="shell">',
+                '<header class="hero"><div class="kicker">AUDITED DECISION PAGE</div>',
+                f"<h1>{html.escape(title)}</h1>",
+                f"<p>{html.escape(request.task)} · {html.escape(request.module)}</p>",
+                f'<div class="scope">{html.escape(request.authority_scope)}</div></header>',
+                '<div class="content">',
+                f'<div class="boundary">{html.escape(boundary)}</div>',
+                *context_html,
+                '<section class="panel"><div class="eyebrow">FROZEN REQUEST</div><h2>本角色的冻结决策信息</h2><div class="meta-grid">',
+                f'<div><small>事件</small><code>{html.escape(request.event_id)}</code></div>',
+                f'<div><small>轮次</small><strong>{request.round_id}</strong></div>',
+                f'<div><small>当前角色</small><strong>{html.escape(request.installed_role_id)}</strong></div>',
+                f'<div><small>角色邮箱</small><strong>{html.escape(request.installed_role_email)}</strong></div>',
+                f'<div><small>全部必审角色</small><strong>{required_roles}</strong></div>',
+                f'<div><small>到期时间</small><code>{html.escape(request.expires_at)}</code></div>',
+                f'<div><small>请求摘要</small><code>{html.escape(request.request_digest)}</code></div>',
+                f'<div><small>角色快照摘要</small><code>{html.escape(request.role_snapshot_digest)}</code></div>',
+                "</div></section>",
+                '<section class="panel"><div class="eyebrow">YOUR DECISION</div><h2>请选择处理意见</h2>',
+                '<form method="post">',
+                f"<input type=\"hidden\" name=\"event_id\" value=\"{html.escape(request.event_id, quote=True)}\">",
                 f"<input type=\"hidden\" name=\"round_id\" value=\"{request.round_id}\">",
-                f"<input type=\"hidden\" name=\"role_id\" value=\"{request.installed_role_id}\">",
+                f"<input type=\"hidden\" name=\"role_id\" value=\"{html.escape(request.installed_role_id, quote=True)}\">",
                 "<input type=\"hidden\" name=\"nonce\" value=\"__NONCE__\">",
                 "<input type=\"hidden\" name=\"page_html_sha256\" value=\"__PAGE_HTML_SHA256__\">",
-                "<label>Decision <input name=\"decision\"></label>",
-                "<label>Comment <textarea name=\"comment\"></textarea></label>",
-                "</form>",
-                "</body>",
+                '<div class="decision-set">',
+                '<label class="choice"><input type="radio" name="decision" value="APPROVE" required> 同意 / APPROVE</label>',
+                '<label class="choice"><input type="radio" name="decision" value="HOLD"> 待定 / HOLD</label>',
+                '<label class="choice"><input type="radio" name="decision" value="REJECT"> 驳回 / REJECT</label>',
+                "</div>",
+                '<label><small>审批意见</small><textarea name="comment" maxlength="4000" placeholder="说明通过依据、待补证据或驳回原因"></textarea></label>',
+                '<button type="submit">提交并邮件回执</button>',
+                "</form></section>",
+                '<p class="audit">本页、角色快照、请求机器块、审批结果和邮件回执均通过 SHA-256 与审计链绑定。</p>',
+                "</div></main></body>",
                 "</html>",
                 "",
             ]

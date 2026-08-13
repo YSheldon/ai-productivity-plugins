@@ -72,6 +72,7 @@ def _config(tmp_path: Path) -> ReleaseApprovalConfig:
 def _request_payload() -> dict[str, object]:
     payload: dict[str, object] = {
         "contract": "ReleaseAuthorizationRequest/v1",
+        "authority_scope": "PRODUCTION_RELEASE",
         "event_id": "release-event-1",
         "round_id": 1,
         "task": "Release task",
@@ -99,11 +100,53 @@ def _request() -> ReleaseAuthorizationRequest:
     )
 
 
+def _governance_request_payload() -> dict[str, object]:
+    payload = _request_payload()
+    payload.update(
+        {
+            "authority_scope": "RD_FLYWHEEL_GOVERNANCE",
+            "event_id": "governance-event-1",
+            "round_id": 3,
+            "task": "cloud_scan.real_api",
+            "module": "submission-gate",
+            "source_ref": "capability-17",
+            "checkpoint_digest": "a" * 64,
+            "original_message_id": "<governance-request-1@example.com>",
+            "idempotency_key": "request:governance-event-1:3",
+            "visual_companion": {
+                "html_sha256": "sha256:" + "2" * 64,
+                "authority": "DESIGN_CONSENT_ONLY",
+            },
+            "governance_context": {
+                "authority_boundary": "DESIGN_CONSENT_ONLY",
+                "missing_capability": "cloud_scan.real_api",
+                "originating_plugin": "submission-gate",
+                "originating_event_id": "capability-17",
+                "checkpoint_digest": "a" * 64,
+                "required_evidence": ["tests", "security_review", "release_readback"],
+                "visual_companion_html_sha256": "sha256:" + "2" * 64,
+            },
+        }
+    )
+    payload["request_digest"] = build_request_digest(payload)
+    return payload
+
+
+def _governance_request() -> ReleaseAuthorizationRequest:
+    return validate_release_request(
+        _governance_request_payload(),
+        installed_role_id="release-manager",
+        installed_role_email="release-manager@example.com",
+        now=FIXED_NOW,
+    )
+
+
 def _workflow_headers(payload: dict[str, object]) -> dict[str, str]:
     required_roles = payload["required_roles"]
     assert isinstance(required_roles, list)
     return {
         "contract": str(payload["contract"]),
+        "authority_scope": str(payload["authority_scope"]),
         "event_id": str(payload["event_id"]),
         "round_id": str(payload["round_id"]),
         "task": str(payload["task"]),
@@ -199,6 +242,25 @@ class BatchMailGateway(FakeMailGateway):
 
     def read_message(self, arguments: dict[str, object]) -> dict[str, object]:
         return dict(self.messages[str(arguments["uid"])])
+
+
+class InvalidSearchMailGateway(FakeMailGateway):
+    def search_messages(self, _arguments: dict[str, object]) -> dict[str, object]:
+        self.search_calls += 1
+        return {"messages": "not-an-array"}
+
+
+class TruncatedSearchMailGateway(FakeMailGateway):
+    def search_messages(self, _arguments: dict[str, object]) -> dict[str, object]:
+        self.search_calls += 1
+        return {"messages": [{"uid": str(index)} for index in range(1, 51)]}
+
+
+class DriftedReadbackMailGateway(FakeMailGateway):
+    def read_message(self, _arguments: dict[str, object]) -> dict[str, object]:
+        message = dict(self.message)
+        message["uid"] = "different-uid"
+        return message
 
 
 class FakeScheduler:
@@ -693,5 +755,83 @@ def test_restart_can_open_page_from_stored_request_without_persisted_bearer(
         assert "nonce_sha256" in state_text
         assert "url_key" not in state_text
         assert opened[0] not in state_text
+    finally:
+        _close_pages(controller)
+
+
+@pytest.mark.parametrize(
+    ("gateway_factory", "reason"),
+    [
+        (InvalidSearchMailGateway, "messages array"),
+        (TruncatedSearchMailGateway, "completeness is unproven"),
+        (DriftedReadbackMailGateway, "uid drifted"),
+    ],
+)
+def test_mail_scan_ambiguity_blocks_before_any_request_side_effect(
+    tmp_path: Path,
+    gateway_factory,
+    reason: str,
+) -> None:
+    controller = ReleaseApprovalController(
+        config=_config(tmp_path),
+        mail_gateway=gateway_factory(_message()),
+        now_fn=lambda: FIXED_NOW,
+    )
+
+    result = controller.run_once()
+    request_count = controller.store.connection.execute(
+        "SELECT COUNT(*) FROM requests"
+    ).fetchone()[0]
+    audit = controller.store.connection.execute(
+        "SELECT event_type, payload_json FROM audit_events ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+    assert result["status"] == "CAPABILITY_BLOCKED"
+    assert reason in result["events"][0]["reason"]
+    assert request_count == 0
+    assert audit["event_type"] == "mail_scan_blocked"
+    assert reason in audit["payload_json"]
+
+
+def test_restart_rebuilds_governance_visual_companion_from_exact_wire_payload(
+    tmp_path: Path,
+) -> None:
+    request = _governance_request()
+    store = ReleaseApprovalStore(tmp_path / "state.sqlite3")
+    store.record_request(request)
+    store.append_audit_event(
+        "request_authenticated",
+        {
+            "event_id": request.event_id,
+            "round_id": request.round_id,
+            "role_id": request.installed_role_id,
+            "authority_scope": request.authority_scope,
+            "message_id": request.original_message_id,
+            "raw_headers_sha256": "a" * 64,
+        },
+        created_at="2026-07-16T01:02:03Z",
+    )
+    store.close()
+    opened: list[str] = []
+    controller = ReleaseApprovalController(
+        config=_config(tmp_path),
+        mail_gateway=FakeMailGateway(_message()),
+        browser_opener=opened.append,
+        now_fn=lambda: FIXED_NOW,
+    )
+    try:
+        result = controller.open_page(
+            event_id=request.event_id,
+            round_id=request.round_id,
+        )
+        html_text = Path(result["page_html_path"]).read_text(encoding="utf-8")
+
+        assert result["status"] == "ready"
+        assert len(opened) == 1
+        assert "VISUAL COMPANION" in html_text
+        assert "cloud_scan.real_api" in html_text
+        assert "release_readback" in html_text
+        assert request.governance_context is not None
+        assert request.governance_context.visual_companion_html_sha256 in html_text
     finally:
         _close_pages(controller)

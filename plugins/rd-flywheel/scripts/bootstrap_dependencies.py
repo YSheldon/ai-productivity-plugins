@@ -14,6 +14,13 @@ from typing import Any, Callable
 
 MARKETPLACE_URL = "https://github.com/YSheldon/ai-productivity-plugins.git"
 PROFILES: dict[str, tuple[str, ...]] = {
+    "rd-flywheel": (
+        "imap-smtp-mail",
+        "lark-cli",
+        "release-approval",
+        "release-approval-verifier",
+        "rd-flywheel",
+    ),
     "release-approval": ("imap-smtp-mail", "rd-flywheel", "lark-cli"),
     "release-approval-verifier": (
         "imap-smtp-mail",

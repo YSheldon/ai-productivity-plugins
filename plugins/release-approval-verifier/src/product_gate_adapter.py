@@ -71,6 +71,12 @@ class ProductGateMcpAdapter:
         receipt: Mapping[str, Any],
         receipt_path: str,
     ) -> dict[str, Any]:
+        request_scope = str(request_binding.get("authority_scope") or "").strip()
+        receipt_scope = str(receipt.get("authority_scope") or "").strip()
+        if request_scope != "PRODUCTION_RELEASE" or receipt_scope != "PRODUCTION_RELEASE":
+            raise ProductGateAdapterError(
+                "product gate accepts only PRODUCTION_RELEASE approval evidence."
+            )
         event_id = str(request_binding.get("event_id") or "").strip()
         receipt_event_id = str(receipt.get("event_id") or "").strip()
         if not event_id or receipt_event_id != event_id:

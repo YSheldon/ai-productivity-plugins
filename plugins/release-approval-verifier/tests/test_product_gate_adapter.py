@@ -113,8 +113,12 @@ def test_verified_receipt_is_consumed_with_exact_event_and_path(tmp_path: Path) 
 
     adapter = ProductGateMcpAdapter(lock_path, config_path, dependency_lock_sha256=hashlib.sha256(lock_path.read_bytes()).hexdigest(), runner=runner)
     result = adapter.request_pre_release(
-        request_binding={"event_id": "evt-1", "round_id": 2},
-        receipt={"event_id": "evt-1"},
+        request_binding={
+            "authority_scope": "PRODUCTION_RELEASE",
+            "event_id": "evt-1",
+            "round_id": 2,
+        },
+        receipt={"authority_scope": "PRODUCTION_RELEASE", "event_id": "evt-1"},
         receipt_path=str(receipt_path),
     )
 
@@ -167,7 +171,47 @@ def test_adapter_fails_closed_on_lock_drift_or_mcp_error(tmp_path: Path) -> None
     receipt_path.write_text("{}\n", encoding="utf-8")
     with pytest.raises(ProductGateAdapterError, match="blocked"):
         adapter.request_pre_release(
-            request_binding={"event_id": "evt-2", "round_id": 1},
-            receipt={"event_id": "evt-2"},
+            request_binding={
+                "authority_scope": "PRODUCTION_RELEASE",
+                "event_id": "evt-2",
+                "round_id": 1,
+            },
+            receipt={"authority_scope": "PRODUCTION_RELEASE", "event_id": "evt-2"},
             receipt_path=str(receipt_path),
         )
+
+
+def test_governance_receipt_is_rejected_before_product_gate_invocation(
+    tmp_path: Path,
+) -> None:
+    lock_path, config_path, _mcp_path = _fixture(tmp_path)
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text("{}\n", encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    def runner(**kwargs):
+        calls.append(dict(kwargs))
+        raise AssertionError("product gate must not be invoked for governance evidence")
+
+    adapter = ProductGateMcpAdapter(
+        lock_path,
+        config_path,
+        dependency_lock_sha256=hashlib.sha256(lock_path.read_bytes()).hexdigest(),
+        runner=runner,
+    )
+
+    with pytest.raises(ProductGateAdapterError, match="PRODUCTION_RELEASE"):
+        adapter.request_pre_release(
+            request_binding={
+                "authority_scope": "RD_FLYWHEEL_GOVERNANCE",
+                "event_id": "evt-governance",
+                "round_id": 1,
+            },
+            receipt={
+                "authority_scope": "RD_FLYWHEEL_GOVERNANCE",
+                "event_id": "evt-governance",
+            },
+            receipt_path=str(receipt_path),
+        )
+
+    assert calls == []

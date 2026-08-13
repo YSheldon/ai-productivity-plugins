@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import threading
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,11 @@ import pytest
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
-from release_approval_protocol import ReleaseAuthorizationRequest
+from release_approval_protocol import (
+    ReleaseAuthorizationRequest,
+    build_request_digest,
+    validate_release_request,
+)
 from release_approval_store import (
     SCHEMA_VERSION,
     AuditTamperError,
@@ -24,6 +29,7 @@ from release_approval_store import (
 def _request() -> ReleaseAuthorizationRequest:
     return ReleaseAuthorizationRequest(
         contract="ReleaseAuthorizationRequest/v1",
+        authority_scope="PRODUCTION_RELEASE",
         event_id="rel-2026-07-15-0001",
         round_id=1,
         task="Task 4",
@@ -79,6 +85,109 @@ def test_fresh_database_sets_current_schema_version_and_current_reopen_works(tmp
     reopened = ReleaseApprovalStore(database_path)
     assert reopened.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert reopened.get_request(request.event_id, request.round_id, request.installed_role_id) == stored
+
+
+def test_schema_v1_migrates_existing_requests_to_explicit_production_scope(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "state-v1.sqlite3"
+    request = _request()
+    store = ReleaseApprovalStore(database_path)
+    store.record_request(request)
+    store.close()
+
+    legacy = sqlite3.connect(database_path)
+    legacy.execute("ALTER TABLE requests DROP COLUMN request_payload_json")
+    legacy.execute("ALTER TABLE requests DROP COLUMN authority_scope")
+    legacy.execute("PRAGMA user_version = 1")
+    legacy.commit()
+    legacy.close()
+
+    migrated = ReleaseApprovalStore(database_path)
+    row = migrated.connection.execute(
+        "SELECT authority_scope, request_payload_json FROM requests WHERE event_id = ?",
+        (request.event_id,),
+    ).fetchone()
+
+    assert migrated.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert row["authority_scope"] == "PRODUCTION_RELEASE"
+    assert row["request_payload_json"] is None
+    assert migrated.record_request(request).request_digest == request.request_digest
+
+
+def test_schema_v2_adds_exact_request_payload_column_without_fabricating_history(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "state-v2.sqlite3"
+    request = _request()
+    store = ReleaseApprovalStore(database_path)
+    store.record_request(request)
+    store.close()
+
+    legacy = sqlite3.connect(database_path)
+    legacy.execute("ALTER TABLE requests DROP COLUMN request_payload_json")
+    legacy.execute("PRAGMA user_version = 2")
+    legacy.commit()
+    legacy.close()
+
+    migrated = ReleaseApprovalStore(database_path)
+    row = migrated.connection.execute(
+        "SELECT authority_scope, request_payload_json FROM requests WHERE event_id = ?",
+        (request.event_id,),
+    ).fetchone()
+
+    assert migrated.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert row["authority_scope"] == "PRODUCTION_RELEASE"
+    assert row["request_payload_json"] is None
+
+
+def test_validated_wire_payload_is_persisted_exactly_for_restart_reconstruction(
+    tmp_path: Path,
+) -> None:
+    payload: dict[str, object] = {
+        "contract": "ReleaseAuthorizationRequest/v1",
+        "authority_scope": "PRODUCTION_RELEASE",
+        "schema": "ReleaseAuthorizationRequest/v1",
+        "event_id": "release-with-extra-wire-fields",
+        "round_id": 1,
+        "task": "Task 4",
+        "task_id": "Task 4",
+        "module": "release-approval",
+        "target_scope": "preproduction,production_canary",
+        "manifest_s_digest": "sha256:" + "1" * 64,
+        "manifest_r_digest": "sha256:" + "2" * 64,
+        "manifest_digest": "sha256:" + "3" * 64,
+        "role_snapshot_digest": "sha256:" + "5" * 64,
+        "required_roles": ["release-manager", "security-reviewer"],
+        "original_message_id": "<release-with-extra-wire-fields@example.com>",
+        "references": [],
+        "expires_at": "2099-07-16T00:00:00Z",
+        "idempotency_key": "release-with-extra-wire-fields-round-1",
+    }
+    payload["request_digest"] = build_request_digest(payload)
+    request = validate_release_request(
+        payload,
+        installed_role_id="release-manager",
+        installed_role_email="release-manager@example.com",
+        now=datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc),
+    )
+    store = ReleaseApprovalStore(tmp_path / "state.sqlite3")
+
+    store.record_request(request)
+    row = store.connection.execute(
+        "SELECT request_payload_json FROM requests WHERE event_id = ?",
+        (request.event_id,),
+    ).fetchone()
+
+    assert row["request_payload_json"] == request.wire_payload_json
+
+
+def test_governance_request_without_exact_wire_payload_is_rejected(tmp_path: Path) -> None:
+    request = replace(_request(), authority_scope="RD_FLYWHEEL_GOVERNANCE")
+    store = ReleaseApprovalStore(tmp_path / "state.sqlite3")
+
+    with pytest.raises(StoreError, match="exact signed machine payload"):
+        store.record_request(request)
 
 
 def test_unsupported_legacy_schema_fails_closed(tmp_path: Path) -> None:

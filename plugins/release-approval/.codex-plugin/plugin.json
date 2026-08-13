@@ -1,6 +1,6 @@
 {
   "name": "release-approval",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Operate one role-bound release approval controller through MCP, Skill, standalone CLI, and unattended OS scheduling.",
   "author": {
     "name": "Sheldon"
@@ -15,6 +15,9 @@
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
+  "runtimeEntrypoints": [
+    "./src/release_approval_cli.py"
+  ],
   "interface": {
     "displayName": "Release Approval",
     "shortDescription": "Four-surface release approval runtime",

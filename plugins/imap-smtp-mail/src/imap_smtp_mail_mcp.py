@@ -29,12 +29,12 @@ import traceback
 import urllib.parse
 import webbrowser
 from email.message import EmailMessage
-from email.policy import default
+from email.policy import SMTP, default
 from typing import Any, Callable
 
 
 SERVER_NAME = "imap-smtp-mail"
-SERVER_VERSION = "0.3.1"
+SERVER_VERSION = "0.3.2"
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 DEFAULT_CONFIG_PATH = pathlib.Path.home() / ".imap-smtp-mail" / "accounts.json"
 DEFAULT_ATTACHMENT_DIR = pathlib.Path.home() / "Downloads" / "imap-smtp-mail-attachments"
@@ -64,6 +64,7 @@ MESSAGE_ID_EXTRACT_PATTERN = re.compile(r"<[^<>\r\n]+>")
 MAX_RELEASE_WORKFLOW_HEADER_VALUE_CHARS = 2048
 RELEASE_WORKFLOW_HEADER_FIELDS = (
     ("X-RD-Contract", "contract"),
+    ("X-RD-Authority-Scope", "authority_scope"),
     ("X-RD-Event-Id", "event_id"),
     ("X-RD-Round-Id", "round_id"),
     ("X-RD-Task", "task"),
@@ -1906,6 +1907,61 @@ def create_draft(args: dict[str, Any]) -> dict[str, Any]:
     return tool_result({"sent": False, "draft_saved": True, "message_id": message_id, "draft": draft, "preview": preview})
 
 
+def send_message_atomic_recipients(
+    client: smtplib.SMTP,
+    message: EmailMessage,
+    *,
+    from_addr: str,
+    recipients: list[str],
+) -> dict[str, Any]:
+    """Submit DATA only after every envelope recipient has been accepted."""
+    client.ehlo_or_helo_if_needed()
+    try:
+        "".join((from_addr, *recipients)).encode("ascii")
+        international = False
+    except UnicodeEncodeError:
+        international = True
+    if international and not client.has_extn("smtputf8"):
+        raise smtplib.SMTPNotSupportedError(
+            "SMTPUTF8 is required for internationalized envelope addresses."
+        )
+    serialized = message.as_bytes(policy=SMTP.clone(utf8=international))
+    mail_options: list[str] = []
+    if international:
+        mail_options.extend(("SMTPUTF8", "BODY=8BITMIME"))
+    if getattr(client, "does_esmtp", False) and client.has_extn("size"):
+        mail_options.append(f"size={len(serialized)}")
+    code, response = client.mail(from_addr, mail_options)
+    if code != 250:
+        raise smtplib.SMTPSenderRefused(code, response, from_addr)
+
+    refused: dict[str, tuple[int, bytes | str]] = {}
+    for recipient in recipients:
+        recipient_code, recipient_response = client.rcpt(recipient)
+        if recipient_code not in (250, 251):
+            refused[recipient] = (recipient_code, recipient_response)
+    if refused:
+        reset_code, reset_response = client.rset()
+        if reset_code != 250:
+            raise smtplib.SMTPResponseException(reset_code, reset_response)
+        return {
+            "sent": False,
+            "refused": json_safe(refused),
+            "data_submitted": False,
+            "rset_response": [reset_code, json_safe(reset_response)],
+        }
+
+    data_code, data_response = client.data(serialized)
+    if data_code != 250:
+        raise smtplib.SMTPDataError(data_code, data_response)
+    return {
+        "sent": True,
+        "refused": {},
+        "data_submitted": True,
+        "data_response": [data_code, json_safe(data_response)],
+    }
+
+
 def send_email(args: dict[str, Any]) -> dict[str, Any]:
     account = resolve_account(args.get("account"))
     dry_run = args.get("dry_run", True) is not False
@@ -1929,14 +1985,49 @@ def send_email(args: dict[str, Any]) -> dict[str, Any]:
 
     client = connect_smtp(account)
     try:
-        refused = client.send_message(message, from_addr=account["email"], to_addrs=recipients)
+        if args.get("atomic_recipients") is True:
+            delivery = send_message_atomic_recipients(
+                client,
+                message,
+                from_addr=account["email"],
+                recipients=recipients,
+            )
+        else:
+            refused = client.send_message(
+                message,
+                from_addr=account["email"],
+                to_addrs=recipients,
+            )
+            delivery = {
+                "sent": True,
+                "refused": json_safe(refused),
+                "data_submitted": True,
+            }
     finally:
-        client.quit()
+        try:
+            client.quit()
+        except Exception:
+            try:
+                client.close()
+            except Exception:
+                pass
     return tool_result(
         {
-            "sent": True,
+            "sent": delivery["sent"],
             "message_id": message_id,
-            "refused": json_safe(refused),
+            "refused": delivery["refused"],
+            "atomic_recipients": args.get("atomic_recipients") is True,
+            "data_submitted": delivery["data_submitted"],
+            **(
+                {"data_response": delivery["data_response"]}
+                if "data_response" in delivery
+                else {}
+            ),
+            **(
+                {"rset_response": delivery["rset_response"]}
+                if "rset_response" in delivery
+                else {}
+            ),
             "preview": preview,
         }
     )
@@ -2095,6 +2186,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "draft_mailbox": {"type": "string", "description": "Optional IMAP mailbox name to save the draft into when dry_run is true."},
                 "preview_only": {"type": "boolean", "default": False, "description": "When true with dry_run, return only a chat preview instead of writing a mailbox draft."},
                 "dry_run": {"type": "boolean", "default": True, "description": "When true, save a mailbox draft by default. Set false only to actually send."},
+                "atomic_recipients": {"type": "boolean", "default": False, "description": "When true, issue MAIL/RCPT explicitly and submit DATA only if every recipient is accepted; otherwise RSET and report sent=false."},
             },
             "additionalProperties": False,
         },

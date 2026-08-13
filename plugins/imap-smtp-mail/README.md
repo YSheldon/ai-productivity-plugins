@@ -9,8 +9,8 @@ and custom enterprise mailboxes can all be configured with the same account form
 
 ## Version
 
-Current plugin/server release: `0.3.1`.
-Changelog note: `0.3.1` resolves Windows ACL utilities from trusted `SystemRoot` paths instead of the launcher `PATH`, hardens the temporary encrypted config before atomic replacement, honors `IMAP_SMTP_MAIL_CONFIG` in the wizard and migration command, and returns a safe local compatibility message when saving cannot start. `0.3.0` adds an allowlisted `release_workflow_headers` readback payload with duplicate-conflict, control-character, and length validation. `0.2.0` added authenticated thread evidence, constrained reply-thread headers, and the locked CLI bridge.
+Current plugin/server release: `0.3.2`.
+Changelog note: `0.3.2` preserves the release authority scope in allowlisted readback and adds opt-in atomic multi-recipient SMTP delivery that aborts before DATA when any RCPT is refused. `0.3.1` resolves Windows ACL utilities from trusted `SystemRoot` paths instead of the launcher `PATH`, hardens the temporary encrypted config before atomic replacement, honors `IMAP_SMTP_MAIL_CONFIG` in the wizard and migration command, and returns a safe local compatibility message when saving cannot start. `0.3.0` adds an allowlisted `release_workflow_headers` readback payload with duplicate-conflict, control-character, and length validation. `0.2.0` added authenticated thread evidence, constrained reply-thread headers, and the locked CLI bridge.
 
 ## MVP Scope
 

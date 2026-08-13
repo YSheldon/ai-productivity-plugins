@@ -63,3 +63,5 @@ Commands run with `shell=False` and canonical JSON on stdin. Agent output, a gen
 - All scheduler backends skip all missed intervals. Windows verifies `IgnoreNew` and `StartWhenAvailable=false`; systemd verifies `Persistent=false`; cron accepts only exact schedules.
 - Missing tools, missing approved adapters, invalid contracts, evidence gaps, verifier failures, and audit tampering fail closed.
 - `COMPLETE` requires separate verified evidence for tests, independent review, protected merge, package publication, installation, first practice, rollback, and original-checkpoint replay.
+- Production governance freezes enabled decision roles from the configured Feishu document, binds the exact role snapshot and Visual Companion HTML digest to the originating capability event and checkpoint, and waits for an independently verified multi-role receipt before capability construction can advance.
+- `RD_FLYWHEEL_GOVERNANCE` decisions grant design consent only. They cannot be replayed as `PRODUCTION_RELEASE`, mint deployment credentials, or authorize product release.

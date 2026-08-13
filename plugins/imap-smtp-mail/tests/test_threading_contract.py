@@ -19,6 +19,7 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "threaded-approval.eml"
 
 EXPECTED_RELEASE_WORKFLOW_HEADERS = {
     "contract": "rd.release-approval.v1",
+    "authority_scope": "PRODUCTION_RELEASE",
     "event_id": "event-20260715-001",
     "round_id": "round-2",
     "task": "Release task",
@@ -415,7 +416,262 @@ def test_send_email_returns_message_id_and_json_safe_refused_map(monkeypatch: py
     assert result["message_id"] == "<approval-1@example.com>"
     assert result["preview"]["message_id"] == "<approval-1@example.com>"
     assert result["refused"] == {"blocked@example.com": [550, "Rejected"]}
+    assert result["atomic_recipients"] is False
+    assert result["data_submitted"] is True
     assert fake_smtp.quit_called is True
+
+
+def test_atomic_recipient_send_resets_before_data_when_any_recipient_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeSmtp:
+        does_esmtp = True
+
+        def __init__(self) -> None:
+            self.calls = []
+            self.quit_called = False
+
+        def ehlo_or_helo_if_needed(self) -> None:
+            self.calls.append("ehlo")
+
+        def has_extn(self, name: str) -> bool:
+            assert name == "size"
+            return True
+
+        def mail(self, sender, options):  # noqa: ANN001
+            self.calls.append(("mail", sender, list(options)))
+            return 250, b"Sender ok"
+
+        def rcpt(self, recipient):  # noqa: ANN001
+            self.calls.append(("rcpt", recipient))
+            if recipient == "blocked@example.com":
+                return 550, b"Rejected"
+            return 250, b"Recipient ok"
+
+        def rset(self):  # noqa: ANN001
+            self.calls.append("rset")
+            return 250, b"Reset"
+
+        def data(self, _payload):  # noqa: ANN001
+            raise AssertionError("DATA must not be submitted after a rejected RCPT")
+
+        def quit(self) -> None:
+            self.quit_called = True
+
+    account = {
+        "name": "work",
+        "provider": "custom",
+        "email": "sender@example.com",
+        "username": "sender@example.com",
+        "password": "secret",
+        "imap": {"host": "imap.example.com", "port": 993, "secure": True},
+        "smtp": {"host": "smtp.example.com", "port": 465, "secure": True},
+    }
+    fake_smtp = FakeSmtp()
+    monkeypatch.setattr(MODULE, "resolve_account", lambda name=None: account)
+    monkeypatch.setattr(MODULE, "connect_smtp", lambda _: fake_smtp)
+
+    result = MODULE.send_email(
+        {
+            "account": "work",
+            "to": ["accepted@example.com", "blocked@example.com"],
+            "subject": "Governance decision",
+            "text": "Decision required.",
+            "dry_run": False,
+            "atomic_recipients": True,
+        }
+    )["structuredContent"]
+
+    assert result["sent"] is False
+    assert result["atomic_recipients"] is True
+    assert result["data_submitted"] is False
+    assert result["refused"] == {"blocked@example.com": [550, "Rejected"]}
+    assert result["rset_response"] == [250, "Reset"]
+    assert "rset" in fake_smtp.calls
+    assert fake_smtp.quit_called is True
+
+
+def test_atomic_recipient_send_submits_data_only_after_all_recipients_accept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeSmtp:
+        does_esmtp = False
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def ehlo_or_helo_if_needed(self) -> None:
+            self.calls.append("ehlo")
+
+        def has_extn(self, _name: str) -> bool:
+            return False
+
+        def mail(self, sender, options):  # noqa: ANN001
+            self.calls.append(("mail", sender, list(options)))
+            return 250, b"Sender ok"
+
+        def rcpt(self, recipient):  # noqa: ANN001
+            self.calls.append(("rcpt", recipient))
+            return 250, b"Recipient ok"
+
+        def data(self, payload):  # noqa: ANN001
+            assert b"Subject: Governance decision" in payload
+            self.calls.append("data")
+            return 250, b"Queued"
+
+        def quit(self) -> None:
+            self.calls.append("quit")
+
+    account = {
+        "name": "work",
+        "provider": "custom",
+        "email": "sender@example.com",
+        "username": "sender@example.com",
+        "password": "secret",
+        "imap": {"host": "imap.example.com", "port": 993, "secure": True},
+        "smtp": {"host": "smtp.example.com", "port": 465, "secure": True},
+    }
+    fake_smtp = FakeSmtp()
+    monkeypatch.setattr(MODULE, "resolve_account", lambda name=None: account)
+    monkeypatch.setattr(MODULE, "connect_smtp", lambda _: fake_smtp)
+
+    result = MODULE.send_email(
+        {
+            "account": "work",
+            "to": ["first@example.com", "second@example.com"],
+            "subject": "Governance decision",
+            "text": "Decision required.",
+            "dry_run": False,
+            "atomic_recipients": True,
+        }
+    )["structuredContent"]
+
+    assert result["sent"] is True
+    assert result["refused"] == {}
+    assert result["data_submitted"] is True
+    assert result["data_response"] == [250, "Queued"]
+    assert fake_smtp.calls.index("data") > fake_smtp.calls.index(
+        ("rcpt", "second@example.com")
+    )
+
+
+def test_atomic_recipient_send_negotiates_smtputf8_for_international_addresses() -> None:
+    class FakeSmtp:
+        does_esmtp = True
+
+        def __init__(self) -> None:
+            self.mail_options = []
+
+        def ehlo_or_helo_if_needed(self) -> None:
+            pass
+
+        def has_extn(self, name: str) -> bool:
+            return name in {"smtputf8", "size"}
+
+        def mail(self, _sender, options):  # noqa: ANN001
+            self.mail_options = list(options)
+            return 250, b"Sender ok"
+
+        def rcpt(self, _recipient):  # noqa: ANN001
+            return 250, b"Recipient ok"
+
+        def data(self, _payload):  # noqa: ANN001
+            return 250, b"Queued"
+
+    message = MODULE.EmailMessage()
+    message["From"] = "sender@example.com"
+    message["To"] = "tést@example.com"
+    message["Subject"] = "International recipient"
+    message.set_content("Decision required.")
+    client = FakeSmtp()
+
+    result = MODULE.send_message_atomic_recipients(
+        client,
+        message,
+        from_addr="sender@example.com",
+        recipients=["tést@example.com"],
+    )
+
+    assert result["sent"] is True
+    assert "SMTPUTF8" in client.mail_options
+    assert "BODY=8BITMIME" in client.mail_options
+    assert any(option.startswith("size=") for option in client.mail_options)
+
+
+def test_atomic_recipient_send_fails_before_mail_without_smtputf8() -> None:
+    class FakeSmtp:
+        does_esmtp = True
+
+        def __init__(self) -> None:
+            self.mail_called = False
+
+        def ehlo_or_helo_if_needed(self) -> None:
+            pass
+
+        def has_extn(self, _name: str) -> bool:
+            return False
+
+        def mail(self, _sender, _options):  # noqa: ANN001
+            self.mail_called = True
+            raise AssertionError("MAIL must not run without required SMTPUTF8")
+
+    message = MODULE.EmailMessage()
+    message["From"] = "sender@example.com"
+    message["To"] = "tést@example.com"
+    message["Subject"] = "International recipient"
+    message.set_content("Decision required.")
+    client = FakeSmtp()
+
+    with pytest.raises(MODULE.smtplib.SMTPNotSupportedError, match="SMTPUTF8"):
+        MODULE.send_message_atomic_recipients(
+            client,
+            message,
+            from_addr="sender@example.com",
+            recipients=["tést@example.com"],
+        )
+
+    assert client.mail_called is False
+
+
+def test_send_email_does_not_lose_data_acceptance_when_quit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeSmtp:
+        def send_message(self, _message, from_addr=None, to_addrs=None):  # noqa: ANN001
+            assert from_addr == "sender@example.com"
+            assert to_addrs == ["recipient@example.com"]
+            return {}
+
+        def quit(self) -> None:
+            raise OSError("connection closed after DATA acceptance")
+
+        def close(self) -> None:
+            pass
+
+    account = {
+        "name": "work",
+        "provider": "custom",
+        "email": "sender@example.com",
+        "username": "sender@example.com",
+        "password": "secret",
+        "imap": {"host": "imap.example.com", "port": 993, "secure": True},
+        "smtp": {"host": "smtp.example.com", "port": 465, "secure": True},
+    }
+    monkeypatch.setattr(MODULE, "resolve_account", lambda name=None: account)
+    monkeypatch.setattr(MODULE, "connect_smtp", lambda _: FakeSmtp())
+
+    result = MODULE.send_email(
+        {
+            "account": "work",
+            "to": ["recipient@example.com"],
+            "subject": "Accepted message",
+            "text": "Decision required.",
+            "dry_run": False,
+        }
+    )["structuredContent"]
+
+    assert result["sent"] is True
+    assert result["data_submitted"] is True
 
 
 def test_create_draft_returns_effective_message_id_and_preview(monkeypatch: pytest.MonkeyPatch) -> None:

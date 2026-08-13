@@ -80,19 +80,30 @@ def test_state_transition_and_evidence_are_one_transaction(tmp_path):
     )
     store.transition(
         key,
-        "WAITING_AGENT",
-        (proof("adapter_selection"),),
+        "DECISION_PENDING",
+        (proof("governance_decision_request"),),
         changed_at="2026-07-16T08:03:00Z",
-        detail="approved adapter selected",
+        detail="governance decision presented",
+    )
+    store.transition(
+        key,
+        "WAITING_AGENT",
+        (proof("governance_decision_receipt"),),
+        changed_at="2026-07-16T08:04:00Z",
+        detail="frozen required roles approved",
     )
 
     stored = store.get_event(key)
     assert stored is not None
     assert stored.state == "WAITING_AGENT"
-    assert [item.kind for item in store.list_evidence(key)] == ["adapter_selection"]
+    assert [item.kind for item in store.list_evidence(key)] == [
+        "governance_decision_request",
+        "governance_decision_receipt",
+    ]
     assert [item.to_state for item in store.list_transitions(key)] == [
         "RECEIVED",
         "VALIDATED",
+        "DECISION_PENDING",
         "WAITING_AGENT",
     ]
 

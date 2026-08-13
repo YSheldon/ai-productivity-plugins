@@ -14,6 +14,7 @@ sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 from release_approval_protocol import (
     ProtocolError,
     build_request_digest,
+    canonical_json,
     prepare_page_request,
     validate_release_request,
 )
@@ -29,6 +30,35 @@ def _payload() -> dict[str, object]:
     return payload
 
 
+def _governance_payload() -> dict[str, object]:
+    payload = _payload()
+    payload.update(
+        {
+            "authority_scope": "RD_FLYWHEEL_GOVERNANCE",
+            "task": "cloud_scan.real_api",
+            "module": "submission-gate",
+            "source_ref": "capability-17",
+            "checkpoint_digest": "a" * 64,
+            "manifest_r_digest": "sha256:" + "2" * 64,
+            "visual_companion": {
+                "html_sha256": "sha256:" + "2" * 64,
+                "authority": "DESIGN_CONSENT_ONLY",
+            },
+            "governance_context": {
+                "authority_boundary": "DESIGN_CONSENT_ONLY",
+                "missing_capability": "cloud_scan.real_api",
+                "originating_plugin": "submission-gate",
+                "originating_event_id": "capability-17",
+                "checkpoint_digest": "a" * 64,
+                "required_evidence": ["tests", "security_review", "release_readback"],
+                "visual_companion_html_sha256": "sha256:" + "2" * 64,
+            },
+        }
+    )
+    payload["request_digest"] = build_request_digest(payload)
+    return payload
+
+
 def test_request_digest_is_deterministic_and_validation_returns_frozen_request() -> None:
     payload = _payload()
     validated = validate_release_request(
@@ -39,9 +69,12 @@ def test_request_digest_is_deterministic_and_validation_returns_frozen_request()
     )
 
     assert validated.request_digest == build_request_digest(payload)
+    assert validated.authority_scope == "PRODUCTION_RELEASE"
     assert validated.required_roles == ("release-manager", "security-reviewer")
     assert validated.installed_role_id == "release-manager"
     assert validated.installed_role_email == "release-manager@example.com"
+    assert validated.governance_context is None
+    assert validated.wire_payload_json == canonical_json(payload)
 
     with pytest.raises(Exception):
         validated.round_id = 2  # type: ignore[misc]
@@ -51,6 +84,8 @@ def test_request_digest_is_deterministic_and_validation_returns_frozen_request()
     ("mutator", "message"),
     [
         (lambda payload: payload.__setitem__("contract", "ReleaseAuthorizationRequest/v2"), "exact"),
+        (lambda payload: payload.pop("authority_scope"), "authority_scope"),
+        (lambda payload: payload.__setitem__("authority_scope", "UNSCOPED"), "authority_scope"),
         (lambda payload: payload.__setitem__("round_id", 0), "positive round"),
         (lambda payload: payload.__setitem__("original_message_id", "invalid@example.com"), "RFC Message-ID"),
         (lambda payload: payload.__setitem__("request_digest", "sha256:" + "0" * 64), "request digest"),
@@ -122,3 +157,75 @@ def test_invalid_request_fails_before_page_creation() -> None:
         )
 
     assert called["value"] is False
+
+
+def test_governance_request_freezes_visual_companion_context_and_wire_payload() -> None:
+    payload = _governance_payload()
+
+    validated = validate_release_request(
+        payload,
+        installed_role_id="release-manager",
+        installed_role_email="release-manager@example.com",
+        now=datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert validated.governance_context is not None
+    assert validated.governance_context.missing_capability == "cloud_scan.real_api"
+    assert validated.governance_context.required_evidence == (
+        "tests",
+        "security_review",
+        "release_readback",
+    )
+    assert json.loads(validated.wire_payload_json) == payload
+
+
+@pytest.mark.parametrize(
+    ("mutator", "message"),
+    [
+        (lambda payload: payload.pop("governance_context"), "governance_context is required"),
+        (
+            lambda payload: payload["governance_context"].__setitem__(  # type: ignore[union-attr]
+                "missing_capability", "different.capability"
+            ),
+            "binding mismatch",
+        ),
+        (
+            lambda payload: payload["governance_context"].__setitem__(  # type: ignore[union-attr]
+                "required_evidence", ["tests", "tests"]
+            ),
+            "duplicates",
+        ),
+        (
+            lambda payload: payload["visual_companion"].__setitem__(  # type: ignore[union-attr]
+                "authority", "PRODUCTION_RELEASE"
+            ),
+            "binding mismatch",
+        ),
+    ],
+)
+def test_governance_context_drift_fails_closed(mutator, message: str) -> None:
+    payload = _governance_payload()
+    mutator(payload)
+    payload["request_digest"] = build_request_digest(payload)
+
+    with pytest.raises(ProtocolError, match=message):
+        validate_release_request(
+            payload,
+            installed_role_id="release-manager",
+            installed_role_email="release-manager@example.com",
+            now=datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_production_request_cannot_smuggle_governance_context() -> None:
+    payload = _payload()
+    payload["governance_context"] = _governance_payload()["governance_context"]
+    payload["request_digest"] = build_request_digest(payload)
+
+    with pytest.raises(ProtocolError, match="only valid"):
+        validate_release_request(
+            payload,
+            installed_role_id="release-manager",
+            installed_role_email="release-manager@example.com",
+            now=datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc),
+        )

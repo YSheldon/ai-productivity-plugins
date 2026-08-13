@@ -6,6 +6,13 @@ Use this checklist to confirm the accepted architecture is in place and that the
 
 This checklist does not claim a production deployment.
 
+## Implementation Evidence (2026-08-13)
+
+- GitHub PR #16 head add98b5bf026f3fec705b1bee78d339072c7ffe6 contains the governed approval-chain changes plus the protected GitLab submission-gate adapter. The rebased Windows local suite passed with 1129 passed, 1 skipped, and 50 subtests passed; the only skip is the upstream POSIX permission-bit test on Windows.
+- GitLab MR !37 candidate 3944390abedf3f9debeaaf3ca90600c0e781f719 contains the production submission runtime, signed configuration staging/SYSTEM broker, protected deployment packaging, and pipeline/job-unique evidence paths. Its local suite passed 296 tests, OK, with 3 skipped symlink-privilege cases; no submission-gate, configuration, cloud-scan, deployment, or live-launcher test was skipped.
+- The GitLab adapter now binds the protected-ref head SHA, triggered pipeline, exact successful job, same-origin HTTPS references, and the per-pipeline/per-job result artifact. It rejects redirects, stale fixed paths, commit/ref/job drift, and malformed Manifest-S evidence.
+- These results prove code and contract behavior only. PR/MR merge, protected Runner installation, real external scans, authorization, deployment/readback, report delivery/readback, and rollback rehearsal remain separate evidence gates.
+
 ## Verified Evidence (2026-08-12)
 
 - GitHub plugin marketplace baseline `main` is `cc7300e90f69bf17dd23409698c3f65de522aaa6`. The production-audit topic worktree passed the complete configured local suite with `1050 passed` and `45 subtests passed`; this is implementation evidence, not a production deployment receipt.

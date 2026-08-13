@@ -20,7 +20,7 @@ from role_snapshot import RoleRecord, RoleSnapshot, canonical_json, fetch_role_s
 from verification_receipt import load_audit_key, verify_verification_receipt
 from verifier_config import StaticRoleSourceConfig, VerifierConfig
 from verifier_lock import RunOnceLock
-from verifier_mail import MailGateway
+from verifier_mail import MailGateway, MailGatewayError
 from verifier_scheduler import VerifierScheduler
 from verifier_service import VerifierService
 from verifier_store import StoredReceipt, VerifierStore
@@ -32,6 +32,7 @@ LockFactory = Callable[..., Any]
 
 _REQUEST_HEADER_MAP = {
     "contract": "X-RD-Contract",
+    "authority_scope": "X-RD-Authority-Scope",
     "event_id": "X-RD-Event-Id",
     "round_id": "X-RD-Round-Id",
     "task": "X-RD-Task",
@@ -44,6 +45,7 @@ _REQUEST_HEADER_MAP = {
     "required_roles": "X-RD-Required-Roles",
     "expires_at": "X-RD-Expires-At",
 }
+_AUTHORITY_SCOPES = frozenset(("PRODUCTION_RELEASE", "RD_FLYWHEEL_GOVERNANCE"))
 _REQUEST_BEGIN_MARKER = "-----BEGIN RELEASE APPROVAL REQUEST-----"
 _REQUEST_END_MARKER = "-----END RELEASE APPROVAL REQUEST-----"
 _MESSAGE_ID_PATTERN = re.compile(r"^<[^<>\s@]+@[^<>\s@]+>$")
@@ -166,6 +168,27 @@ class VerifierController:
             if latest_capability_event is not None:
                 payload["capability_event"] = latest_capability_event
             return payload
+        except (VerifierControllerError, MailGatewayError) as exc:
+            code = exc.code if isinstance(exc, VerifierControllerError) else "MAIL_GATEWAY_ERROR"
+            capability_event = {
+                "event_type": "CAPABILITY_BLOCKED",
+                "reason": str(exc),
+                "code": code,
+                "replayable": True,
+                "created_at": self._isoformat(self._now()),
+            }
+            self._store().append_audit_event(
+                "controller-capability-blocked",
+                capability_event,
+                created_at=capability_event["created_at"],
+            )
+            return {
+                "status": "CAPABILITY_BLOCKED",
+                "processed": {"requests": 0, "validated": 0, "quarantined": 0},
+                "reminders": [],
+                "events": [],
+                "capability_event": capability_event,
+            }
         finally:
             lock.release()
 
@@ -417,12 +440,25 @@ class VerifierController:
             )
             status = "CAPABILITY_BLOCKED"
         elif reconcile.receipt["status"] == "APPROVAL_VERIFIED":
-            handoff, capability_event = self._handoff_verified_receipt(
-                record,
-                receipt=reconcile.receipt,
-                receipt_path=receipt_path,
-            )
-            status = "ready" if handoff["status"] == "PRE_RELEASE_REQUESTED" else "CAPABILITY_BLOCKED"
+            if record["request_binding"]["authority_scope"] == "RD_FLYWHEEL_GOVERNANCE":
+                handoff = {
+                    "status": "GOVERNANCE_VERIFIED",
+                    "authority_scope": "RD_FLYWHEEL_GOVERNANCE",
+                    "receipt_id": reconcile.receipt["receipt_id"],
+                    "consumed": False,
+                }
+                status = "ready"
+            else:
+                handoff, capability_event = self._handoff_verified_receipt(
+                    record,
+                    receipt=reconcile.receipt,
+                    receipt_path=receipt_path,
+                )
+                status = (
+                    "ready"
+                    if handoff["status"] == "PRE_RELEASE_REQUESTED"
+                    else "CAPABILITY_BLOCKED"
+                )
         else:
             reminders = [self._jsonify(item) for item in self._send_due_reminders(record, roles)]
             status = "ready"
@@ -446,6 +482,10 @@ class VerifierController:
         receipt: dict[str, Any],
         receipt_path: str,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        if record["request_binding"].get("authority_scope") != "PRODUCTION_RELEASE":
+            reason = "non-production approval evidence cannot request pre-release"
+            event = self._append_capability_event(record, reason, replayable=False)
+            return ({"status": "CAPABILITY_BLOCKED", "reason": reason}, event)
         stored = self._store().get_receipt(str(receipt["receipt_id"]))
         if stored is not None and stored.handoff_consumed_at is not None:
             return (
@@ -772,8 +812,9 @@ class VerifierController:
             created_at = self._normalized_contract_timestamp(created_at, "requested_at")
         else:
             created_at = self._isoformat(self._message_datetime(message))
-        return {
+        binding = {
             "contract": payload["contract"],
+            "authority_scope": payload["authority_scope"],
             "event_id": payload["event_id"],
             "round_id": payload["round_id"],
             "task": payload["task"],
@@ -792,6 +833,9 @@ class VerifierController:
             "idempotency_key": payload["idempotency_key"],
             "created_at": created_at,
         }
+        if payload.get("governance_context") is not None:
+            binding["governance_context"] = dict(payload["governance_context"])
+        return binding
 
     def _extract_request_payload(self, message: EmailMessage) -> dict[str, Any]:
         body = self._message_text(message)
@@ -818,6 +862,7 @@ class VerifierController:
 
         required_strings = (
             "contract",
+            "authority_scope",
             "event_id",
             "task",
             "module",
@@ -837,6 +882,10 @@ class VerifierController:
                     "INVALID_REQUEST", f"release request field {key} is required"
                 )
             payload[key] = str(payload[key]).strip()
+        if payload["authority_scope"] not in _AUTHORITY_SCOPES:
+            raise VerifierControllerError(
+                "INVALID_REQUEST", "release request authority_scope is invalid"
+            )
         round_id = payload.get("round_id")
         if not isinstance(round_id, int) or isinstance(round_id, bool) or round_id <= 0:
             raise VerifierControllerError(
@@ -857,16 +906,6 @@ class VerifierController:
             raise VerifierControllerError(
                 "INVALID_REQUEST", "release request combined manifest digest is invalid"
             )
-        expected_request_digest = "sha256:" + hashlib.sha256(
-            canonical_json(
-                {key: value for key, value in payload.items() if key != "request_digest"}
-            ).encode("utf-8")
-        ).hexdigest()
-        if payload["request_digest"] != expected_request_digest:
-            raise VerifierControllerError(
-                "INVALID_REQUEST", "release request digest does not match the machine block"
-            )
-
         required_roles = payload.get("required_roles")
         if not isinstance(required_roles, list) or not required_roles:
             raise VerifierControllerError(
@@ -903,7 +942,104 @@ class VerifierController:
         payload["expires_at"] = self._normalized_contract_timestamp(
             payload["expires_at"], "expires_at"
         )
+        self._validate_governance_context_payload(payload)
+        expected_request_digest = "sha256:" + hashlib.sha256(
+            canonical_json(
+                {key: value for key, value in payload.items() if key != "request_digest"}
+            ).encode("utf-8")
+        ).hexdigest()
+        if payload["request_digest"] != expected_request_digest:
+            raise VerifierControllerError(
+                "INVALID_REQUEST", "release request digest does not match the machine block"
+            )
         return payload
+
+    def _validate_governance_context_payload(self, payload: dict[str, Any]) -> None:
+        context = payload.get("governance_context")
+        if payload["authority_scope"] == "PRODUCTION_RELEASE":
+            if "governance_context" in payload:
+                raise VerifierControllerError(
+                    "INVALID_REQUEST",
+                    "production release request must not carry a governance context",
+                )
+            return
+        if not isinstance(context, dict):
+            raise VerifierControllerError(
+                "INVALID_REQUEST", "governance request is missing its frozen context"
+            )
+        expected_keys = {
+            "authority_boundary",
+            "missing_capability",
+            "originating_plugin",
+            "originating_event_id",
+            "checkpoint_digest",
+            "required_evidence",
+            "visual_companion_html_sha256",
+        }
+        if set(context) != expected_keys:
+            raise VerifierControllerError(
+                "INVALID_REQUEST", "governance context fields are invalid"
+            )
+        for field in (
+            "authority_boundary",
+            "missing_capability",
+            "originating_plugin",
+            "originating_event_id",
+            "checkpoint_digest",
+            "visual_companion_html_sha256",
+        ):
+            value = context.get(field)
+            if not isinstance(value, str) or not value.strip() or value != value.strip():
+                raise VerifierControllerError(
+                    "INVALID_REQUEST", f"governance context field {field} is invalid"
+                )
+        if context["authority_boundary"] != "DESIGN_CONSENT_ONLY":
+            raise VerifierControllerError(
+                "INVALID_REQUEST", "governance context authority boundary is invalid"
+            )
+        if not _RAW_SHA256_PATTERN.fullmatch(context["checkpoint_digest"]):
+            raise VerifierControllerError(
+                "INVALID_REQUEST", "governance context checkpoint digest is invalid"
+            )
+        if not _SHA256_PATTERN.fullmatch(context["visual_companion_html_sha256"]):
+            raise VerifierControllerError(
+                "INVALID_REQUEST", "governance Visual Companion digest is invalid"
+            )
+        required_evidence = context.get("required_evidence")
+        if not isinstance(required_evidence, list) or not required_evidence or len(required_evidence) > 64:
+            raise VerifierControllerError(
+                "INVALID_REQUEST", "governance required evidence list is invalid"
+            )
+        normalized_evidence = [
+            value.strip()
+            for value in required_evidence
+            if isinstance(value, str) and value.strip()
+        ]
+        if (
+            normalized_evidence != required_evidence
+            or len(set(normalized_evidence)) != len(normalized_evidence)
+        ):
+            raise VerifierControllerError(
+                "INVALID_REQUEST", "governance required evidence is invalid or duplicated"
+            )
+        visual = payload.get("visual_companion")
+        if not isinstance(visual, dict) or set(visual) != {"html_sha256", "authority"}:
+            raise VerifierControllerError(
+                "INVALID_REQUEST", "governance Visual Companion binding is invalid"
+            )
+        bindings = (
+            (context["missing_capability"], payload["task"]),
+            (context["originating_plugin"], payload["module"]),
+            (context["originating_event_id"], payload.get("source_ref")),
+            (context["checkpoint_digest"], payload.get("checkpoint_digest")),
+            (context["visual_companion_html_sha256"], visual.get("html_sha256")),
+            (context["visual_companion_html_sha256"], payload["manifest_r_digest"]),
+            (context["authority_boundary"], visual.get("authority")),
+        )
+        if any(actual != expected for actual, expected in bindings):
+            raise VerifierControllerError(
+                "INVALID_REQUEST", "governance context binding drifted"
+            )
 
     def _message_text(self, message: EmailMessage) -> str:
         if message.is_multipart():
@@ -932,6 +1068,9 @@ class VerifierController:
             "【发布申请】" in subject
             or "[发布申请]" in subject
             or "[release approval]" in subject.lower()
+            or "【研发飞轮决策】" in subject
+            or "[研发飞轮决策]" in subject
+            or "[rd flywheel governance]" in subject.lower()
         )
         return (
             canonical_subject
@@ -993,31 +1132,44 @@ class VerifierController:
         if self._default_mail_scan_cache is not None:
             return self._default_mail_scan_cache
         since = (self._now() - timedelta(days=7)).date().isoformat()
-        result = self._mail().search_messages(
-            {
-                "account": self.config.verifier_mail_account.profile,
-                "mailbox": self.config.mailbox,
-                "query": {"subject": "发布申请", "since": since},
-                "limit": 50,
-                "scan_limit": 500,
-            }
-        )
-        summaries = result.get("messages")
-        if not isinstance(summaries, list):
-            raise VerifierControllerError(
-                "MAIL_READBACK_INVALID", "mail search did not return a messages array"
+        summaries: list[Mapping[str, Any]] = []
+        seen_uids: set[str] = set()
+        for subject in ("发布申请", "研发飞轮决策"):
+            result = self._mail().search_messages(
+                {
+                    "account": self.config.verifier_mail_account.profile,
+                    "mailbox": self.config.mailbox,
+                    "query": {"subject": subject, "since": since},
+                    "limit": 50,
+                    "scan_limit": 500,
+                }
             )
+            subject_summaries = result.get("messages")
+            if not isinstance(subject_summaries, list):
+                raise VerifierControllerError(
+                    "MAIL_READBACK_INVALID", "mail search did not return a messages array"
+                )
+            if len(subject_summaries) >= 50:
+                raise VerifierControllerError(
+                    "MAIL_READBACK_INCOMPLETE",
+                    "mail search reached its result limit; completeness is unproven",
+                )
+            for summary in subject_summaries:
+                if not isinstance(summary, Mapping):
+                    raise VerifierControllerError(
+                        "MAIL_READBACK_INVALID", "mail search returned an invalid summary"
+                    )
+                uid = str(summary.get("uid") or "").strip()
+                if not uid:
+                    raise VerifierControllerError(
+                        "MAIL_READBACK_INVALID", "mail search summary is missing uid"
+                    )
+                if uid not in seen_uids:
+                    seen_uids.add(uid)
+                    summaries.append(summary)
         messages: list[EmailMessage] = []
         for summary in summaries:
-            if not isinstance(summary, Mapping):
-                raise VerifierControllerError(
-                    "MAIL_READBACK_INVALID", "mail search returned an invalid summary"
-                )
             uid = str(summary.get("uid") or "").strip()
-            if not uid:
-                raise VerifierControllerError(
-                    "MAIL_READBACK_INVALID", "mail search summary is missing uid"
-                )
             payload = self._mail().read_message(
                 {
                     "account": self.config.verifier_mail_account.profile,
@@ -1025,6 +1177,21 @@ class VerifierController:
                     "uid": uid,
                 }
             )
+            if not isinstance(payload, Mapping):
+                raise VerifierControllerError(
+                    "MAIL_READBACK_INVALID", "mail readback did not return an object"
+                )
+            if str(payload.get("uid") or "").strip() != uid:
+                raise VerifierControllerError(
+                    "MAIL_READBACK_INVALID",
+                    "mail readback uid drifted from the search summary",
+                )
+            summary_message_id = str(summary.get("message_id") or "").strip()
+            if summary_message_id and str(payload.get("message_id") or "").strip() != summary_message_id:
+                raise VerifierControllerError(
+                    "MAIL_READBACK_INVALID",
+                    "mail readback Message-ID drifted from the search summary",
+                )
             messages.append(self._message_from_readback(payload))
         self._default_mail_scan_cache = tuple(messages)
         return self._default_mail_scan_cache

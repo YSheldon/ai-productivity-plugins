@@ -12,6 +12,7 @@ from role_snapshot import canonical_json
 
 
 _BINDING_FIELDS = (
+    "authority_scope",
     "event_id",
     "round_id",
     "manifest_s_digest",
@@ -22,6 +23,7 @@ _BINDING_FIELDS = (
     "expires_at",
 )
 _VALID_DECISIONS = frozenset(("APPROVE", "HOLD", "REJECT"))
+_AUTHORITY_SCOPES = frozenset(("PRODUCTION_RELEASE", "RD_FLYWHEEL_GOVERNANCE"))
 
 
 class ReceiptError(RuntimeError):
@@ -230,6 +232,8 @@ def _normalized_binding(payload: Mapping[str, Any]) -> dict[str, Any]:
             raise ReceiptError(f"{field} is required for verification receipt binding.")
         else:
             binding[field] = value.strip()
+    if binding["authority_scope"] not in _AUTHORITY_SCOPES:
+        raise ReceiptError("authority_scope is invalid for verification receipt binding.")
     _parse_datetime(binding["expires_at"], "expires_at")
     return binding
 

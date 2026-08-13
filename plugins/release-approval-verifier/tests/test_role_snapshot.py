@@ -42,6 +42,24 @@ def test_parse_role_snapshot_scopes_to_the_requested_heading_and_hashes_sorted_r
     assert len(snapshot.digest) == 71
 
 
+def test_role_snapshot_digest_binds_document_identity() -> None:
+    markdown = (FIXTURE_ROOT / "role-document.md").read_text(encoding="utf-8")
+
+    first = parse_role_snapshot_markdown(
+        markdown,
+        document_url="https://open.feishu.cn/docx/release-role-doc-a",
+        heading="## 审批角色",
+    )
+    second = parse_role_snapshot_markdown(
+        markdown,
+        document_url="https://open.feishu.cn/docx/release-role-doc-b",
+        heading="## 审批角色",
+    )
+
+    assert first.roles == second.roles
+    assert first.digest != second.digest
+
+
 def test_fetch_role_snapshot_uses_lark_cli_argument_arrays() -> None:
     markdown = (FIXTURE_ROOT / "role-document.md").read_text(encoding="utf-8")
     observed: dict[str, object] = {}

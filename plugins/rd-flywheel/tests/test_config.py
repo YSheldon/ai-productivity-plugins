@@ -18,7 +18,7 @@ from rd_flywheel_config import (  # noqa: E402
 
 def valid_config(tmp_path: Path) -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "governance_inbox": str(tmp_path / "inbox"),
         "state_dir": str(tmp_path / "state"),
         "poll_minutes": 60,
@@ -41,6 +41,8 @@ def valid_config(tmp_path: Path) -> dict:
         },
         "decision_role_source": None,
         "dependency_lock": str(tmp_path / "dependency-lock.json"),
+        "dependency_lock_sha256": "0" * 64,
+        "decision_verifier_config": str(tmp_path / "verifier-config.json"),
     }
 
 
@@ -52,7 +54,7 @@ def write_config(tmp_path: Path, payload: dict) -> Path:
 
 def test_loads_one_versioned_config_for_all_surfaces(tmp_path):
     config = load_config(write_config(tmp_path, valid_config(tmp_path)))
-    assert config.schema_version == 1
+    assert config.schema_version == 2
     assert config.poll_minutes == 60
     assert config.agent_profile == "approved-agent"
     assert config.audit_dir == (tmp_path / "state" / "audit").resolve()
@@ -119,6 +121,23 @@ def test_mcp_cannot_override_config_per_call():
 
 def test_unknown_schema_version_fails_closed(tmp_path):
     payload = valid_config(tmp_path)
-    payload["schema_version"] = 2
+    payload["schema_version"] = 3
     with pytest.raises(ConfigError, match="schema_version"):
         load_config(write_config(tmp_path, payload))
+
+
+def test_feishu_decision_role_source_is_a_structured_live_contract(tmp_path):
+    payload = valid_config(tmp_path)
+    payload["decision_role_source"] = {
+        "type": "feishu",
+        "document_url": "https://example.feishu.cn/docx/role-source",
+        "heading": "## 决策角色",
+    }
+
+    config = load_config(write_config(tmp_path, payload))
+
+    assert config.decision_role_source.kind == "feishu"
+    assert config.decision_role_source.document_url == (
+        "https://example.feishu.cn/docx/role-source"
+    )
+    assert config.decision_role_source.heading == "## 决策角色"

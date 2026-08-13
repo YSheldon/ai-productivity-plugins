@@ -18,6 +18,7 @@ import pytest
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PLUGIN_ROOT / "src"
 MODULE_PATH = SRC_ROOT / "verifier_controller.py"
+MAIL_MODULE_PATH = PLUGIN_ROOT.parent / "imap-smtp-mail" / "src" / "imap_smtp_mail_mcp.py"
 sys.path.insert(0, str(SRC_ROOT))
 
 from lark_audit import AuditWriteResult
@@ -39,6 +40,20 @@ def _load_module():
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules.setdefault("verifier_controller", module)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_mail_module():
+    module_name = "imap_smtp_mail_mcp_cross_plugin_test"
+    existing = sys.modules.get(module_name)
+    if existing is not None:
+        return existing
+    assert MAIL_MODULE_PATH.is_file(), f"missing mail module: {MAIL_MODULE_PATH}"
+    spec = importlib.util.spec_from_file_location(module_name, MAIL_MODULE_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -103,6 +118,7 @@ def _request_payload(
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "contract": "ReleaseAuthorizationRequest/v1",
+        "authority_scope": "PRODUCTION_RELEASE",
         "schema": "ReleaseAuthorizationRequest/v1",
         "event_id": event_id,
         "round_id": round_id,
@@ -156,6 +172,7 @@ def _request_message(
     message["Date"] = created_at
     message["Message-ID"] = message_id
     message["X-RD-Contract"] = str(payload["contract"])
+    message["X-RD-Authority-Scope"] = str(payload["authority_scope"])
     message["X-RD-Event-Id"] = event_id
     message["X-RD-Round-Id"] = str(round_id)
     message["X-RD-Task"] = str(payload["task"])
@@ -212,20 +229,6 @@ def _readback_payload(message: EmailMessage, uid: str) -> dict[str, Any]:
             if address
         ]
 
-    workflow_map = {
-        "contract": "X-RD-Contract",
-        "event_id": "X-RD-Event-Id",
-        "round_id": "X-RD-Round-Id",
-        "task": "X-RD-Task",
-        "module": "X-RD-Module",
-        "manifest_s_digest": "X-RD-Manifest-S-Digest",
-        "manifest_r_digest": "X-RD-Manifest-R-Digest",
-        "manifest_digest": "X-RD-Manifest-Digest",
-        "request_digest": "X-RD-Request-Digest",
-        "role_snapshot_digest": "X-RD-Role-Snapshot-Digest",
-        "required_roles": "X-RD-Required-Roles",
-        "expires_at": "X-RD-Expires-At",
-    }
     return_path = email.utils.parseaddr(str(message.get("Return-Path", "")))[1]
     references = [
         value
@@ -253,11 +256,9 @@ def _readback_payload(message: EmailMessage, uid: str) -> dict[str, Any]:
                 bytes(message)
             ).hexdigest(),
         },
-        "release_workflow_headers": {
-            key: str(message.get(header, "")).strip()
-            for key, header in workflow_map.items()
-            if str(message.get(header, "")).strip()
-        },
+        "release_workflow_headers": _load_mail_module().release_workflow_headers(
+            message
+        ),
     }
 
 @dataclass
@@ -324,6 +325,19 @@ class FakeReadbackMailGateway(FakeMailGateway):
     def read_message(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.read_payloads.append(dict(payload))
         return dict(self.payloads[str(payload["uid"])])
+
+
+class TruncatedReadbackMailGateway(FakeReadbackMailGateway):
+    def search_messages(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.search_payloads.append(dict(payload))
+        return {"messages": [{"uid": str(index)} for index in range(1, 51)]}
+
+
+class DriftedUidReadbackMailGateway(FakeReadbackMailGateway):
+    def read_message(self, payload: dict[str, Any]) -> dict[str, Any]:
+        result = super().read_message(payload)
+        result["uid"] = "different-uid"
+        return result
 
 class FakeAuditAdapter:
     def __init__(self, *, required: bool = True) -> None:
@@ -562,11 +576,14 @@ def test_default_mail_scan_reads_once_and_preserves_authenticated_evidence(
     )
 
     result = controller.run_once()
+    event = controller.get_event(event_id="evt-runtime", round_id=1)
 
     assert result["processed"] == {"requests": 1, "validated": 1, "quarantined": 0}
-    assert len(gateway.search_payloads) == 1
+    assert event["request"]["authority_scope"] == "PRODUCTION_RELEASE"
+    assert len(gateway.search_payloads) == 2
     assert gateway.search_payloads[0]["account"] == "mail-primary"
     assert gateway.search_payloads[0]["query"]["subject"] == "发布申请"
+    assert gateway.search_payloads[1]["query"]["subject"] == "研发飞轮决策"
     assert len(gateway.read_payloads) == 2
     assert [item["role_id"] for item in result["reminders"]] == ["security-reviewer"]
     reminder = gateway.sent[0]
@@ -575,3 +592,44 @@ def test_default_mail_scan_reads_once_and_preserves_authenticated_evidence(
     assert reminder["in_reply_to"] == "<request-evt-runtime@example.com>"
     assert reminder["message_id"].startswith("<release-approval-reminder-")
     assert result["reminders"][0]["accepted"] is True
+
+
+@pytest.mark.parametrize(
+    ("gateway_type", "code"),
+    [
+        (TruncatedReadbackMailGateway, "MAIL_READBACK_INCOMPLETE"),
+        (DriftedUidReadbackMailGateway, "MAIL_READBACK_INVALID"),
+    ],
+)
+def test_default_mail_scan_ambiguity_returns_audited_capability_block(
+    tmp_path: Path,
+    gateway_type,
+    code: str,
+) -> None:
+    module = _load_module()
+    config = _config(tmp_path)
+    config.dependency_lock.write_text("{}\n", encoding="utf-8")
+    gateway = gateway_type([_request_message()])
+    controller = module.VerifierController(
+        config=config,
+        config_path=tmp_path / "config.json",
+        now_fn=lambda: datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc),
+        audit_key=b"a" * 32,
+        role_snapshot_fetcher=lambda: _snapshot(),
+        mail_gateway=gateway,
+        audit_adapter=FakeAuditAdapter(),
+        scheduler=FakeScheduler(),
+        lock_factory=lambda *_args, **_kwargs: FakeLock(_AcquireResult("acquired")),
+        product_gate_adapter=MissingGateAdapter(),
+    )
+
+    result = controller.run_once()
+    audit = controller._store().connection.execute(  # noqa: SLF001
+        "SELECT event_type, payload_json FROM audit_events ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+    assert result["status"] == "CAPABILITY_BLOCKED"
+    assert result["capability_event"]["code"] == code
+    assert result["processed"] == {"requests": 0, "validated": 0, "quarantined": 0}
+    assert audit["event_type"] == "controller-capability-blocked"
+    assert json.loads(audit["payload_json"])["code"] == code

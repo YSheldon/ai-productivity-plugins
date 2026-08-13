@@ -29,4 +29,6 @@ Mail authentication is fail-closed. Only `Authentication-Results` issued by a co
 
 `APPROVAL_VERIFIED` permits only the `PRE_RELEASE_REQUESTED` handoff. It never means `RELEASE_AUTHORIZED`, credential issuance, or deployment completion.
 
+For `RD_FLYWHEEL_GOVERNANCE`, the verifier independently revalidates the frozen governance context, role snapshot, Visual Companion digest, originating event/checkpoint, completion-evidence list, and exact `DESIGN_CONSENT_ONLY` boundary. A governance receipt is returned to `rd-flywheel` only and is never handed to the product release gate.
+
 Feishu role document parsing is required in production. Static roles are test-only.

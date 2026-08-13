@@ -103,7 +103,11 @@ def parse_role_snapshot_markdown(markdown: str, *, document_url: str, heading: s
     section_lines = _extract_heading_section(markdown, heading)
     table_lines = _extract_first_table(section_lines)
     roles = _parse_role_table(table_lines)
-    digest = _build_snapshot_digest(roles)
+    digest = _build_snapshot_digest(
+        document_url=document_url,
+        heading=heading.strip(),
+        roles=roles,
+    )
     return RoleSnapshot(document_url=document_url, heading=heading, roles=roles, digest=digest)
 
 
@@ -200,7 +204,12 @@ def _parse_bool(value: str, *, field_name: str) -> bool:
     raise CapabilityBlockedError(f"CAPABILITY_BLOCKED: {field_name} must be a boolean table cell.")
 
 
-def _build_snapshot_digest(roles: Sequence[RoleRecord]) -> str:
+def _build_snapshot_digest(
+    *,
+    document_url: str,
+    heading: str,
+    roles: Sequence[RoleRecord],
+) -> str:
     canonical_roles = [
         {
             "email": role.email,
@@ -210,5 +219,11 @@ def _build_snapshot_digest(roles: Sequence[RoleRecord]) -> str:
         }
         for role in roles
     ]
-    payload = canonical_json(canonical_roles).encode("utf-8")
+    payload = canonical_json(
+        {
+            "document_url": document_url,
+            "heading": heading,
+            "roles": canonical_roles,
+        }
+    ).encode("utf-8")
     return "sha256:" + hashlib.sha256(payload).hexdigest()

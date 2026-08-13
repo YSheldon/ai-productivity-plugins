@@ -9,7 +9,11 @@ _SOURCE_ROOT = Path(__file__).resolve().parent
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from rd_flywheel_adapters import AdapterError, load_runtime_adapters
+from rd_flywheel_adapters import (
+    AdapterError,
+    load_governance_adapters,
+    load_runtime_adapters,
+)
 from rd_flywheel_config import (
     ConfigError,
     default_config_path,
@@ -24,17 +28,21 @@ from rd_flywheel_store import AuditTamperError, StoreError
 
 
 SERVER_NAME = "rd-flywheel"
-SERVER_VERSION = "0.2.3"
+SERVER_VERSION = "0.2.4"
 PROTOCOL_VERSION = "2025-06-18"
 
 
 def _default_controller_factory(config_path: Path) -> RDFlywheelController:
     config = load_config(config_path)
     agents, verifiers = load_runtime_adapters(config)
+    role_fetcher, presenter, decision_verifier = load_governance_adapters(config)
     return RDFlywheelController(
         config,
         agent_adapters=agents,
         evidence_verifiers=verifiers,
+        role_snapshot_fetcher=role_fetcher,
+        decision_presenter=presenter,
+        decision_verifier=decision_verifier,
     )
 
 
@@ -75,6 +83,14 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "governance_inbox": {"type": "string"},
                 "state_dir": {"type": "string"},
                 "agent_profile": {"type": "string"},
+                "mail_profile": {"type": "string"},
+                "governance_group": {"type": "string"},
+                "role_document_url": {"type": "string"},
+                "role_heading": {
+                    "type": "string",
+                    "default": "## 决策角色",
+                },
+                "decision_verifier_config": {"type": "string"},
                 "scheduler_mode": {
                     "type": "string",
                     "enum": ["auto", "windows", "systemd", "cron"],
@@ -167,6 +183,11 @@ def handle_tool_call(
             governance_inbox=args.get("governance_inbox"),
             state_dir=args.get("state_dir"),
             agent_profile=args.get("agent_profile"),
+            mail_profile=args.get("mail_profile"),
+            governance_group=args.get("governance_group"),
+            role_document_url=args.get("role_document_url"),
+            role_heading=str(args.get("role_heading") or "## 决策角色"),
+            decision_verifier_config=args.get("decision_verifier_config"),
             scheduler_mode=str(args.get("scheduler_mode") or "auto"),
         )
     if name == "rd_flywheel_scheduler":

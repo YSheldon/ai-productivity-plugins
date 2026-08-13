@@ -960,6 +960,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
             "message_id": request["original_message_id"],
             "headers": {
                 "X-RD-Contract": request["contract"],
+                "X-RD-Authority-Scope": request["authority_scope"],
                 "X-RD-Event-Id": request["event_id"],
                 "X-RD-Round-Id": str(request["round_id"]),
                 "X-RD-Task": request["task"],
@@ -1079,6 +1080,7 @@ class ProductionReleaseController(HardenedReleaseGateController):
         request_base = {
             "contract": "ReleaseAuthorizationRequest/v1",
             "schema": "ReleaseAuthorizationRequest/v1",
+            "authority_scope": "PRODUCTION_RELEASE",
             "event_id": event_id,
             "round_id": round_id,
             "requested_by": requester,

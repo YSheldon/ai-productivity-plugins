@@ -267,6 +267,7 @@ else:
 
         request = created["request"]
         self.assertEqual("ReleaseAuthorizationRequest/v1", request["contract"])
+        self.assertEqual("PRODUCTION_RELEASE", request["authority_scope"])
         self.assertEqual("TASK-UNIFIED-1", request["task"])
         self.assertEqual("kernel", request["module"])
         self.assertEqual(["release-director", "test-lead"], request["required_roles"])

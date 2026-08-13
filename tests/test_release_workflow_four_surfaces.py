@@ -74,7 +74,7 @@ class WorkflowPlugin:
 WORKFLOW_PLUGINS = (
     WorkflowPlugin(
         name="release-approval",
-        version="0.2.6",
+        version="0.2.7",
         mcp_script="release_approval_mcp.py",
         mcp_server_name="release-approval",
         mcp_common_tools=(
@@ -94,7 +94,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="release-approval-verifier",
-        version="0.2.6",
+        version="0.2.7",
         mcp_script="release_approval_verifier_mcp.py",
         mcp_server_name="release-approval-verifier",
         mcp_common_tools=(
@@ -114,7 +114,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="product-release-gate",
-        version="0.5.0",
+        version="0.5.1",
         mcp_script="release_gate_mcp.py",
         mcp_server_name="product-release-gate",
         mcp_common_tools=(
@@ -214,7 +214,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="rd-flywheel",
-        version="0.2.3",
+        version="0.2.4",
         mcp_script="rd_flywheel_mcp.py",
         mcp_server_name="rd-flywheel",
         mcp_common_tools=(

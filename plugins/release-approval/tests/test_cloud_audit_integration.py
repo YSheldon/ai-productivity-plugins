@@ -37,6 +37,7 @@ END = "-----END RELEASE APPROVAL REQUEST-----"
 def _request_payload() -> dict[str, object]:
     payload: dict[str, object] = {
         "contract": "ReleaseAuthorizationRequest/v1",
+        "authority_scope": "PRODUCTION_RELEASE",
         "event_id": "audit-event-1",
         "round_id": 1,
         "task": "Release task",
@@ -105,6 +106,7 @@ class FakeMail:
             },
             "release_workflow_headers": {
                 "contract": str(request["contract"]),
+                "authority_scope": str(request["authority_scope"]),
                 "event_id": str(request["event_id"]),
                 "round_id": str(request["round_id"]),
                 "task": str(request["task"]),

@@ -13,7 +13,7 @@ from pre_release_setup import SetupError, run_setup_operation
 
 
 SERVER_NAME = "pre-release"
-SERVER_VERSION = "0.1.4"
+SERVER_VERSION = "0.1.5"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 
 
@@ -91,6 +91,7 @@ def create_request(args: dict[str, Any]) -> dict[str, Any]:
         test_result=str(args["test_result"]),
         summary=str(args["summary"]),
         output_dir=args.get("output_dir"),
+        tested_material_dir=args.get("tested_material_dir"),
         report_ref=args.get("report_ref"),
         failure_reason=args.get("failure_reason"),
     )
@@ -148,6 +149,7 @@ TOOLS = {
                 "test_result": {"type": "string", "enum": ["PASS", "FAIL"]},
                 "summary": {"type": "string"},
                 "output_dir": {"type": "string"},
+                "tested_material_dir": {"type": "string"},
                 "report_ref": {"type": "string"},
                 "failure_reason": {"type": "string"}
             },

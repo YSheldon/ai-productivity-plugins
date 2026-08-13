@@ -20,6 +20,9 @@ RESULT_ERROR = "ERROR"
 VALID_TEST_RESULTS = {"PASS", "FAIL", "BLOCKED"}
 VALID_RISK_LEVELS = {"standard", "high", "emergency"}
 EVENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,120}$")
+SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+WORKFLOW_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _WINDOWS_RESERVED_NAMES = frozenset(
     {"con", "prn", "aux", "nul"}
     | {f"com{index}" for index in range(1, 10)}
@@ -60,6 +63,18 @@ def canonical_json(value: Any) -> str:
 
 def object_digest(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def workflow_manifest_digest(value: dict[str, Any]) -> str:
+    frozen = copy.deepcopy(value)
+    frozen.pop("manifest_s_digest", None)
+    canonical = json.dumps(
+        frozen,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def sha1_file(path: Path) -> str:
@@ -539,6 +554,352 @@ class ReleaseGateController:
             "next_action": "release_gate_run_submission_gate",
         }
 
+    def import_submission_gate_handoff(
+        self,
+        *,
+        event_id: str,
+        round_number: int,
+        task_id: str,
+        module: str,
+        manifest_s: dict[str, Any],
+        tested_material_dir: str,
+        source_ref: str,
+        rollback_ref: str,
+        risk_level: str = "standard",
+        rule_snapshot_id: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = safe_event_id(event_id)
+        target_dir = self._event_dir(identifier)
+        if type(round_number) is not int or round_number < 1:
+            raise GateError("round_number must be a positive integer")
+        task_value = str(task_id or "").strip()
+        module_value = str(module or "").strip()
+        if not task_value:
+            raise GateError("task_id is required")
+        if not module_value:
+            raise GateError("module is required")
+        if risk_level not in VALID_RISK_LEVELS:
+            raise GateError(
+                f"risk_level must be one of: {', '.join(sorted(VALID_RISK_LEVELS))}"
+            )
+        if not isinstance(manifest_s, dict):
+            raise GateError("Manifest-S must be a JSON object")
+
+        expected_keys = {
+            "schema",
+            "event_id",
+            "round_id",
+            "task",
+            "module",
+            "policy_profile",
+            "policy_digest",
+            "effective_checks",
+            "artifacts",
+            "evidence_refs",
+            "manifest_s_digest",
+        }
+        if set(manifest_s) != expected_keys:
+            raise GateError("Manifest-S fields do not match ProductMaterialManifestS/v1")
+        if manifest_s.get("schema") != "ProductMaterialManifestS/v1":
+            raise GateError("Manifest-S schema must be ProductMaterialManifestS/v1")
+        claimed_digest = str(manifest_s.get("manifest_s_digest") or "").lower()
+        if not WORKFLOW_SHA256_RE.fullmatch(claimed_digest):
+            raise GateError("Manifest-S digest must be a sha256:<64-hex> value")
+        if workflow_manifest_digest(manifest_s) != claimed_digest:
+            raise GateError("Manifest-S digest does not match its frozen content")
+        if manifest_s.get("event_id") != identifier:
+            raise GateError("Manifest-S event_id does not match the import request")
+        if manifest_s.get("round_id") != round_number:
+            raise GateError("Manifest-S round_id does not match the import request")
+        if manifest_s.get("task") != task_value:
+            raise GateError("Manifest-S task does not match the import request")
+        if manifest_s.get("module") != module_value:
+            raise GateError("Manifest-S module does not match the import request")
+        policy_profile = str(manifest_s.get("policy_profile") or "").strip()
+        policy_digest = str(manifest_s.get("policy_digest") or "").lower()
+        if not policy_profile:
+            raise GateError("Manifest-S policy_profile is required")
+        if not WORKFLOW_SHA256_RE.fullmatch(policy_digest):
+            raise GateError("Manifest-S policy_digest must be a sha256:<64-hex> value")
+        effective_checks = manifest_s.get("effective_checks")
+        evidence_refs = manifest_s.get("evidence_refs")
+        if not isinstance(effective_checks, list) or not effective_checks or any(
+            not isinstance(item, str) or not item.strip() for item in effective_checks
+        ):
+            raise GateError("Manifest-S effective_checks must be a non-empty string array")
+        if not isinstance(evidence_refs, list) or any(
+            not isinstance(item, str) or not item.strip() for item in evidence_refs
+        ):
+            raise GateError("Manifest-S evidence_refs must be a string array")
+
+        raw_artifacts = manifest_s.get("artifacts")
+        if not isinstance(raw_artifacts, list) or not raw_artifacts:
+            raise GateError("Manifest-S artifacts must be a non-empty array")
+        normalized_bindings: list[dict[str, Any]] = []
+        logical_names: set[str] = set()
+        file_names: set[str] = set()
+        artifact_keys = {
+            "logical_name",
+            "file_name",
+            "size",
+            "sha1",
+            "sha256",
+            "source_ref",
+        }
+        for raw in raw_artifacts:
+            if not isinstance(raw, dict) or set(raw) != artifact_keys:
+                raise GateError("Each Manifest-S artifact must contain the exact file binding fields")
+            logical_name = safe_logical_name(str(raw.get("logical_name") or ""))
+            try:
+                file_name = safe_logical_name(str(raw.get("file_name") or ""))
+            except GateError as exc:
+                raise GateError("artifact file name must be a single safe file name") from exc
+            logical_key = logical_name.casefold()
+            file_key = file_name.casefold()
+            if logical_key in logical_names:
+                raise GateError(f"Duplicate logical_name: {logical_name}")
+            if file_key in file_names:
+                raise GateError(f"Duplicate artifact file name: {file_name}")
+            logical_names.add(logical_key)
+            file_names.add(file_key)
+            size = raw.get("size")
+            sha1 = str(raw.get("sha1") or "").lower()
+            sha256 = str(raw.get("sha256") or "").lower()
+            if type(size) is not int or size < 0:
+                raise GateError("Manifest-S artifact size must be a non-negative integer")
+            if not SHA1_RE.fullmatch(sha1):
+                raise GateError("Manifest-S artifact sha1 must be 40 lowercase hex characters")
+            if not SHA256_RE.fullmatch(sha256):
+                raise GateError("Manifest-S artifact sha256 must be 64 lowercase hex characters")
+            normalized_bindings.append(
+                {
+                    "logical_name": logical_name,
+                    "file_name": file_name,
+                    "size": size,
+                    "sha1": sha1,
+                    "sha256": sha256,
+                    "source_ref": str(raw.get("source_ref") or "").strip(),
+                }
+            )
+
+        source_value = str(source_ref or "").strip()
+        rollback_value = str(rollback_ref or "").strip()
+        rule_snapshot_value = str(rule_snapshot_id or policy_digest)
+        if not rollback_value:
+            raise GateError("rollback_ref is required")
+
+        raw_material_dir = str(tested_material_dir or "").strip()
+        if not raw_material_dir:
+            raise GateError("tested_material_dir is required")
+        material_root = Path(
+            os.path.abspath(
+                os.path.expanduser(os.path.expandvars(raw_material_dir))
+            )
+        )
+        prepared = [
+            {
+                "logical_name": binding["logical_name"],
+                "file_path": str(
+                    (material_root / binding["file_name"]).resolve(strict=False)
+                ),
+                "size": binding["size"],
+                "sha1": binding["sha1"],
+                "sha256": binding["sha256"],
+                "extension": Path(binding["logical_name"]).suffix.lower(),
+                "source_ref": binding["source_ref"] or source_value,
+                "change_type": "imported",
+            }
+            for binding in normalized_bindings
+        ]
+
+        def replay_conflicts(
+            existing_event: dict[str, Any],
+            existing_manifest: dict[str, Any],
+        ) -> list[str]:
+            expected_event_bindings = {
+                "event_id": identifier,
+                "task_id": task_value,
+                "module": module_value,
+                "round_number": round_number,
+                "risk_level": risk_level,
+                "source_ref": source_value,
+                "rollback_ref": rollback_value,
+                "rule_snapshot_id": rule_snapshot_value,
+                "policy_profile": policy_profile,
+                "policy_digest": policy_digest,
+                "upstream_manifest_s_digest": claimed_digest,
+            }
+            conflicts = [
+                key
+                for key, expected in expected_event_bindings.items()
+                if existing_event.get(key) != expected
+            ]
+            if existing_manifest.get("upstream_manifest_s") != manifest_s:
+                conflicts.append("upstream_manifest_s")
+            existing_artifacts = existing_manifest.get("artifacts")
+            existing_digest = (
+                object_digest({"artifacts": existing_artifacts})
+                if isinstance(existing_artifacts, list)
+                else ""
+            )
+            if existing_artifacts != prepared:
+                conflicts.append("tested_materials")
+            if (
+                existing_manifest.get("schema")
+                != "ProductReleaseGateManifestS/v2"
+                or existing_manifest.get("event_id") != identifier
+                or existing_manifest.get("upstream_manifest_s_digest")
+                != claimed_digest
+                or existing_manifest.get("digest") != existing_digest
+                or existing_event.get("manifest_s_digest") != existing_digest
+            ):
+                conflicts.append("stored_manifest_integrity")
+            return conflicts
+
+        if target_dir.exists():
+            existing_event = self._load_event(identifier)
+            existing_manifest = self._load_manifest(identifier, "manifest-s.json")
+            if existing_event.get("status") == "RELEASE_GATING":
+                conflicts = replay_conflicts(existing_event, existing_manifest)
+                if conflicts:
+                    raise GateError(
+                        "Existing event conflicts with the replayed submission handoff: "
+                        + ", ".join(sorted(set(conflicts)))
+                    )
+                final_output_dir = str(
+                    existing_event.get("final_output_dir") or ""
+                ).strip()
+                if not final_output_dir:
+                    raise GateError(
+                        "Existing RELEASE_GATING event is missing final_output_dir"
+                    )
+                self.build_final_release(identifier, final_output_dir)
+                return {
+                    "status": existing_event["status"],
+                    "event": existing_event,
+                    "manifest_s": existing_manifest,
+                    "upstream_manifest_s_digest": claimed_digest,
+                    "idempotent_replay": True,
+                    "recovered_from": "verified_manifest_r",
+                    "next_action": "resume from the authoritative event status",
+                }
+
+        if not material_root.is_dir() or material_root.is_symlink():
+            raise GateError("tested_material_dir must be a real directory")
+        actual_entries = list(material_root.iterdir())
+        if any(not entry.is_file() or entry.is_symlink() for entry in actual_entries):
+            raise GateError("tested material directory contains unsupported nested or linked entries")
+        actual_by_name = {entry.name.casefold(): entry for entry in actual_entries}
+        if len(actual_by_name) != len(actual_entries):
+            raise GateError("tested material directory contains case-insensitive duplicate names")
+        expected_by_name = {
+            item["file_name"].casefold(): item for item in normalized_bindings
+        }
+        missing = sorted(
+            item["file_name"]
+            for key, item in expected_by_name.items()
+            if key not in actual_by_name
+        )
+        extra = sorted(
+            entry.name for key, entry in actual_by_name.items() if key not in expected_by_name
+        )
+        if missing:
+            raise GateError(f"tested material directory is missing files: {', '.join(missing)}")
+        if extra:
+            raise GateError(f"tested material directory has extra files: {', '.join(extra)}")
+
+        for binding in normalized_bindings:
+            path = actual_by_name[binding["file_name"].casefold()]
+            if path.name != binding["file_name"]:
+                raise GateError(
+                    f"tested material file name casing differs: {binding['file_name']}"
+                )
+            actual_size = path.stat().st_size
+            actual_sha1 = sha1_file(path)
+            actual_sha256 = sha256_file(path)
+            if actual_size != binding["size"]:
+                raise GateError(f"tested material size differs: {binding['file_name']}")
+            if actual_sha1 != binding["sha1"] or actual_sha256 != binding["sha256"]:
+                raise GateError(f"tested material SHA1/SHA256 differs: {binding['file_name']}")
+
+        if target_dir.exists():
+            existing_event = self._load_event(identifier)
+            existing_manifest = self._load_manifest(identifier, "manifest-s.json")
+            conflicts = replay_conflicts(existing_event, existing_manifest)
+            if conflicts:
+                raise GateError(
+                    "Existing event conflicts with the replayed submission handoff: "
+                    + ", ".join(sorted(set(conflicts)))
+                )
+            return {
+                "status": existing_event.get("status"),
+                "event": existing_event,
+                "manifest_s": existing_manifest,
+                "upstream_manifest_s_digest": claimed_digest,
+                "idempotent_replay": True,
+                "next_action": "resume from the authoritative event status",
+            }
+
+        local_manifest = {
+            "schema": "ProductReleaseGateManifestS/v2",
+            "event_id": identifier,
+            "phase": "Manifest-S",
+            "created_at": utc_now(),
+            "upstream_manifest_s_digest": claimed_digest,
+            "upstream_manifest_s": copy.deepcopy(manifest_s),
+            "artifacts": prepared,
+        }
+        local_manifest["digest"] = object_digest({"artifacts": prepared})
+        event = {
+            "event_id": identifier,
+            "task_id": task_value,
+            "module": module_value,
+            "round_number": round_number,
+            "risk_level": risk_level,
+            "source_ref": source_value,
+            "rollback_ref": rollback_value,
+            "new_round_of": None,
+            "status": "TESTING",
+            "rule_snapshot_id": rule_snapshot_value,
+            "policy_profile": policy_profile,
+            "policy_digest": policy_digest,
+            "effective_checks": list(effective_checks),
+            "manifest_s_digest": local_manifest["digest"],
+            "upstream_manifest_s_digest": claimed_digest,
+            "manifest_r_digest": None,
+            "test": None,
+            "approval": None,
+            "last_execution_id": None,
+            "history": [
+                {
+                    "at": utc_now(),
+                    "from": None,
+                    "to": "TESTING",
+                    "reason": "verified external submission gate handoff imported",
+                }
+            ],
+        }
+
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = self.storage_dir / f".{identifier}.import-{uuid.uuid4().hex}"
+        try:
+            staging_dir.mkdir()
+            write_json(staging_dir / "manifest-s.json", local_manifest)
+            write_json(staging_dir / "event.json", event)
+            publish_directory(staging_dir, target_dir)
+        except Exception:
+            if os.path.lexists(staging_dir):
+                shutil.rmtree(staging_dir)
+            raise
+        return {
+            "status": event["status"],
+            "event": event,
+            "manifest_s": local_manifest,
+            "upstream_manifest_s_digest": claimed_digest,
+            "idempotent_replay": False,
+            "next_action": "release_gate_record_test_result",
+        }
+
     def _artifact_integrity_result(self, rule_id: str, artifact: dict[str, Any]) -> dict[str, Any]:
         path = Path(artifact["file_path"])
         name = artifact["logical_name"]
@@ -879,6 +1240,100 @@ class ReleaseGateController:
 
     def build_final_release(self, event_id: str, output_dir: str) -> dict[str, Any]:
         event = self._load_event(event_id)
+        raw_output_dir = str(output_dir or "").strip()
+        if not raw_output_dir:
+            raise GateError("output_dir is required")
+        destination_root = Path(
+            os.path.abspath(
+                os.path.expanduser(os.path.expandvars(raw_output_dir))
+            )
+        )
+        if event.get("status") == "RELEASE_GATING":
+            manifest_r = self._load_manifest(event_id, "manifest-r.json")
+            manifest_output = Path(
+                os.path.abspath(
+                    os.path.expanduser(
+                        os.path.expandvars(str(manifest_r.get("output_dir") or ""))
+                    )
+                )
+            )
+            if os.path.normcase(str(manifest_output)) != os.path.normcase(
+                str(destination_root)
+            ):
+                raise GateError(
+                    "Existing final material conflicts with the requested output_dir"
+                )
+            final_artifacts = as_list(
+                manifest_r.get("artifacts"),
+                "manifest-r.artifacts",
+            )
+            computed_manifest_r_digest = object_digest(
+                {
+                    "source_manifest_s_digest": manifest_r.get(
+                        "source_manifest_s_digest"
+                    ),
+                    "artifacts": final_artifacts,
+                }
+            )
+            if (
+                computed_manifest_r_digest != manifest_r.get("digest")
+                or computed_manifest_r_digest != event.get("manifest_r_digest")
+                or manifest_r.get("source_manifest_s_digest")
+                != event.get("manifest_s_digest")
+            ):
+                raise GateError(
+                    "Existing final material conflicts with its frozen Manifest-R"
+                )
+            if not destination_root.is_dir() or destination_root.is_symlink():
+                raise GateError("Existing final material directory is unavailable")
+            actual_entries = list(destination_root.iterdir())
+            if any(
+                not entry.is_file() or entry.is_symlink()
+                for entry in actual_entries
+            ):
+                raise GateError(
+                    "Existing final material contains unsupported nested or linked entries"
+                )
+            expected_names = {
+                safe_logical_name(str(item.get("logical_name") or "")).casefold()
+                for item in final_artifacts
+            }
+            actual_names = {entry.name.casefold() for entry in actual_entries}
+            if actual_names != expected_names:
+                raise GateError(
+                    "Existing final material file set conflicts with Manifest-R"
+                )
+            for artifact in final_artifacts:
+                logical_name = safe_logical_name(
+                    str(artifact.get("logical_name") or "")
+                )
+                path = destination_root / logical_name
+                expected_path = Path(str(artifact.get("file_path") or ""))
+                if os.path.normcase(str(expected_path)) != os.path.normcase(
+                    str(path)
+                ):
+                    raise GateError(
+                        "Existing final material path conflicts with Manifest-R"
+                    )
+                if (
+                    path.stat().st_size != artifact.get("size")
+                    or sha1_file(path) != artifact.get("sha1")
+                    or sha256_file(path) != artifact.get("sha256")
+                ):
+                    raise GateError(
+                        "Existing final material content conflicts with Manifest-R"
+                    )
+            return {
+                "event_id": event_id,
+                "status": event["status"],
+                "manifest_r": manifest_r,
+                "manifest_r_digest": "sha256:" + computed_manifest_r_digest,
+                "manifest_r_ref": str(
+                    self._event_dir(event_id) / "manifest-r.json"
+                ),
+                "idempotent_replay": True,
+                "next_action": "release_gate_run_release_gate",
+            }
         if event.get("status") != "RELEASE_PREPARING":
             raise GateError(f"Final material cannot be produced from status {event.get('status')}")
         manifest_s = self._load_manifest(event_id, "manifest-s.json")
@@ -904,14 +1359,6 @@ class ReleaseGateController:
                     "Submission artifact SHA1/SHA256 drifted: "
                     + str(artifact.get("logical_name"))
                 )
-        raw_output_dir = str(output_dir or "").strip()
-        if not raw_output_dir:
-            raise GateError("output_dir is required")
-        destination_root = Path(
-            os.path.abspath(
-                os.path.expanduser(os.path.expandvars(raw_output_dir))
-            )
-        )
         if os.path.lexists(destination_root):
             raise GateError(
                 "output_dir must not already exist; final material is published atomically"
@@ -993,6 +1440,11 @@ class ReleaseGateController:
             "event_id": event_id,
             "status": event["status"],
             "manifest_r": manifest_r,
+            "manifest_r_digest": "sha256:" + manifest_r["digest"],
+            "manifest_r_ref": str(
+                self._event_dir(event_id) / "manifest-r.json"
+            ),
+            "idempotent_replay": False,
             "next_action": "release_gate_run_release_gate",
         }
 

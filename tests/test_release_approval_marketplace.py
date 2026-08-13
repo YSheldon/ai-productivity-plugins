@@ -35,11 +35,11 @@ PLUGINS = (
         "release_approval_verifier_mcp.py",
         "verifier_cli.py",
     ),
-    MarketplacePlugin("product-release-gate", "0.5.1", "release_gate_mcp.py", "release_gate_cli.py"),
-    MarketplacePlugin("test-submission", "0.1.4", "test_submission_mcp.py", "test_submission_cli.py"),
-    MarketplacePlugin("submission-gate", "0.1.4", "submission_gate_mcp.py", "submission_gate_cli.py"),
-    MarketplacePlugin("pre-release", "0.1.4", "pre_release_mcp.py", "pre_release_cli.py"),
-    MarketplacePlugin("release-gate", "0.1.5", "release_gate_mcp.py", "release_gate_cli.py"),
+    MarketplacePlugin("product-release-gate", "0.5.2", "release_gate_mcp.py", "release_gate_cli.py"),
+    MarketplacePlugin("test-submission", "0.1.5", "test_submission_mcp.py", "test_submission_cli.py"),
+    MarketplacePlugin("submission-gate", "0.1.6", "submission_gate_mcp.py", "submission_gate_cli.py"),
+    MarketplacePlugin("pre-release", "0.1.5", "pre_release_mcp.py", "pre_release_cli.py"),
+    MarketplacePlugin("release-gate", "0.1.6", "release_gate_mcp.py", "release_gate_cli.py"),
     MarketplacePlugin("rd-flywheel", "0.2.4", "rd_flywheel_mcp.py", "rd_flywheel_cli.py"),
 )
 

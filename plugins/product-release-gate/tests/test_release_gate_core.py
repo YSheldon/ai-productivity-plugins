@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -59,6 +61,64 @@ class ReleaseGateFlowTests(unittest.TestCase):
     def _controller(self, config_path: Path | None = None) -> HardenedReleaseGateController:
         return HardenedReleaseGateController(str(config_path or self.config_path))
 
+    def _external_manifest_s(
+        self,
+        *,
+        event_id: str,
+        artifacts: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        bindings = artifacts or [
+            {
+                "logical_name": "product.bin",
+                "file_name": "product.bin",
+                "size": self.artifact.stat().st_size,
+                "sha1": hashlib.sha1(self.artifact.read_bytes()).hexdigest(),
+                "sha256": hashlib.sha256(self.artifact.read_bytes()).hexdigest(),
+                "source_ref": "svn:/release/product.bin@1047",
+            }
+        ]
+        manifest: dict[str, object] = {
+            "schema": "ProductMaterialManifestS/v1",
+            "event_id": event_id,
+            "round_id": 1,
+            "task": "TASK-1",
+            "module": "client",
+            "policy_profile": "release-v1",
+            "policy_digest": "sha256:" + "1" * 64,
+            "effective_checks": ["file_inventory", "sha1", "sha256"],
+            "artifacts": bindings,
+            "evidence_refs": ["gitlab:project/59/job/1"],
+        }
+        canonical = json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        manifest["manifest_s_digest"] = "sha256:" + hashlib.sha256(
+            canonical.encode("utf-8")
+        ).hexdigest()
+        return manifest
+
+    def _import_external_submission(
+        self,
+        controller: HardenedReleaseGateController,
+        event_id: str,
+        manifest: dict[str, object],
+        tested_material_dir: Path,
+    ) -> dict[str, object]:
+        return controller.import_submission_gate_handoff(
+            event_id=event_id,
+            round_number=1,
+            task_id="TASK-1",
+            module="client",
+            manifest_s=manifest,
+            tested_material_dir=str(tested_material_dir),
+            source_ref="svn:/release@1047",
+            rollback_ref="svn:/release@1046",
+            risk_level="standard",
+        )
+
     def _create(self, controller: HardenedReleaseGateController, event_id: str, risk: str = "standard") -> None:
         controller.create_submission(
             event_id=event_id,
@@ -98,6 +158,237 @@ class ReleaseGateFlowTests(unittest.TestCase):
         report = controller.generate_report("event-standard")
         self.assertTrue(Path(report["report_path"]).is_file())
         self.assertIn("RELEASE_READY", report["report"])
+
+    def test_external_submission_import_reaches_testing_and_builds_final_release(self) -> None:
+        controller = self._controller()
+        event_id = "event-external-import"
+        manifest = self._external_manifest_s(event_id=event_id)
+        material_dir = self.root / "materials-import"
+        material_dir.mkdir()
+        (material_dir / "product.bin").write_bytes(self.artifact.read_bytes())
+        imported = self._import_external_submission(
+            controller,
+            event_id,
+            manifest,
+            material_dir,
+        )
+
+        self.assertEqual("TESTING", imported["event"]["status"])
+        self.assertEqual(
+            manifest["manifest_s_digest"],
+            imported["event"]["upstream_manifest_s_digest"],
+        )
+        stored_manifest = controller._load_manifest(event_id, "manifest-s.json")
+        self.assertEqual(manifest, stored_manifest["upstream_manifest_s"])
+        self.assertEqual(
+            str((material_dir / "product.bin").resolve()),
+            stored_manifest["artifacts"][0]["file_path"],
+        )
+
+        tested = controller.record_test_result(
+            event_id,
+            "PASS",
+            "test-report:external-import",
+        )
+        self.assertEqual("RELEASE_PREPARING", tested["status"])
+        built = controller.build_final_release(
+            event_id,
+            str(self.root / "external-final"),
+        )
+        self.assertEqual("RELEASE_GATING", built["status"])
+        self.assertEqual(
+            stored_manifest["digest"],
+            built["manifest_r"]["source_manifest_s_digest"],
+        )
+
+    def test_external_submission_import_is_idempotent_and_rejects_conflicts(self) -> None:
+        controller = self._controller()
+        event_id = "event-external-idempotent"
+        manifest = self._external_manifest_s(event_id=event_id)
+        material_dir = self.root / "materials-idempotent"
+        material_dir.mkdir()
+        (material_dir / "product.bin").write_bytes(self.artifact.read_bytes())
+
+        first = self._import_external_submission(
+            controller,
+            event_id,
+            manifest,
+            material_dir,
+        )
+        controller.record_test_result(
+            event_id,
+            "PASS",
+            "test-report:idempotent",
+        )
+        replay = self._import_external_submission(
+            controller,
+            event_id,
+            manifest,
+            material_dir,
+        )
+
+        self.assertEqual("TESTING", first["event"]["status"])
+        self.assertEqual("RELEASE_PREPARING", replay["event"]["status"])
+        self.assertTrue(replay["idempotent_replay"])
+
+        output_dir = self.root / "idempotent-final"
+        first_build = controller.build_final_release(event_id, str(output_dir))
+        second_build = controller.build_final_release(event_id, str(output_dir))
+        self.assertEqual(
+            first_build["manifest_r_digest"],
+            second_build["manifest_r_digest"],
+        )
+        self.assertTrue(second_build["idempotent_replay"])
+        with self.assertRaisesRegex(GateError, "conflicts"):
+            controller.build_final_release(
+                event_id,
+                str(self.root / "different-final"),
+            )
+
+        with self.assertRaisesRegex(GateError, "conflicts"):
+            controller.import_submission_gate_handoff(
+                event_id=event_id,
+                round_number=1,
+                task_id="TASK-1",
+                module="client",
+                manifest_s=manifest,
+                tested_material_dir=str(material_dir),
+                source_ref="svn:/release@1047",
+                rollback_ref="svn:/release@9999",
+                risk_level="standard",
+            )
+
+    def test_external_submission_replay_recovers_from_verified_final_material(
+        self,
+    ) -> None:
+        controller = self._controller()
+        event_id = "event-external-recovery"
+        manifest = self._external_manifest_s(event_id=event_id)
+        material_dir = self.root / "materials-recovery"
+        material_dir.mkdir()
+        (material_dir / "product.bin").write_bytes(self.artifact.read_bytes())
+        self._import_external_submission(
+            controller,
+            event_id,
+            manifest,
+            material_dir,
+        )
+        controller.record_test_result(
+            event_id,
+            "PASS",
+            "test-report:recovery",
+        )
+        output_dir = self.root / "recovery-final"
+        controller.build_final_release(event_id, str(output_dir))
+        shutil.rmtree(material_dir)
+
+        replay = self._import_external_submission(
+            controller,
+            event_id,
+            manifest,
+            material_dir,
+        )
+
+        self.assertEqual("RELEASE_GATING", replay["status"])
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual("verified_manifest_r", replay["recovered_from"])
+
+        (output_dir / "product.bin").write_bytes(b"tampered")
+        with self.assertRaisesRegex(GateError, "Manifest-R"):
+            self._import_external_submission(
+                controller,
+                event_id,
+                manifest,
+                material_dir,
+            )
+
+    def test_external_submission_import_rejects_digest_drift_without_event(self) -> None:
+        controller = self._controller()
+        event_id = "event-external-digest-drift"
+        manifest = self._external_manifest_s(event_id=event_id)
+        manifest["task"] = "FORGED"
+
+        with self.assertRaisesRegex(GateError, "Manifest-S digest"):
+            self._import_external_submission(controller, event_id, manifest, self.root)
+
+        self.assertFalse(controller._event_dir(event_id).exists())
+
+    def test_external_submission_import_rejects_binding_drift_without_event(self) -> None:
+        controller = self._controller()
+        event_id = "event-external-binding-drift"
+        manifest = self._external_manifest_s(event_id=event_id)
+
+        with self.assertRaisesRegex(GateError, "module"):
+            controller.import_submission_gate_handoff(
+                event_id=event_id,
+                round_number=1,
+                task_id="TASK-1",
+                module="server",
+                manifest_s=manifest,
+                tested_material_dir=str(self.root),
+                source_ref="svn:/release@1047",
+                rollback_ref="svn:/release@1046",
+            )
+
+        self.assertFalse(controller._event_dir(event_id).exists())
+
+    def test_external_submission_import_rejects_missing_and_extra_files(self) -> None:
+        for suffix, mutate, expected in (
+            ("missing", lambda root: (root / "product.bin").unlink(), "missing"),
+            ("extra", lambda root: (root / "extra.bin").write_bytes(b"extra"), "extra"),
+        ):
+            with self.subTest(suffix=suffix):
+                material_dir = self.root / f"materials-{suffix}"
+                material_dir.mkdir()
+                material = material_dir / "product.bin"
+                material.write_bytes(self.artifact.read_bytes())
+                event_id = f"event-external-{suffix}"
+                manifest = self._external_manifest_s(event_id=event_id)
+                mutate(material_dir)
+                controller = self._controller()
+
+                with self.assertRaisesRegex(GateError, expected):
+                    self._import_external_submission(
+                        controller,
+                        event_id,
+                        manifest,
+                        material_dir,
+                    )
+
+                self.assertFalse(controller._event_dir(event_id).exists())
+
+    def test_external_submission_import_rejects_unsafe_or_duplicate_names(self) -> None:
+        base = self._external_manifest_s(event_id="unused")["artifacts"][0]
+        assert isinstance(base, dict)
+        cases = (
+            ("traversal", [{**base, "logical_name": "../product.bin"}]),
+            ("rooted", [{**base, "file_name": "C:\\product.bin"}]),
+            (
+                "duplicate",
+                [
+                    base,
+                    {**base, "logical_name": "PRODUCT.BIN", "file_name": "PRODUCT.BIN"},
+                ],
+            ),
+        )
+        for suffix, artifacts in cases:
+            with self.subTest(suffix=suffix):
+                event_id = f"event-external-name-{suffix}"
+                manifest = self._external_manifest_s(
+                    event_id=event_id,
+                    artifacts=artifacts,
+                )
+                controller = self._controller()
+
+                with self.assertRaisesRegex(GateError, "file name|logical_name|Duplicate"):
+                    self._import_external_submission(
+                        controller,
+                        event_id,
+                        manifest,
+                        self.root,
+                    )
+
+                self.assertFalse(controller._event_dir(event_id).exists())
 
     def test_high_risk_requires_explicit_approval(self) -> None:
         controller = self._controller()

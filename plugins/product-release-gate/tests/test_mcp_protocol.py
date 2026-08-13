@@ -112,6 +112,7 @@ class McpProtocolTests(unittest.TestCase):
         tool_names = {item["name"] for item in tools}
         self.assertGreaterEqual(len(tools), 31)
         self.assertIn("release_gate_run_release_gate", tool_names)
+        self.assertIn("release_gate_import_submission_gate_handoff", tool_names)
         self.assertIn("release_gate_build_svn_live_handoff", tool_names)
         self.assertIn(
             "release_gate_record_svn_live_gate_receipt",

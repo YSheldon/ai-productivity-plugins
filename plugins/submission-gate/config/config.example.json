@@ -12,6 +12,8 @@
   "state_dir": "%LOCALAPPDATA%\\submission-gate\\state",
   "event_store_dir": "%LOCALAPPDATA%\\submission-gate\\events",
   "feishu_directory_url": "https://open.feishu.cn/wiki/product-materials",
+  "policy_profile": "submission-gate/v1",
+  "enabled_optional_checks": [],
   "mandatory_checks_by_module": {
     "kernel": [
       "artifacts_present",
@@ -35,7 +37,53 @@
       "cloud_scan_required"
     ]
   },
-  "product_gate_config": "%LOCALAPPDATA%\\submission-gate\\product-release-gate.json",
+  "svn_mandatory_checks": [
+    "provenance_locator_present",
+    "fixed_revision_present",
+    "trusted_retrieval_succeeded",
+    "retrieved_files_enumerated",
+    "computed_hashes_recorded",
+    "version_evidence_recorded",
+    "signature_evidence_recorded",
+    "cloud_scan_completed"
+  ],
+  "gitlab_gate_adapter_config": "%LOCALAPPDATA%\\submission-gate\\gitlab-gate-adapter.json",
+  "gate_adapter": {
+    "command": [
+      "python",
+      "C:\\path\\to\\submission-gate\\src\\gitlab_gate_adapter.py",
+      "--config",
+      "%LOCALAPPDATA%\\submission-gate\\gitlab-gate-adapter.json"
+    ],
+    "preflight_command": [
+      "python",
+      "C:\\path\\to\\submission-gate\\src\\gitlab_gate_adapter.py",
+      "--config",
+      "%LOCALAPPDATA%\\submission-gate\\gitlab-gate-adapter.json",
+      "--preflight"
+    ],
+    "timeout_seconds": 900,
+    "preflight_timeout_seconds": 60,
+    "entrypoint_path": "C:\\path\\to\\submission-gate\\src\\gitlab_gate_adapter.py",
+    "entrypoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "integrity_files": [
+      {
+        "path": "C:\\path\\to\\submission-gate\\src\\gitlab_gate_adapter.py",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "path": "%LOCALAPPDATA%\\submission-gate\\gitlab-gate-adapter.json",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ]
+  },
+  "auth": {
+    "mode": "optional",
+    "key_id": "default",
+    "identity_id": "submission-gate"
+  },
+  "audit_key_path": "%LOCALAPPDATA%\\submission-gate\\audit.key",
+  "audit_log_path": "%LOCALAPPDATA%\\submission-gate\\audit.jsonl",
   "dependency_lock": "%LOCALAPPDATA%\\submission-gate\\dependency-lock.submission-gate.json",
   "dependency_lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
 }

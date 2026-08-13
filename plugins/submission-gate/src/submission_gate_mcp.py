@@ -10,7 +10,7 @@ from submission_gate_setup import run_setup_operation
 
 
 SERVER_NAME = "submission-gate"
-SERVER_VERSION = "0.1.4"
+SERVER_VERSION = "0.1.6"
 _CONTROLLER = SubmissionGateController(default_config_path()) if default_config_path().is_file() else None
 
 
@@ -44,6 +44,12 @@ TOOLS = {
                 "gate_adapter_command": {"type": "array", "items": {"type": "string"}},
                 "gate_adapter_entrypoint": {"type": "string"},
                 "gate_adapter_entrypoint_sha256": {"type": "string"},
+                "gitlab_base_url": {"type": "string"},
+                "gitlab_project_id": {"type": "integer", "minimum": 1},
+                "gitlab_ref": {"type": "string"},
+                "gitlab_job_name": {"type": "string"},
+                "gitlab_token_env": {"type": "string"},
+                "gitlab_ca_bundle": {"type": "string"},
             },
             "additionalProperties": False,
         },

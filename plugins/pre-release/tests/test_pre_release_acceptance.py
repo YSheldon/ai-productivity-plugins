@@ -15,12 +15,35 @@ sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
 from pre_release_config import MailAccountConfig, PreReleaseConfig, ProductGateConfig
 from pre_release_controller import PreReleaseController
-from pre_release_mail import PreReleaseMailError, encode_machine_event, resolve_locked_entrypoint, sign_machine_event
+from pre_release_mail import ProductGateCliGateway, PreReleaseMailError, encode_machine_event, resolve_locked_entrypoint, sign_machine_event
 from pre_release_scheduler import PreReleaseScheduler
 from pre_release_setup import PreReleaseSetup
 
 
 FIXED_NOW = datetime(2026, 7, 17, 3, 4, 5, tzinfo=timezone.utc)
+
+
+def test_product_gate_cli_gateway_unwraps_stable_cli_envelope() -> None:
+    def runner(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "ok": True,
+                    "operation": "call",
+                    "result": {"status": "TESTING", "event_id": "evt-1"},
+                }
+            ),
+            stderr="",
+        )
+
+    gateway = ProductGateCliGateway(["python", "gate.py"], runner=runner)
+
+    assert gateway.call("import_submission_gate_handoff", {"event_id": "evt-1"}) == {
+        "status": "TESTING",
+        "event_id": "evt-1",
+    }
 
 
 class FakeController:
@@ -54,7 +77,7 @@ class FakeMailGateway:
 
     def send_email(self, arguments: dict[str, object]) -> dict[str, object]:
         self.sent.append(dict(arguments))
-        return {"message_id": "<pre-release@example.com>"}
+        return {"message_id": str(arguments.get("message_id") or "")}
 
 
 class RecordingProductGate:
@@ -64,9 +87,13 @@ class RecordingProductGate:
 
     def call(self, operation: str, payload: dict[str, object]) -> dict[str, object]:
         self.calls.append((operation, dict(payload)))
+        if operation == "import_submission_gate_handoff":
+            return {"status": "TESTING"}
+        if operation == "record_test_result":
+            return {"status": "RELEASE_PREPARING"}
         if operation == "build_final_release":
             return {
-                "status": "ready",
+                "status": "RELEASE_GATING",
                 "manifest_r_digest": self.manifest_r_digest,
                 "manifest_r_ref": "artifact://manifest-r.json",
             }
@@ -126,6 +153,37 @@ def _config(tmp_path: Path) -> PreReleaseConfig:
 
 
 def _submission_message(config: PreReleaseConfig) -> dict[str, object]:
+    artifact_bytes = b"demo"
+    manifest_s: dict[str, object] = {
+        "schema": "ProductMaterialManifestS/v1",
+        "event_id": "evt-1",
+        "round_id": 2,
+        "task": "Task A",
+        "module": "client",
+        "policy_profile": "submission-client/v1",
+        "policy_digest": "sha256:" + "c" * 64,
+        "effective_checks": ["sha256", "signature", "cloud_scan"],
+        "artifacts": [
+            {
+                "logical_name": "demo.exe",
+                "file_name": "demo.exe",
+                "size": len(artifact_bytes),
+                "sha1": hashlib.sha1(artifact_bytes).hexdigest(),
+                "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+                "source_ref": "gitlab://pipeline/1/artifact/demo.exe",
+            }
+        ],
+        "evidence_refs": ["gitlab://pipeline/1"],
+    }
+    frozen = json.dumps(
+        manifest_s,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    manifest_s["manifest_s_digest"] = "sha256:" + hashlib.sha256(
+        frozen.encode("utf-8")
+    ).hexdigest()
     payload = sign_machine_event(
         {
             "contract": "ProductMaterialWorkflowEvent/v1",
@@ -134,7 +192,8 @@ def _submission_message(config: PreReleaseConfig) -> dict[str, object]:
             "round_id": 2,
             "task": "Task A",
             "module": "client",
-            "manifest_s_digest": "sha256:" + "a" * 64,
+            "manifest_s_digest": manifest_s["manifest_s_digest"],
+            "manifest_s": manifest_s,
             "policy_digest": "sha256:" + "c" * 64,
             "gitlab_evidence_digest": "sha256:" + "d" * 64,
             "gitlab_evidence_ref": "gitlab://pipeline/1",
@@ -142,7 +201,7 @@ def _submission_message(config: PreReleaseConfig) -> dict[str, object]:
             "source_message_id": "<submission@example.com>",
             "thread_references": ["<submission@example.com>"],
             "checked_items": ["sha256", "signature", "cloud_scan"],
-            "artifacts": [{"logical_name": "demo.exe"}],
+            "artifacts": manifest_s["artifacts"],
         },
         config.shared_hmac_secret_path.read_bytes(),
     )
@@ -313,6 +372,9 @@ def test_dependency_lock_drift_and_missing_manifest_r_digest_fail_closed(tmp_pat
         now_fn=lambda: FIXED_NOW,
     )
     controller.run_once()
+    tested_material_dir = tmp_path / "tested-materials-missing-digest"
+    tested_material_dir.mkdir()
+    (tested_material_dir / "demo.exe").write_bytes(b"demo")
     with pytest.raises(Exception, match="manifest_r_digest"):
         controller.create_request(
             event_id="evt-1",
@@ -320,4 +382,5 @@ def test_dependency_lock_drift_and_missing_manifest_r_digest_fail_closed(tmp_pat
             test_result="PASS",
             summary="回归通过",
             output_dir=str(tmp_path / "out"),
+            tested_material_dir=str(tested_material_dir),
         )

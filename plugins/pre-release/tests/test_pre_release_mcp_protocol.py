@@ -24,7 +24,7 @@ def _load_module():
 def test_mcp_inventory_and_manifest() -> None:
     module = _load_module()
     assert module.SERVER_NAME == "pre-release"
-    assert module.SERVER_VERSION == "0.1.4"
+    assert module.SERVER_VERSION == "0.1.5"
     assert list(module.TOOLS) == [
         "pre_release_preflight",
         "pre_release_start_setup",
@@ -35,5 +35,7 @@ def test_mcp_inventory_and_manifest() -> None:
         "pre_release_list_tasks",
         "pre_release_create_request",
     ]
+    create_schema = module.TOOLS["pre_release_create_request"]["inputSchema"]
+    assert "tested_material_dir" in create_schema["properties"]
     payload = json.loads((PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8"))
     assert payload["mcpServers"]["pre-release"]["args"] == ["-3", "./src/pre_release_mcp.py"]

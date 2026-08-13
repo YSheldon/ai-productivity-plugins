@@ -112,9 +112,12 @@ def default_config() -> dict[str, Any]:
         "svn_mandatory_checks": list(_SVN_CANONICAL),
         "gate_adapter": {
             "command": [],
+            "preflight_command": [],
             "timeout_seconds": 900,
+            "preflight_timeout_seconds": 60,
             "entrypoint_path": "",
             "entrypoint_sha256": "",
+            "integrity_files": [],
         },
         "auth": {"mode": "optional", "key_id": "default", "identity_id": "submission-gate"},
         "audit_key_path": str((root / "audit.key").resolve(strict=False)),
@@ -156,7 +159,11 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if not _SHA256_RE.fullmatch(digest):
         raise SubmissionGateError("CONFIG_ERROR", "dependency_lock_sha256 must be one 64-hex SHA-256")
     adapter = payload.get("gate_adapter")
-    if not isinstance(adapter, Mapping) or not isinstance(adapter.get("command", []), list):
+    if (
+        not isinstance(adapter, Mapping)
+        or not isinstance(adapter.get("command", []), list)
+        or not isinstance(adapter.get("preflight_command", []), list)
+    ):
         raise SubmissionGateError("CONFIG_ERROR", "gate_adapter.command must be an argument array")
     return payload
 
@@ -272,9 +279,45 @@ class CommandGateAdapter:
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     ) -> None:
         self.command = tuple(str(item) for item in config.get("command") or [])
+        self.preflight_command = tuple(
+            str(item) for item in config.get("preflight_command") or []
+        )
         self.timeout_seconds = int(config.get("timeout_seconds") or 900)
+        self.preflight_timeout_seconds = int(
+            config.get("preflight_timeout_seconds") or 60
+        )
         self.entrypoint_path = _expand_path(str(config.get("entrypoint_path") or "")) if config.get("entrypoint_path") else None
         self.entrypoint_sha256 = str(config.get("entrypoint_sha256") or "").strip().lower()
+        raw_integrity_files = config.get("integrity_files") or []
+        if not isinstance(raw_integrity_files, list):
+            raise SubmissionGateError(
+                "CONFIG_ERROR", "gate_adapter.integrity_files must be an array"
+            )
+        integrity_files: list[tuple[Path, str]] = []
+        seen_integrity_paths: set[str] = set()
+        for item in raw_integrity_files:
+            if not isinstance(item, Mapping):
+                raise SubmissionGateError(
+                    "CONFIG_ERROR",
+                    "gate_adapter.integrity_files entries must be objects",
+                )
+            path_text = str(item.get("path") or "").strip()
+            digest = str(item.get("sha256") or "").strip().lower()
+            if not path_text or not _SHA256_RE.fullmatch(digest):
+                raise SubmissionGateError(
+                    "CONFIG_ERROR",
+                    "gate_adapter.integrity_files entries require path and SHA-256",
+                )
+            path = _expand_path(path_text)
+            path_key = os.path.normcase(str(path))
+            if path_key in seen_integrity_paths:
+                raise SubmissionGateError(
+                    "CONFIG_ERROR",
+                    "gate_adapter.integrity_files paths must be unique",
+                )
+            seen_integrity_paths.add(path_key)
+            integrity_files.append((path, digest))
+        self.integrity_files = tuple(integrity_files)
         self.runner = runner
 
     def preflight(self) -> dict[str, Any]:
@@ -284,6 +327,59 @@ class CommandGateAdapter:
             self._verify_entrypoint()
         except SubmissionGateError as exc:
             return {"ready": False, "status": "CAPABILITY_BLOCKED", "reason": str(exc)}
+        if self.preflight_command:
+            try:
+                completed = self.runner(
+                    list(self.preflight_command),
+                    text=True,
+                    capture_output=True,
+                    timeout=self.preflight_timeout_seconds,
+                    shell=False,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return {
+                    "ready": False,
+                    "status": "CAPABILITY_BLOCKED",
+                    "reason": "gate adapter preflight timed out",
+                }
+            except OSError as exc:
+                return {
+                    "ready": False,
+                    "status": "CAPABILITY_BLOCKED",
+                    "reason": f"gate adapter preflight could not start: {exc}",
+                }
+            try:
+                envelope = json.loads(completed.stdout)
+            except (json.JSONDecodeError, TypeError):
+                return {
+                    "ready": False,
+                    "status": "CAPABILITY_BLOCKED",
+                    "reason": "gate adapter preflight returned invalid JSON",
+                }
+            result = envelope.get("result") if isinstance(envelope, Mapping) else None
+            if not isinstance(envelope, Mapping) or envelope.get("ok") is not True:
+                return {
+                    "ready": False,
+                    "status": "CAPABILITY_BLOCKED",
+                    "reason": "gate adapter preflight did not report explicit success",
+                }
+            if (
+                completed.returncode != 0
+                or not isinstance(result, Mapping)
+                or result.get("ready") is not True
+            ):
+                reason = (
+                    str(result.get("reason") or "")
+                    if isinstance(result, Mapping)
+                    else ""
+                )
+                return {
+                    "ready": False,
+                    "status": "CAPABILITY_BLOCKED",
+                    "reason": reason or "gate adapter preflight failed",
+                }
+            return dict(result)
         return {"ready": True, "status": "ready", "command_argv": True, "shell": False}
 
     def evaluate(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -328,6 +424,17 @@ class CommandGateAdapter:
             raise SubmissionGateError("CAPABILITY_BLOCKED", "gate adapter entrypoint SHA-256 is not configured")
         if sha256_file(self.entrypoint_path) != self.entrypoint_sha256:
             raise SubmissionGateError("DEPENDENCY_DRIFT", "gate adapter entrypoint drift was detected")
+        for path, expected_digest in self.integrity_files:
+            if not path.is_file():
+                raise SubmissionGateError(
+                    "CAPABILITY_BLOCKED",
+                    f"gate adapter integrity file is unavailable: {path.name}",
+                )
+            if sha256_file(path) != expected_digest:
+                raise SubmissionGateError(
+                    "DEPENDENCY_DRIFT",
+                    f"gate adapter integrity drift was detected: {path.name}",
+                )
 
 
 def extract_machine_block(body_text: str) -> dict[str, Any]:
@@ -691,6 +798,7 @@ class SubmissionGateController:
             "version": intake.get("version", ""),
             "retrieval_instructions": intake.get("retrieval_instructions", ""),
             "request_digest": intake["request_digest"],
+            "policy_profile": policy["policy_profile"],
             "policy_digest": policy["policy_digest"],
             "effective_checks": list(policy["effective_checks"]),
             "sender_artifact_declarations": list(intake.get("artifacts") or []),
@@ -702,12 +810,25 @@ class SubmissionGateController:
                 expected_bindings={
                     "event_id": intake["event_id"],
                     "round_id": intake["round_id"],
+                    "task": intake["task"],
+                    "module": module,
                     "request_digest": intake["request_digest"],
                     "policy_digest": policy["policy_digest"],
                 },
             )
         except Exception as exc:
             raise SubmissionGateError("GATE_EVIDENCE_INVALID", str(exc)) from exc
+        manifest_s = dict(evidence.manifest_s)
+        if manifest_s["policy_profile"] != policy["policy_profile"]:
+            raise SubmissionGateError(
+                "GATE_EVIDENCE_INVALID",
+                "Manifest-S policy_profile does not match the frozen policy",
+            )
+        if manifest_s["effective_checks"] != list(policy["effective_checks"]):
+            raise SubmissionGateError(
+                "GATE_EVIDENCE_INVALID",
+                "Manifest-S effective_checks do not match the frozen policy",
+            )
         mandatory = list(_SVN_CANONICAL if retrieval_method == "svn" else _LOCAL_CANONICAL[module])
         check_results = {item: "PASS" for item in mandatory}
         supplied_results = result.get("check_results") if isinstance(result.get("check_results"), Mapping) else {}
@@ -718,7 +839,11 @@ class SubmissionGateController:
             check_results[item] = status
         now = self._timestamp()
         evidence_refs = list(evidence.evidence_refs)
-        lark_evidence_ref = str(result.get("lark_evidence_ref") or self.config.get("feishu_directory_url") or (evidence_refs[0] if evidence_refs else ""))
+        lark_evidence_ref = (
+            evidence.lark_evidence_ref
+            or str(self.config.get("feishu_directory_url") or "").strip()
+            or (evidence_refs[0] if evidence_refs else "")
+        )
         workflow = {
             "schema": "ProductMaterialWorkflow/v1",
             "event_type": "SUBMISSION_GATE_PASS",
@@ -733,6 +858,7 @@ class SubmissionGateController:
             "evidence_refs": evidence_refs,
             "provenance_classification": intake["provenance_classification"],
             "manifest_s_digest": evidence.manifest_digest,
+            "manifest_s": manifest_s,
             "request_digest": intake["request_digest"],
             "submitter_email": intake.get("submitter_email", ""),
             "submitter_email_status": intake.get("submitter_email_status", "missing_or_invalid"),
@@ -751,8 +877,11 @@ class SubmissionGateController:
             ),
             "checked_items": [f"{key}:{value}" for key, value in check_results.items()],
             "check_results": check_results,
-            "artifacts": list(result.get("artifacts") or []),
-            "gitlab_evidence_ref": str(result.get("artifact_ref") or evidence.artifact_ref or (evidence_refs[0] if evidence_refs else "")),
+            "artifacts": list(manifest_s["artifacts"]),
+            "source_ref": str(manifest_s["artifacts"][0].get("source_ref") or ""),
+            "rollback_ref": evidence.rollback_ref,
+            "risk_level": evidence.risk_level,
+            "gitlab_evidence_ref": evidence.artifact_ref or (evidence_refs[0] if evidence_refs else ""),
             "gitlab_evidence_digest": _sha256_json(dict(result)),
             "lark_evidence_ref": lark_evidence_ref,
             "source_message_id": str((intake.get("source_transport") or {}).get("message_id") or ""),
@@ -807,6 +936,10 @@ class SubmissionGateController:
             "body_text": rendered["body_text"],
             "text": rendered["body_text"],
             "headers": headers,
+            "references": list(workflow.get("thread_references") or []),
+            "in_reply_to": (
+                list(workflow.get("thread_references") or [""])[-1]
+            ),
             "message_id": message_id,
             "dry_run": False,
         }

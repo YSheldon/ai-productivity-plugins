@@ -114,7 +114,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="product-release-gate",
-        version="0.5.1",
+        version="0.5.2",
         mcp_script="release_gate_mcp.py",
         mcp_server_name="product-release-gate",
         mcp_common_tools=(
@@ -134,7 +134,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="test-submission",
-        version="0.1.4",
+        version="0.1.5",
         mcp_script="test_submission_mcp.py",
         mcp_server_name="test-submission",
         mcp_common_tools=(
@@ -154,7 +154,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="submission-gate",
-        version="0.1.4",
+        version="0.1.6",
         mcp_script="submission_gate_mcp.py",
         mcp_server_name="submission-gate",
         mcp_common_tools=(
@@ -174,7 +174,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="pre-release",
-        version="0.1.4",
+        version="0.1.5",
         mcp_script="pre_release_mcp.py",
         mcp_server_name="pre-release",
         mcp_common_tools=(
@@ -194,7 +194,7 @@ WORKFLOW_PLUGINS = (
     ),
     WorkflowPlugin(
         name="release-gate",
-        version="0.1.5",
+        version="0.1.6",
         mcp_script="release_gate_mcp.py",
         mcp_server_name="release-gate",
         mcp_common_tools=(

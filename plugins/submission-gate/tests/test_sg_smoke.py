@@ -73,7 +73,16 @@ def test_setup_run_once_and_scheduler_smoke_without_codex_in_path(tmp_path: Path
         scheduler_factory=lambda _path: scheduler,
         input_fn=lambda _prompt: "qa@example.com",
     )
-    setup_result = setup.run(non_interactive=True, scheduler_mode="auto", provided={"submission_group_address": "qa@example.com", "blocked_notice_address": "rd@example.com"})
+    setup_result = setup.run(
+        non_interactive=True,
+        scheduler_mode="auto",
+        provided={
+            "submission_group_address": "qa@example.com",
+            "blocked_notice_address": "rd@example.com",
+            "gitlab_base_url": "https://gitlab.example.test",
+            "gitlab_project_id": "59",
+        },
+    )
     assert setup_result["status"] == "ready"
     assert "codex" not in os.environ["PATH"].lower()
 

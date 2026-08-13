@@ -179,6 +179,21 @@ class ProductGateCliGateway:
         result = json.loads(completed.stdout)
         if not isinstance(result, dict):
             raise PreReleaseMailError("product-release-gate returned invalid JSON")
+        if "ok" in result:
+            if result.get("ok") is not True:
+                error = result.get("error")
+                detail = (
+                    error.get("message")
+                    if isinstance(error, Mapping)
+                    else "product-release-gate rejected the request"
+                )
+                raise PreReleaseMailError(str(detail))
+            inner = result.get("result")
+            if not isinstance(inner, dict):
+                raise PreReleaseMailError(
+                    "product-release-gate CLI envelope is missing a result object"
+                )
+            return inner
         return result
 
 

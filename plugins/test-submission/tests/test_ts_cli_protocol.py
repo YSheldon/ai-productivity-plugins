@@ -92,7 +92,7 @@ def test_mcp_submission_schema_allows_svn_without_local_artifacts() -> None:
     module = _load_mcp_module()
 
     schema = module.TOOLS["test_submission_submit"]["inputSchema"]
-    assert module.SERVER_VERSION == "0.1.4"
+    assert module.SERVER_VERSION == "0.1.5"
 
     assert schema["required"] == ["task_name", "module"]
     assert "artifacts" in schema["properties"]

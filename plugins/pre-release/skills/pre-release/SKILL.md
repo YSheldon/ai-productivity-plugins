@@ -26,8 +26,11 @@ The scheduler lifecycle command family is scheduler install|status|remove. Windo
 
 ## Runtime Boundaries
 
-- pre_release_run_once is always headless. It accepts a verified ProductMaterialWorkflow/v1 machine event when present, but it can also fall back to canonical human-readable mail when the machine event or HMAC is absent.
+- pre_release_run_once is always headless. It accepts the shared ProductMaterialMail/v1 machine event and the legacy event block, but it can also fall back to canonical human-readable mail when the machine event or HMAC is absent.
 - A claimed machine event with an invalid HMAC is blocked as AUTHENTICATION_FAILED; it is never silently downgraded.
-- pre_release_create_request is the only action that accepts tester input. It auto-fills the tested Manifest digest and completion time, and it sends PRERELEASE_REQUEST only when the test result is PASS.
+- pre_release_create_request is the only action that accepts tester input. PASS requires per-run tested_material_dir and output_dir, rehashes the exact Manifest-S file set, imports the verified handoff, and sends PRERELEASE_REQUEST only after Manifest-R is built.
+- PASS freezes its complete input intent. Import and final-material build resume idempotently from the authoritative state; high/emergency risk pauses at TEST_APPROVAL_REQUIRED.
+- The outbound request has a deterministic Message-ID. The OS scheduler retries the same frozen message after transient failure without replaying product-gate mutations.
+- Each local task file is HMAC sealed. A state-file edit blocks preflight, status, listing, and headless processing even when the append-only audit log itself is untouched.
 - For `retrieval_method=svn`, fixed revision and repository provenance are mandatory, while user-supplied hashes, signature evidence, and cloud-scan evidence are not required inputs.
 - Installation config never stores a default final output directory or a test-result source.

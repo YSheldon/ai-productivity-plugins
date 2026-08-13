@@ -1,5 +1,5 @@
 from .audit import AuditError, JsonlAuditLog
-from .gate_adapter_contract import GateAdapterContractError, GitLabGateEvidence, validate_gitlab_gate_result
+from .gate_adapter_contract import GateAdapterContractError, GitLabGateEvidence, validate_gitlab_gate_result, validate_manifest_s
 from .mail_contract import (
     MailContractError,
     binding_headers,
@@ -76,6 +76,7 @@ __all__ = [
     "render_subject",
     "require_transition",
     "validate_gitlab_gate_result",
+    "validate_manifest_s",
     "validate_submission_payload",
     "validate_workflow_payload",
 ]

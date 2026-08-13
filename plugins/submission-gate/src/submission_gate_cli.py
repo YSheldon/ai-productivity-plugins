@@ -52,6 +52,12 @@ def build_parser() -> JsonArgumentParser:
     setup.add_argument("--gate-adapter-command", action="append")
     setup.add_argument("--gate-adapter-entrypoint")
     setup.add_argument("--gate-adapter-entrypoint-sha256")
+    setup.add_argument("--gitlab-base-url")
+    setup.add_argument("--gitlab-project-id", type=int)
+    setup.add_argument("--gitlab-ref")
+    setup.add_argument("--gitlab-job-name")
+    setup.add_argument("--gitlab-token-env")
+    setup.add_argument("--gitlab-ca-bundle")
     for name in ("preflight", "run-once", "status", "doctor", "verify-audit"):
         commands.add_parser(name)
     event = commands.add_parser("get-event")
@@ -96,6 +102,12 @@ def run_cli(
                     "gate_adapter_command": args.gate_adapter_command,
                     "gate_adapter_entrypoint": args.gate_adapter_entrypoint,
                     "gate_adapter_entrypoint_sha256": args.gate_adapter_entrypoint_sha256,
+                    "gitlab_base_url": args.gitlab_base_url,
+                    "gitlab_project_id": args.gitlab_project_id,
+                    "gitlab_ref": args.gitlab_ref,
+                    "gitlab_job_name": args.gitlab_job_name,
+                    "gitlab_token_env": args.gitlab_token_env,
+                    "gitlab_ca_bundle": args.gitlab_ca_bundle,
                 },
             )
         elif args.command == "scheduler":

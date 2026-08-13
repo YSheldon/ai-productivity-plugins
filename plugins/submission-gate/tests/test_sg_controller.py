@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -59,6 +60,37 @@ class FakeGateAdapter:
         return {"ready": True}
 
     def evaluate(self, payload):
+        artifact_bytes = b"driver"
+        evidence_refs = ["gitlab://job/1", "gitlab://pipeline/1"]
+        manifest_s = {
+            "schema": "ProductMaterialManifestS/v1",
+            "event_id": payload["event_id"],
+            "round_id": payload["round_id"],
+            "task": payload["task"],
+            "module": payload["module"],
+            "policy_profile": payload["policy_profile"],
+            "policy_digest": payload["policy_digest"],
+            "effective_checks": payload["effective_checks"],
+            "artifacts": [
+                {
+                    "logical_name": "driver.sys",
+                    "file_name": "driver.sys",
+                    "size": len(artifact_bytes),
+                    "sha1": hashlib.sha1(artifact_bytes).hexdigest(),
+                    "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+                    "source_ref": "gitlab://artifact/1/driver.sys",
+                }
+            ],
+            "evidence_refs": evidence_refs,
+        }
+        manifest_s["manifest_s_digest"] = "sha256:" + hashlib.sha256(
+            json.dumps(
+                manifest_s,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         return {
             "adapter_contract": "GitLabGateResult/v1",
             "provider": "gitlab",
@@ -67,13 +99,14 @@ class FakeGateAdapter:
             "round_id": payload["round_id"],
             "request_digest": payload["request_digest"],
             "policy_digest": payload["policy_digest"],
-            "manifest_digest": "sha256:" + "1" * 64,
-            "material_sha256": "2" * 64,
-            "evidence_refs": ["gitlab://pipeline/1", "gitlab://job/1"],
+            "manifest_digest": manifest_s["manifest_s_digest"],
+            "material_sha256": manifest_s["artifacts"][0]["sha256"],
+            "evidence_refs": evidence_refs,
             "pipeline_ref": "gitlab://pipeline/1",
             "job_ref": "gitlab://job/1",
             "artifact_ref": "gitlab://artifact/1",
-            "artifacts": [{"logical_name": "driver.sys"}],
+            "rollback_ref": "gitlab://ref/protected-release-baseline",
+            "manifest_s": manifest_s,
             "lark_evidence_ref": "lark://doc/1",
         }
 
@@ -138,6 +171,13 @@ def test_run_once_scans_mail_idempotently_and_passes_submission(tmp_path: Path) 
     assert mail.sent[0]["subject"].startswith("【提测】")
     assert mail.sent[0]["headers"]["X-RD-Submitter-Email"] == "submitter@example.com"
     assert "提测人邮箱：submitter@example.com" in mail.sent[0]["text"]
+    gate_event = json.loads(
+        (tmp_path / "events" / "event-1" / "round-1" / "gate.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert gate_event["workflow"]["manifest_s"] == gate_event["gate_evidence"]["manifest_s"]
+    assert gate_event["workflow"]["artifacts"] == gate_event["workflow"]["manifest_s"]["artifacts"]
 
 
 def test_run_once_is_idempotent_across_restart_and_zero_checks_block(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 {
   "name": "rd-flywheel",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Deterministic capability-gap governance through MCP, Skill, standalone CLI, and OS scheduling.",
   "author": {
     "name": "Sheldon"
@@ -17,6 +17,9 @@
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
+  "runtimeEntrypoints": [
+    "./src/rd_flywheel_cli.py"
+  ],
   "interface": {
     "displayName": "\u7814\u53d1\u98de\u8f6e",
     "shortDescription": "\u8bc1\u636e\u7ea6\u675f\u7684\u80fd\u529b\u7f3a\u53e3\u95ed\u73af\u8fd0\u884c\u65f6",

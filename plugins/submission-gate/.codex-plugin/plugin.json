@@ -1,7 +1,7 @@
 {
   "name": "submission-gate",
-  "version": "0.1.4",
-  "description": "Headlessly scan structured submission mail, verify HMAC when present, and execute the authoritative submission gate through the locked product-release-gate core.",
+  "version": "0.1.6",
+  "description": "Headlessly scan structured submission mail and verify a protected GitLab gate result with a canonical Manifest-S and rollback baseline.",
   "author": {
     "name": "Sheldon"
   },
@@ -16,7 +16,8 @@
   "mcpServers": "./.mcp.json",
   "runtimeEntrypoints": [
     "src/submission_gate_cli.py",
-    "src/submission_gate_mcp.py"
+    "src/submission_gate_mcp.py",
+    "src/gitlab_gate_adapter.py"
   ],
   "interface": {
     "displayName": "Submission Gate",

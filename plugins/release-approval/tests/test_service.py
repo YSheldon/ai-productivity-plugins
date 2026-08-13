@@ -27,7 +27,11 @@ from release_approval_config import (
     WorkingHoursConfig,
 )
 from release_approval_mail import MailCapabilityError, MailSendResult
-from release_approval_protocol import ReleaseAuthorizationRequest
+from release_approval_protocol import (
+    ReleaseAuthorizationRequest,
+    build_request_digest,
+    validate_release_request,
+)
 from release_approval_service import ReleaseApprovalService, ReleaseApprovalServiceError
 from release_approval_store import ReleaseApprovalStore
 
@@ -98,6 +102,7 @@ def _config(state_dir: Path) -> ReleaseApprovalConfig:
 def _request() -> ReleaseAuthorizationRequest:
     return ReleaseAuthorizationRequest(
         contract="ReleaseAuthorizationRequest/v1",
+        authority_scope="PRODUCTION_RELEASE",
         event_id="rel-2026-07-16-0001",
         round_id=1,
         task="Task 5",
@@ -297,6 +302,92 @@ def test_build_decision_payload_is_stable_for_retry_and_round_scoped(tmp_path: P
         "decided_at",
         "idempotency_key",
     }
+
+
+def test_governance_page_rebuilds_frozen_visual_companion_and_binds_page_hash(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path / "state")
+    store = ReleaseApprovalStore(config.state_dir / "state.sqlite3")
+    mail = FakeMailGateway(
+        MailSendResult(
+            sent=True,
+            message_id="<smtp-message@example.com>",
+            refused={},
+            raw={"sent": True},
+        )
+    )
+    service = ReleaseApprovalService(
+        config=config,
+        store=store,
+        mail_gateway=mail,
+        now_fn=_fixed_now,
+        token_bytes=lambda count: b"g" * count,
+    )
+    payload: dict[str, object] = {
+        "contract": "ReleaseAuthorizationRequest/v1",
+        "authority_scope": "RD_FLYWHEEL_GOVERNANCE",
+        "event_id": "governance-event-17",
+        "round_id": 3,
+        "task": "cloud_scan.real_api",
+        "module": "submission-gate",
+        "source_ref": "capability-17",
+        "checkpoint_digest": "a" * 64,
+        "manifest_s_digest": "sha256:" + "1" * 64,
+        "manifest_r_digest": "sha256:" + "2" * 64,
+        "manifest_digest": "sha256:" + "3" * 64,
+        "role_snapshot_digest": "sha256:" + "5" * 64,
+        "required_roles": ["release-manager", "security-reviewer"],
+        "original_message_id": "<governance-event-17@example.com>",
+        "references": [],
+        "expires_at": "2099-07-16T00:00:00Z",
+        "idempotency_key": "governance-event-17-round-3",
+        "visual_companion": {
+            "html_sha256": "sha256:" + "2" * 64,
+            "authority": "DESIGN_CONSENT_ONLY",
+        },
+        "governance_context": {
+            "authority_boundary": "DESIGN_CONSENT_ONLY",
+            "missing_capability": "cloud_scan.real_api",
+            "originating_plugin": "submission-gate",
+            "originating_event_id": "capability-17",
+            "checkpoint_digest": "a" * 64,
+            "required_evidence": ["tests", "security_review", "release_readback"],
+            "visual_companion_html_sha256": "sha256:" + "2" * 64,
+        },
+    }
+    payload["request_digest"] = build_request_digest(payload)
+    request = validate_release_request(
+        payload,
+        installed_role_id="release-manager",
+        installed_role_email="release-manager@example.com",
+        now=_fixed_now(),
+    )
+
+    service.record_request(request)
+    page = service.create_page_session(
+        request=request,
+        request_payload={"reply_subject": "Re: 【研发飞轮决策】cloud_scan.real_api"},
+    )
+    persisted_html = (page.artifact_dir / "page.html").read_text(encoding="utf-8")
+
+    assert "VISUAL COMPANION" in persisted_html
+    assert "需要确认的能力建设边界" in persisted_html
+    assert "cloud_scan.real_api" in persisted_html
+    assert "security_review" in persisted_html
+    assert "DESIGN_CONSENT_ONLY" in persisted_html
+    assert "不代表测试通过、发布授权、生产凭证或生产部署" in persisted_html
+    assert 'value="APPROVE"' in persisted_html
+    assert 'value="HOLD"' in persisted_html
+    assert 'value="REJECT"' in persisted_html
+    assert page.page_html_sha256 == "sha256:" + hashlib.sha256(
+        persisted_html.encode("utf-8")
+    ).hexdigest()
+    stored_wire = store.connection.execute(
+        "SELECT request_payload_json FROM requests WHERE event_id = ?",
+        (request.event_id,),
+    ).fetchone()["request_payload_json"]
+    assert json.loads(stored_wire)["governance_context"] == payload["governance_context"]
 
 
 def test_service_page_round_trip_serves_service_artifacts_and_keeps_page_html_immutable(tmp_path: Path) -> None:
@@ -599,6 +690,7 @@ def test_service_preserves_reference_order_deduplicates_and_keeps_original_exact
     service = ReleaseApprovalService(config=config, store=store, mail_gateway=mail)
     request = ReleaseAuthorizationRequest(
         contract="ReleaseAuthorizationRequest/v1",
+        authority_scope="PRODUCTION_RELEASE",
         event_id="rel-2026-07-16-0002",
         round_id=1,
         task="Task 5",
@@ -661,6 +753,7 @@ def test_service_rejects_dot_components_and_reserved_path_forms(
     service = ReleaseApprovalService(config=config, store=store, mail_gateway=mail)
     request = ReleaseAuthorizationRequest(
         contract="ReleaseAuthorizationRequest/v1",
+        authority_scope="PRODUCTION_RELEASE",
         event_id=event_id,
         round_id=1,
         task="Task 5",
@@ -698,6 +791,7 @@ def test_service_fails_closed_for_missing_threading_fields_and_invalid_artifact_
         service.artifact_dir_for_request(
             ReleaseAuthorizationRequest(
                 contract=request.contract,
+                authority_scope=request.authority_scope,
                 event_id="../escape",
                 round_id=request.round_id,
                 task=request.task,

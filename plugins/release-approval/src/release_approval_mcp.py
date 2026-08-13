@@ -41,7 +41,7 @@ if str(_PLUGIN_ROOT) not in sys.path:
 from scripts.bootstrap_dependencies import bootstrap_profile
 
 SERVER_NAME = "release-approval"
-SERVER_VERSION = "0.2.6"
+SERVER_VERSION = "0.2.7"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 _REQUEST_BEGIN_MARKER = "-----BEGIN RELEASE APPROVAL REQUEST-----"
 _REQUEST_END_MARKER = "-----END RELEASE APPROVAL REQUEST-----"
@@ -202,32 +202,113 @@ class ReleaseApprovalController:
             run_lock.release()
 
     def _run_once_locked(self) -> dict[str, Any]:
-        search = self.mail_gateway.search_messages(
-            {
-                "account": self.config.mail_account.profile,
+        since = (self.now_fn().astimezone(timezone.utc) - timedelta(days=7)).date().isoformat()
+        summaries: list[Mapping[str, Any]] = []
+        seen_uids: set[str] = set()
+        search_limit = 50
+
+        def scan_blocked(reason: str, **details: Any) -> dict[str, Any]:
+            payload = {
+                "reason": reason,
+                "since": since,
                 "mailbox": self.config.mailbox,
-                "query": {
-                    "subject": "【发布申请】",
-                    "since": (self.now_fn().astimezone(timezone.utc) - timedelta(days=7)).date().isoformat(),
-                },
-                "limit": 25,
-                "scan_limit": 200,
+                **details,
             }
-        )
+            self.store.append_audit_event(
+                "mail_scan_blocked",
+                payload,
+                created_at=self._isoformat(self.now_fn()),
+            )
+            return {
+                "status": "CAPABILITY_BLOCKED",
+                "scanned_messages": 0,
+                "matched_events": 0,
+                "created_pages": 0,
+                "reused_pages": 0,
+                "opened_pages": 0,
+                "retried_decisions": 0,
+                "events": [{"status": "CAPABILITY_BLOCKED", **payload}],
+            }
+
+        for subject in ("【发布申请】", "【研发飞轮决策】"):
+            try:
+                search = self.mail_gateway.search_messages(
+                    {
+                        "account": self.config.mail_account.profile,
+                        "mailbox": self.config.mailbox,
+                        "query": {"subject": subject, "since": since},
+                        "limit": search_limit,
+                        "scan_limit": 500,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                return scan_blocked(
+                    "mail search failed",
+                    subject=subject,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            if not isinstance(search, Mapping):
+                return scan_blocked("mail search returned a non-object", subject=subject)
+            subject_summaries = search.get("messages")
+            if not isinstance(subject_summaries, list):
+                return scan_blocked("mail search did not return a messages array", subject=subject)
+            if len(subject_summaries) >= search_limit:
+                return scan_blocked(
+                    "mail search reached its result limit; completeness is unproven",
+                    subject=subject,
+                    result_count=len(subject_summaries),
+                    limit=search_limit,
+                )
+            for summary in subject_summaries:
+                if not isinstance(summary, Mapping):
+                    return scan_blocked("mail search returned an invalid summary", subject=subject)
+                uid = str(summary.get("uid") or "").strip()
+                if not uid:
+                    return scan_blocked("mail search summary is missing uid", subject=subject)
+                if uid not in seen_uids:
+                    seen_uids.add(uid)
+                    summaries.append(summary)
+        scanned_messages: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
+        for summary in summaries:
+            uid = str(summary["uid"]).strip()
+            try:
+                message = self.mail_gateway.read_message(
+                    {
+                        "account": self.config.mail_account.profile,
+                        "mailbox": self.config.mailbox,
+                        "uid": uid,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                return scan_blocked(
+                    "mail readback failed",
+                    uid=uid,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            if not isinstance(message, Mapping):
+                return scan_blocked("mail readback returned a non-object", uid=uid)
+            read_uid = str(message.get("uid") or "").strip()
+            if read_uid != uid:
+                return scan_blocked(
+                    "mail readback uid drifted from the search summary",
+                    uid=uid,
+                    read_uid=read_uid,
+                )
+            summary_message_id = str(summary.get("message_id") or "").strip()
+            if summary_message_id and str(message.get("message_id") or "").strip() != summary_message_id:
+                return scan_blocked(
+                    "mail readback Message-ID drifted from the search summary",
+                    uid=uid,
+                )
+            scanned_messages.append((summary, message))
         events: list[dict[str, Any]] = []
         created_pages = 0
         reused_pages = 0
         opened_pages = 0
         retried = 0
         blocked = 0
-        summaries = list(search.get("messages") or [])
-        for summary in summaries:
+        for summary, message in scanned_messages:
             uid = str(summary.get("uid") or "").strip()
-            if not uid:
-                continue
-            message = self.mail_gateway.read_message(
-                {"account": self.config.mail_account.profile, "mailbox": self.config.mailbox, "uid": uid}
-            )
             try:
                 request_payload = self._extract_request_machine_block(
                     str(message.get("body_text") or "")
@@ -432,6 +513,7 @@ class ReleaseApprovalController:
                 "event_id": key[0],
                 "round_id": key[1],
                 "role_id": key[2],
+                "authority_scope": request["authority_scope"],
                 "request_digest": request["request_digest"],
                 "manifest_digest": request["manifest_digest"],
                 "role_snapshot_digest": request["role_snapshot_digest"],
@@ -496,6 +578,7 @@ class ReleaseApprovalController:
                 "event_id": request.event_id,
                 "round_id": request.round_id,
                 "role_id": request.installed_role_id,
+                "authority_scope": request.authority_scope,
                 "message_id": str(message.get("message_id") or ""),
                 "raw_headers_sha256": str(evidence.get("raw_headers_sha256") or ""),
                 "sender_email": sender_email,
@@ -745,23 +828,30 @@ class ReleaseApprovalController:
                 details={"event_id": key[0], "round_id": key[1], "role_id": key[2]},
             )
         try:
-            payload = {
-                "contract": "ReleaseAuthorizationRequest/v1",
-                "event_id": str(row["event_id"]),
-                "round_id": int(row["round_id"]),
-                "task": str(row["task"]),
-                "module": str(row["module"]),
-                "manifest_s_digest": str(row["manifest_s_digest"]),
-                "manifest_r_digest": str(row["manifest_r_digest"]),
-                "manifest_digest": str(row["manifest_digest"]),
-                "request_digest": str(row["request_digest"]),
-                "role_snapshot_digest": str(row["role_snapshot_digest"]),
-                "required_roles": json.loads(str(row["required_roles_json"])),
-                "original_message_id": str(row["original_message_id"]),
-                "references": json.loads(str(row["references_json"])),
-                "expires_at": str(row["expires_at"]),
-                "idempotency_key": str(row["idempotency_key"]),
-            }
+            stored_payload = row["request_payload_json"]
+            if isinstance(stored_payload, str) and stored_payload.strip():
+                payload = json.loads(stored_payload)
+                if not isinstance(payload, dict):
+                    raise ValueError("stored request machine payload is not an object")
+            else:
+                payload = {
+                    "contract": "ReleaseAuthorizationRequest/v1",
+                    "authority_scope": str(row["authority_scope"]),
+                    "event_id": str(row["event_id"]),
+                    "round_id": int(row["round_id"]),
+                    "task": str(row["task"]),
+                    "module": str(row["module"]),
+                    "manifest_s_digest": str(row["manifest_s_digest"]),
+                    "manifest_r_digest": str(row["manifest_r_digest"]),
+                    "manifest_digest": str(row["manifest_digest"]),
+                    "request_digest": str(row["request_digest"]),
+                    "role_snapshot_digest": str(row["role_snapshot_digest"]),
+                    "required_roles": json.loads(str(row["required_roles_json"])),
+                    "original_message_id": str(row["original_message_id"]),
+                    "references": json.loads(str(row["references_json"])),
+                    "expires_at": str(row["expires_at"]),
+                    "idempotency_key": str(row["idempotency_key"]),
+                }
             request = validate_release_request(
                 payload,
                 installed_role_id=self.config.role_id,
@@ -774,7 +864,12 @@ class ReleaseApprovalController:
                 "stored request state failed integrity validation.",
                 details={"event_id": key[0], "round_id": key[1], "role_id": key[2]},
             ) from exc
-        reply_subject = f"Re: 【发布申请】{request.task}-{request.module}"
+        prefix = (
+            "【研发飞轮决策】"
+            if request.authority_scope == "RD_FLYWHEEL_GOVERNANCE"
+            else "【发布申请】"
+        )
+        reply_subject = f"Re: {prefix}{request.task}-{request.module}"
         request_payload = {"reply_subject": reply_subject}
         page_session = self.service.create_page_session(
             request=request,
@@ -867,6 +962,7 @@ class ReleaseApprovalController:
             return False
         expected_headers = {
             "contract": request.contract,
+            "authority_scope": request.authority_scope,
             "event_id": request.event_id,
             "round_id": str(request.round_id),
             "task": request.task,

@@ -31,6 +31,12 @@ class FakeController:
             "received": values,
         }
 
+    def import_submission_gate_handoff(self, **values: object) -> dict:
+        return {
+            "status": "TESTING",
+            "received": values,
+        }
+
     def record_svn_live_gate_receipt(
         self,
         event_id: str,
@@ -175,6 +181,34 @@ class CliProtocolTests(unittest.TestCase):
             "CLEAN",
             receipt_payload["result"]["svn_release_gate_status"],
         )
+
+    def test_call_routes_external_submission_import_without_codex(self) -> None:
+        request = {
+            "event_id": "event-import-1",
+            "round_number": 1,
+            "task_id": "TASK-1",
+            "module": "client",
+            "manifest_s": {"schema": "ProductMaterialManifestS/v1"},
+            "tested_material_dir": "C:/tested/materials",
+            "source_ref": "svn:/release@1047",
+            "rollback_ref": "svn:/release@1046",
+            "risk_level": "standard",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            code, payload = self._run(
+                [
+                    "--config",
+                    str(Path(temporary) / "config.json"),
+                    "call",
+                    "import_submission_gate_handoff",
+                    "--input",
+                    json.dumps(request),
+                ]
+            )
+
+        self.assertEqual(EXIT_OK, code)
+        self.assertEqual("TESTING", payload["result"]["status"])
+        self.assertEqual(request, payload["result"]["received"])
 
     def test_scheduler_policy_cannot_be_overridden_per_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

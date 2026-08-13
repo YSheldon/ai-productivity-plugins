@@ -22,6 +22,7 @@ NOW = datetime(2026, 7, 16, 4, 0, tzinfo=timezone.utc)
 
 def _request() -> dict[str, object]:
     return {
+        "authority_scope": "PRODUCTION_RELEASE",
         "event_id": "evt-service", "round_id": 1, "task": "Task 8",
         "module": "release-approval-verifier", "manifest_s_digest": "sha256:" + "1" * 64,
         "manifest_r_digest": "sha256:" + "2" * 64, "manifest_digest": "sha256:" + "3" * 64,

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "governance_inbox": "%LOCALAPPDATA%\\rd-flywheel\\inbox",
   "state_dir": "%LOCALAPPDATA%\\rd-flywheel\\state",
   "poll_minutes": 60,
@@ -9,6 +9,7 @@
     "imap-smtp-mail",
     "lark-cli",
     "product-release-gate",
+    "release-approval-verifier",
     "ssh",
     "wecom-codex-usage"
   ],
@@ -18,7 +19,18 @@
     "tool_profile": "gitlab",
     "protected_branch_required": true
   },
-  "notification": null,
-  "decision_role_source": null,
-  "dependency_lock": "%LOCALAPPDATA%\\rd-flywheel\\state\\dependency-lock.json"
+  "notification": {
+    "mail_profile": "enterprise-primary",
+    "recipients": [
+      "rd-governance@example.com"
+    ]
+  },
+  "decision_role_source": {
+    "type": "feishu",
+    "document_url": "https://feishu.example.com/docx/decision-roles",
+    "heading": "## 决策角色"
+  },
+  "dependency_lock": "%LOCALAPPDATA%\\rd-flywheel\\state\\dependency-lock.json",
+  "dependency_lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "decision_verifier_config": "%LOCALAPPDATA%\\release-approval-verifier\\config.json"
 }

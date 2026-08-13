@@ -1,0 +1,10 @@
+{
+  "base_url": "https://gitlab.example.com",
+  "project_id": 59,
+  "ref": "main",
+  "job_name": "submission_gate",
+  "token_env": "PMG_GITLAB_TOKEN",
+  "timeout_seconds": 900,
+  "poll_interval_seconds": 5,
+  "ca_bundle": ""
+}

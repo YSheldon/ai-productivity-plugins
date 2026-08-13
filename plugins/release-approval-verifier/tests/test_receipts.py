@@ -21,6 +21,7 @@ NOW = datetime(2026, 7, 16, 4, 0, tzinfo=timezone.utc)
 
 def _request() -> dict[str, object]:
     return {
+        "authority_scope": "PRODUCTION_RELEASE",
         "event_id": "evt-receipt",
         "round_id": 7,
         "task": "Task 8",
@@ -67,7 +68,7 @@ def test_all_required_approvals_produce_bound_hmac_sha256_receipt() -> None:
     assert receipt["receipt_algorithm"] == "HMAC-SHA256"
     assert receipt["receipt_hmac"].startswith("base64:")
     for field in (
-        "event_id", "round_id", "manifest_s_digest", "manifest_r_digest", "manifest_digest",
+        "authority_scope", "event_id", "round_id", "manifest_s_digest", "manifest_r_digest", "manifest_digest",
         "request_digest", "role_snapshot_digest", "expires_at",
     ):
         assert receipt[field] == _request()[field]
@@ -114,6 +115,7 @@ def test_expired_request_is_signed_as_expired() -> None:
 @pytest.mark.parametrize(
     ("field", "replacement"),
     [
+        ("authority_scope", "RD_FLYWHEEL_GOVERNANCE"),
         ("event_id", "evt-other"),
         ("round_id", 8),
         ("manifest_s_digest", "sha256:" + "6" * 64),

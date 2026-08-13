@@ -86,8 +86,27 @@ def evidence(kind="adapter_selection", verified=True):
 
 def test_state_after_validated_requires_durable_evidence():
     with pytest.raises(ProtocolError, match="durable evidence"):
-        validate_transition("VALIDATED", "WAITING_AGENT", ())
-    validate_transition("VALIDATED", "WAITING_AGENT", (evidence(),))
+        validate_transition("VALIDATED", "DECISION_PENDING", ())
+    validate_transition(
+        "VALIDATED",
+        "DECISION_PENDING",
+        (evidence("governance_decision_request"),),
+    )
+
+
+def test_capability_construction_must_pass_governance_decision_state():
+    validate_transition(
+        "VALIDATED",
+        "DECISION_PENDING",
+        (evidence("governance_decision_request"),),
+    )
+    validate_transition(
+        "DECISION_PENDING",
+        "WAITING_AGENT",
+        (evidence("governance_decision_receipt"),),
+    )
+    with pytest.raises(ProtocolError, match="illegal state transition"):
+        validate_transition("VALIDATED", "WAITING_AGENT", (evidence(),))
 
 
 def test_illegal_state_transition_is_rejected():

@@ -28,13 +28,18 @@ The setup path is bounded to at most four prompts on first setup and reruns with
 ## Workflow
 
 1. `run-once` scans the submission mailbox.
-   - When a valid ProductMaterialWorkflow/v1 machine event with a valid HMAC is present, the task is marked 合规插件发起（已验证）.
+   - When a valid ProductMaterialMail/v1 machine event with a valid HMAC is present, the task is marked 合规插件发起（已验证）. The legacy event block remains accepted for compatibility.
    - When the machine event or HMAC is absent, the plugin falls back to the canonical human-readable mail body and marks the source as 普通邮件发起（未验证）.
    - When a machine event claims authentication but the HMAC is invalid, the message is blocked as AUTHENTICATION_FAILED.
 2. `list-tasks` shows pending tasks with Manifest-S digest, module, source message id, and the current unified state.
 3. `create-request` records the tester decision.
    - FAIL moves the task to TEST_FAILED and never builds Manifest-R or sends mail.
-   - PASS requires an output_dir, calls the locked product-release-gate CLI to record the test result and build Manifest-R, and fails closed if the kernel does not return a real manifest_r_digest.
+   - PASS requires both a per-run `tested_material_dir` and `output_dir`.
+   - The tested directory must contain exactly the Manifest-S file set. Missing, extra, nested, symlinked, renamed, size-drifted, SHA1-drifted, or SHA256-drifted material fails before the test result is recorded.
+   - PASS imports the verified cross-host Manifest-S into the locked product-release-gate, records the test result only after the import reports TESTING, then builds Manifest-R. Any import or digest failure is fail closed.
+   - The PASS intent (summary, report reference, tested directory, and output directory) is frozen before mutation. A replay must match it exactly.
+   - Import and final-material build are same-input idempotent. A restart resumes from the authoritative product-release-gate state; high/emergency risk stops at TEST_APPROVAL_REQUIRED until an auditable approval advances it.
+   - The outbound request uses one deterministic Message-ID. If SMTP fails or the process restarts after freezing, the unattended scheduler retries only that same mail and does not repeat import, test recording, or final-material build.
    - The outbound `【发布门禁检查】...` mail always contains a signed machine event, frozen policy digests, checklist results, provenance badge propagation, and evidence refs.
 
 ## Common Commands
@@ -42,6 +47,7 @@ The setup path is bounded to at most four prompts on first setup and reruns with
 - `py -3 ./src/pre_release_cli.py setup --non-interactive`
 - `py -3 ./src/pre_release_cli.py preflight`
 - `py -3 ./src/pre_release_cli.py run-once`
+- `py -3 ./src/pre_release_cli.py create-request --event-id <id> --round-id <n> --test-result PASS --summary <text> --tested-material-dir <dir> --output-dir <dir>`
 - `py -3 ./src/pre_release_cli.py status`
 - `py -3 ./src/pre_release_cli.py doctor`
 - `py -3 ./src/pre_release_cli.py scheduler install|status|remove`
@@ -64,4 +70,4 @@ See config/config.example.json. Installation config intentionally excludes:
 
 ## Audit
 
-`verify-audit` validates the append-only HMAC/SHA256 hash-chain audit. Any tamper, sequence break, HMAC mismatch, or missing shared secret causes CAPABILITY_BLOCKED.
+`verify-audit` validates the append-only HMAC/SHA256 hash-chain audit. Every task state file is independently HMAC sealed and checked by preflight, status, list, and run-once. Any audit or task-state tamper, sequence break, HMAC mismatch, or missing shared secret causes CAPABILITY_BLOCKED.

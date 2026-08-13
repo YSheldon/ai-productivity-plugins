@@ -79,6 +79,7 @@ def _build_parser() -> JsonArgumentParser:
     create.add_argument("--test-result", required=True, choices=("PASS", "FAIL"))
     create.add_argument("--summary", required=True)
     create.add_argument("--output-dir")
+    create.add_argument("--tested-material-dir")
     create.add_argument("--report-ref")
     create.add_argument("--failure-reason")
 
@@ -146,6 +147,7 @@ def run_cli(
             test_result=args.test_result,
             summary=args.summary,
             output_dir=args.output_dir,
+            tested_material_dir=args.tested_material_dir,
             report_ref=args.report_ref,
             failure_reason=args.failure_reason,
         )

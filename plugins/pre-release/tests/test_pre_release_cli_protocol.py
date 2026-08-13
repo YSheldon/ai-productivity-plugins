@@ -112,12 +112,15 @@ def test_cli_inventory_and_common_operations(tmp_path: Path) -> None:
             "ok",
             "--output-dir",
             str(tmp_path / "out"),
+            "--tested-material-dir",
+            str(tmp_path / "tested"),
         ],
         controller_factory=lambda _path: controller,
     )
     assert code == 0
     assert payload["operation"] == "create_request"
     assert payload["kwargs"]["round_id"] == 2
+    assert payload["kwargs"]["tested_material_dir"] == str(tmp_path / "tested")
 
 
 def test_cli_scheduler_and_setup_payloads(tmp_path: Path) -> None:

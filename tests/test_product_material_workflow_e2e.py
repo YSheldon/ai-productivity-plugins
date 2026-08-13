@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ for source_root in (
     PLUGIN_ROOT / 'test-submission' / 'src',
     PLUGIN_ROOT / 'submission-gate' / 'src',
     PLUGIN_ROOT / 'pre-release' / 'src',
+    PLUGIN_ROOT / 'release-gate' / 'src',
 ):
     if str(source_root) not in sys.path:
         sys.path.insert(0, str(source_root))
@@ -25,6 +27,12 @@ for source_root in (
 from pre_release_config import MailAccountConfig as PreReleaseMailAccountConfig  # noqa: E402
 from pre_release_config import PreReleaseConfig, ProductGateConfig as PreReleaseProductGateConfig  # noqa: E402
 from pre_release_controller import PreReleaseController  # noqa: E402
+from release_gate_config import (  # noqa: E402
+    MailAccountConfig as ReleaseGateMailAccountConfig,
+    ProductGateConfig as ReleaseGateProductGateConfig,
+    ReleaseGateConfig,
+)
+from release_gate_controller import ReleaseGateController  # noqa: E402
 from release_gate_core import ReleaseGateController as ProductCoreController  # noqa: E402
 
 import submission_gate_core as submission_gate_module  # noqa: E402
@@ -61,6 +69,12 @@ class MailHub:
         cc_values = [str(value) for value in list(payload.get('cc') or [])]
         message_id = str(payload.get('message_id') or f'<mail-{len(self.messages) + 1}@example.com>')
         subject = str(payload.get('subject') or '')
+        raw_references = payload.get('references') or []
+        references = (
+            [str(value) for value in raw_references]
+            if isinstance(raw_references, list)
+            else [str(raw_references)]
+        )
         self._uid += 1
         self.messages.append(
             {
@@ -74,12 +88,16 @@ class MailHub:
                 'to': [{'email': value} for value in to_values],
                 'cc': [{'email': value} for value in cc_values],
                 'headers': headers,
+                'references': references,
                 'release_workflow_headers': {
                     key.removeprefix('X-RD-').lower().replace('-', '_'): value
                     for key, value in headers.items()
                     if key.startswith('X-RD-')
                 },
-                'evidence': {'raw_headers_sha256': '3' * 64},
+                'evidence': {
+                    'raw_headers_sha256': '3' * 64,
+                    'references': references,
+                },
             }
         )
         refused = dict(payload.get('refused') or {})
@@ -181,29 +199,54 @@ class ProductGateFacade:
         return {'ready': True}
 
     def evaluate(self, payload: dict[str, Any]) -> dict[str, Any]:
-        try:
-            self.controller.create_submission(
-                event_id=payload['event_id'],
-                task_id=payload['task'],
-                artifacts=[
-                    {
-                        'logical_name': item.get('logical_name') or f'artifact-{index}',
-                        'file_path': str(self._materialize_artifact(payload['event_id'], item.get('logical_name') or f'artifact-{index}')),
-                        'source_ref': item.get('source_ref') or item.get('revision') or 'source-ref',
-                    }
-                    for index, item in enumerate(payload.get('sender_artifact_declarations') or [{}], start=1)
-                ],
-                source_ref=payload.get('source_locator') or 'source-ref',
-                rollback_ref='preview-only',
-                risk_level='standard',
-                round_number=payload['round_id'],
+        materialized_artifacts: list[dict[str, Any]] = []
+        for index, item in enumerate(
+            payload.get('sender_artifact_declarations') or [{}],
+            start=1,
+        ):
+            logical_name = item.get('logical_name') or f'artifact-{index}'
+            material_path = self._materialize_artifact(
+                payload['event_id'],
+                logical_name,
             )
-            self.controller.run_submission_gate(payload['event_id'])
-        except Exception as exc:
-            if 'Event already exists' not in str(exc):
-                raise
-        event_bundle = self.controller.get_event(payload['event_id'])
-        manifest_s = event_bundle['manifest_s']
+            source_ref = item.get('source_ref') or item.get('revision') or 'source-ref'
+            material_bytes = material_path.read_bytes()
+            materialized_artifacts.append(
+                {
+                    'logical_name': logical_name,
+                    'file_name': material_path.name,
+                    'size': len(material_bytes),
+                    'sha1': hashlib.sha1(material_bytes).hexdigest(),
+                    'sha256': hashlib.sha256(material_bytes).hexdigest(),
+                    'source_ref': source_ref,
+                }
+            )
+        evidence_refs = sorted(
+            [
+                f'gitlab://pipeline/{payload["event_id"]}',
+                f'gitlab://job/{payload["event_id"]}',
+            ]
+        )
+        manifest_s = {
+            'schema': 'ProductMaterialManifestS/v1',
+            'event_id': payload['event_id'],
+            'round_id': payload['round_id'],
+            'task': payload['task'],
+            'module': payload['module'],
+            'policy_profile': payload['policy_profile'],
+            'policy_digest': payload['policy_digest'],
+            'effective_checks': payload['effective_checks'],
+            'artifacts': materialized_artifacts,
+            'evidence_refs': evidence_refs,
+        }
+        manifest_s['manifest_s_digest'] = 'sha256:' + hashlib.sha256(
+            json.dumps(
+                manifest_s,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(',', ':'),
+            ).encode('utf-8')
+        ).hexdigest()
         return {
             'adapter_contract': 'GitLabGateResult/v1',
             'provider': 'gitlab',
@@ -212,13 +255,14 @@ class ProductGateFacade:
             'round_id': payload['round_id'],
             'request_digest': payload['request_digest'],
             'policy_digest': payload['policy_digest'],
-            'manifest_digest': 'sha256:' + str(manifest_s['digest']),
-            'material_sha256': '3' * 64,
-            'evidence_refs': [f'gitlab://pipeline/{payload["event_id"]}', f'gitlab://job/{payload["event_id"]}'],
+            'manifest_digest': manifest_s['manifest_s_digest'],
+            'material_sha256': materialized_artifacts[0]['sha256'],
+            'evidence_refs': evidence_refs,
             'pipeline_ref': f'gitlab://pipeline/{payload["event_id"]}',
             'job_ref': f'gitlab://job/{payload["event_id"]}',
             'artifact_ref': f'gitlab://artifact/{payload["event_id"]}',
-            'artifacts': manifest_s.get('artifacts') or [],
+            'rollback_ref': f'gitlab://rollback/{payload["event_id"]}',
+            'manifest_s': manifest_s,
             'lark_evidence_ref': f'lark://submission-gate/{payload["event_id"]}',
         }
 
@@ -230,6 +274,19 @@ class ProductGateFacade:
         return path
 
     def call(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if operation == 'import_submission_gate_handoff':
+            return self.controller.import_submission_gate_handoff(
+                event_id=payload['event_id'],
+                round_number=payload['round_number'],
+                task_id=payload['task_id'],
+                module=payload['module'],
+                manifest_s=payload['manifest_s'],
+                tested_material_dir=payload['tested_material_dir'],
+                source_ref=payload['source_ref'],
+                rollback_ref=payload['rollback_ref'],
+                risk_level=payload['risk_level'],
+                rule_snapshot_id=payload.get('rule_snapshot_id'),
+            )
         if operation == 'record_test_result':
             return self.controller.record_test_result(
                 payload['event_id'],
@@ -241,6 +298,8 @@ class ProductGateFacade:
             return self.controller.build_final_release(payload['event_id'], payload['output_dir'])
         if operation == 'run_release_gate':
             return self.controller.run_release_gate(payload['event_id'])
+        if operation == 'get_event':
+            return self.controller.get_event(payload['event_id'])
         raise AssertionError(f'unsupported operation: {operation}')
 
 
@@ -282,7 +341,7 @@ def _make_context(tmp_path: Path) -> WorkflowContext:
     artifact_path.write_bytes(b'first-four-plugin-vertical-chain')
     shared_secret = tmp_path / 'shared' / 'handoff.key'
     shared_secret.parent.mkdir(parents=True, exist_ok=True)
-    shared_secret.write_bytes(b'1' * 32)
+    shared_secret.write_bytes(b't' * 32)
     dependency_lock = tmp_path / 'dependency-lock.json'
     dependency_lock.write_text(json.dumps({'plugins': []}), encoding='utf-8')
     preview_config = _product_config(tmp_path / 'preview-core' / 'config.json', tmp_path / 'preview-core' / 'events')
@@ -294,6 +353,7 @@ def _make_context(tmp_path: Path) -> WorkflowContext:
                 'mail-primary': 'submitter@example.com',
                 'gate-mail': 'submission-gate@example.com',
                 'qa-owner': 'qa-owner@example.com',
+                'release-gate': 'release-gate@example.com',
             }
         ),
         preview_product=ProductCoreController(str(preview_config)),
@@ -374,6 +434,43 @@ def _pre_release_controller(context: WorkflowContext) -> PreReleaseController:
     )
 
 
+def _release_gate_controller(context: WorkflowContext) -> ReleaseGateController:
+    config = ReleaseGateConfig(
+        mail_account=ReleaseGateMailAccountConfig(
+            profile='release-gate',
+            email='release-gate@example.com',
+        ),
+        release_gate_group='release-gate@example.com',
+        release_group='release@example.com',
+        mailbox='INBOX',
+        timezone='UTC',
+        poll_minutes=60,
+        state_dir=context.tmp_path / 'release-gate' / 'state',
+        dependency_lock=context.dependency_lock,
+        dependency_lock_sha256='0' * 64,
+        shared_hmac_secret_path=context.shared_secret,
+        mail_command=(sys.executable, '-c', 'pass'),
+        product_gate=ReleaseGateProductGateConfig(
+            config_path=context.tmp_path / 'authority-core' / 'config.json',
+            command=(sys.executable, '-c', 'pass'),
+        ),
+        policy_profile='release-gate/v1',
+        required_checks=(
+            'hmac',
+            'manifest',
+            'test_result',
+            'shared_kernel_release_gate',
+        ),
+        enabled_optional_checks=(),
+    )
+    return ReleaseGateController(
+        config,
+        mail_gateway=context.mail_hub,
+        product_gate=ProductGateFacade(context.authority_product, context.tmp_path),
+        now_fn=lambda: NOW,
+    )
+
+
 def _submit_to_test_submission(context: WorkflowContext, event_id: str, *, task_name: str) -> dict[str, Any]:
     path, payload = _submission_config(context)
     controller = test_submission_module.TestSubmissionController(
@@ -433,6 +530,23 @@ def test_real_mail_chain_reaches_release_ready_notification(tmp_path: Path) -> N
     )
     pre_release = _pre_release_controller(context)
     synced = pre_release.run_once()
+    pending = pre_release.list_tasks()['tasks']
+    assert len(pending) == 1
+    persisted_task = pre_release._load_task('event-happy', 1)
+    tested_material_dir = tmp_path / 'tested-material'
+    tested_material_dir.mkdir()
+    for artifact in persisted_task['manifest_s']['artifacts']:
+        (tested_material_dir / artifact['file_name']).write_bytes(b'product-material')
+    prerelease_result = pre_release.create_request(
+        event_id='event-happy',
+        round_id=1,
+        test_result='PASS',
+        summary='all planned tests passed',
+        output_dir=str(tmp_path / 'final-material'),
+        tested_material_dir=str(tested_material_dir),
+        report_ref='test-report://event-happy',
+    )
+    release_gate_result = _release_gate_controller(context).run_once()
 
     assert gate['submitted']['result']['status'] == 'SUBMITTED'
     assert gate['gate_result']['status'] == 'ready'
@@ -442,6 +556,24 @@ def test_real_mail_chain_reaches_release_ready_notification(tmp_path: Path) -> N
     assert gate['gate_result']['skipped'] == 0
     assert gate['gate_result']['capability_blocked'] == 0
     assert synced['matched_events'] == 1
+    assert prerelease_result['status'] == 'PRERELEASE_SENT'
+    assert release_gate_result['processed'] == 1
+    assert release_gate_result['blocked'] == 0
+    assert (
+        context.authority_product.get_event('event-happy')['event']['status']
+        == 'RELEASE_READY'
+    )
+    release_mail = context.mail_hub.last_message(
+        'release-gate@example.com',
+        startswith='【发布门禁检查】',
+    )
+    assert release_mail is not None
+    assert 'Manifest-R：sha256:' in release_mail['body_text']
+    release_application = context.mail_hub.last_message(
+        'release@example.com',
+        startswith='【发布申请】',
+    )
+    assert release_application is not None
 
 
 def test_submission_gate_policy_failure_blocks_pre_release_input(tmp_path: Path) -> None:

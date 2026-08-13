@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, TypeVar
 
-from release_approval_protocol import ReleaseAuthorizationRequest, canonical_json
+from release_approval_protocol import (
+    ReleaseAuthorizationRequest,
+    build_request_digest,
+    canonical_json,
+)
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 _GENESIS_PREVIOUS_HASH = "0" * 64
 _REQUIRED_TABLES = {
     "messages",
@@ -18,6 +23,10 @@ _REQUIRED_TABLES = {
     "pages",
     "smtp_outcomes",
     "audit_events",
+}
+_REQUIRED_REQUEST_COLUMNS = {
+    "authority_scope",
+    "request_payload_json",
 }
 _T = TypeVar("_T")
 
@@ -86,7 +95,41 @@ class ReleaseApprovalStore:
             self._run_write("schema initialization", create_schema, immediate=True)
             return
 
+        if user_version == 1:
+            self._run_write("schema v1 to v2 migration", self._migrate_v1_to_v2, immediate=True)
+            user_version = 2
+            user_objects = self._user_objects()
+
+        if user_version == 2:
+            self._run_write("schema v2 to v3 migration", self._migrate_v2_to_v3, immediate=True)
+            user_version = 3
+            user_objects = self._user_objects()
+
         self._ensure_supported_schema(user_version, user_objects)
+
+    def _migrate_v1_to_v2(self) -> None:
+        if "requests" not in self._user_objects():
+            raise StoreError("schema v1 cannot be migrated because requests is missing.")
+        columns = {
+            str(row[1]) for row in self.connection.execute("PRAGMA table_info(requests)").fetchall()
+        }
+        if "authority_scope" not in columns:
+            self.connection.execute(
+                "ALTER TABLE requests ADD COLUMN authority_scope TEXT NOT NULL DEFAULT 'PRODUCTION_RELEASE'"
+            )
+        self.connection.execute("PRAGMA user_version = 2")
+
+    def _migrate_v2_to_v3(self) -> None:
+        if "requests" not in self._user_objects():
+            raise StoreError("schema v2 cannot be migrated because requests is missing.")
+        columns = {
+            str(row[1]) for row in self.connection.execute("PRAGMA table_info(requests)").fetchall()
+        }
+        if "request_payload_json" not in columns:
+            self.connection.execute(
+                "ALTER TABLE requests ADD COLUMN request_payload_json TEXT NULL"
+            )
+        self.connection.execute("PRAGMA user_version = 3")
 
     def _ensure_supported_schema(self, user_version: int, user_objects: set[str]) -> None:
         if user_version != SCHEMA_VERSION:
@@ -102,6 +145,15 @@ class ReleaseApprovalStore:
         if missing_tables:
             missing = ", ".join(sorted(missing_tables))
             raise StoreError(f"schema version {SCHEMA_VERSION} is incomplete; missing tables: {missing}.")
+        request_columns = {
+            str(row[1]) for row in self.connection.execute("PRAGMA table_info(requests)").fetchall()
+        }
+        missing_columns = _REQUIRED_REQUEST_COLUMNS.difference(request_columns)
+        if missing_columns:
+            missing = ", ".join(sorted(missing_columns))
+            raise StoreError(
+                f"schema version {SCHEMA_VERSION} is incomplete; missing request columns: {missing}."
+            )
 
     def _create_schema(self) -> None:
         self.connection.executescript(
@@ -121,6 +173,8 @@ class ReleaseApprovalStore:
                 event_id TEXT NOT NULL,
                 round_id INTEGER NOT NULL,
                 role TEXT NOT NULL,
+                authority_scope TEXT NOT NULL,
+                request_payload_json TEXT NULL,
                 request_digest TEXT NOT NULL,
                 manifest_digest TEXT NOT NULL,
                 manifest_s_digest TEXT NOT NULL,
@@ -263,10 +317,12 @@ class ReleaseApprovalStore:
         self._run_write("message", writer)
 
     def record_request(self, request: ReleaseAuthorizationRequest) -> StoredRequest:
+        request_payload_json = self._validated_wire_payload_json(request)
+
         def writer() -> StoredRequest:
             existing_by_key = self._get_request_row_by_idempotency(request.idempotency_key)
             if existing_by_key is not None:
-                if self._request_row_matches(existing_by_key, request):
+                if self._request_row_matches(existing_by_key, request, request_payload_json):
                     return self._row_to_stored_request(existing_by_key)
                 raise StoreError("request idempotency key is already bound to a different payload.")
 
@@ -276,6 +332,8 @@ class ReleaseApprovalStore:
                     event_id,
                     round_id,
                     role,
+                    authority_scope,
+                    request_payload_json,
                     request_digest,
                     manifest_digest,
                     manifest_s_digest,
@@ -290,12 +348,14 @@ class ReleaseApprovalStore:
                     expires_at,
                     idempotency_key
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request.event_id,
                     request.round_id,
                     request.installed_role_id,
+                    request.authority_scope,
+                    request_payload_json,
                     request.request_digest,
                     request.manifest_digest,
                     request.manifest_s_digest,
@@ -625,11 +685,17 @@ class ReleaseApprovalStore:
         ).fetchone()
 
     @staticmethod
-    def _request_row_matches(row: sqlite3.Row, request: ReleaseAuthorizationRequest) -> bool:
+    def _request_row_matches(
+        row: sqlite3.Row,
+        request: ReleaseAuthorizationRequest,
+        request_payload_json: str | None,
+    ) -> bool:
         return (
             row["event_id"] == request.event_id
             and int(row["round_id"]) == request.round_id
             and row["role"] == request.installed_role_id
+            and row["authority_scope"] == request.authority_scope
+            and row["request_payload_json"] == request_payload_json
             and row["request_digest"] == request.request_digest
             and row["manifest_digest"] == request.manifest_digest
             and row["manifest_s_digest"] == request.manifest_s_digest
@@ -644,6 +710,49 @@ class ReleaseApprovalStore:
             and row["expires_at"] == request.expires_at
             and row["idempotency_key"] == request.idempotency_key
         )
+
+    @staticmethod
+    def _validated_wire_payload_json(request: ReleaseAuthorizationRequest) -> str | None:
+        raw = request.wire_payload_json.strip()
+        if not raw:
+            if request.authority_scope == "RD_FLYWHEEL_GOVERNANCE":
+                raise StoreError(
+                    "governance request is missing its exact signed machine payload."
+                )
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise StoreError("request machine payload is not valid JSON.") from exc
+        if not isinstance(payload, dict):
+            raise StoreError("request machine payload must be a JSON object.")
+        if build_request_digest(payload) != request.request_digest:
+            raise StoreError("request machine payload digest does not match the validated request.")
+        core_bindings = {
+            "contract": request.contract,
+            "authority_scope": request.authority_scope,
+            "event_id": request.event_id,
+            "round_id": request.round_id,
+            "task": request.task,
+            "module": request.module,
+            "manifest_s_digest": request.manifest_s_digest,
+            "manifest_r_digest": request.manifest_r_digest,
+            "manifest_digest": request.manifest_digest,
+            "request_digest": request.request_digest,
+            "role_snapshot_digest": request.role_snapshot_digest,
+            "required_roles": list(request.required_roles),
+            "original_message_id": request.original_message_id,
+            "references": list(request.references),
+            "expires_at": request.expires_at,
+            "idempotency_key": request.idempotency_key,
+        }
+        if any(payload.get(key) != value for key, value in core_bindings.items()):
+            raise StoreError("request machine payload drifted from the validated request fields.")
+        if request.governance_context is not None and payload.get(
+            "governance_context"
+        ) != request.governance_context.as_dict():
+            raise StoreError("request governance context drifted from its machine payload.")
+        return canonical_json(payload)
 
     @staticmethod
     def _decision_row_matches(row: sqlite3.Row, payload: Mapping[str, Any]) -> bool:

@@ -29,6 +29,7 @@ from release_workflow_core.states import (
     freeze_capability_blocked,
     require_transition,
 )
+from release_workflow_core.validation import ValidationError, freeze_digest, normalize_string_sequence
 
 
 def _submission_payload() -> dict[str, object]:
@@ -96,6 +97,21 @@ def test_submission_model_validation_accepts_canonical_payload() -> None:
     assert model.effective_checks[-1] == "lint_clean"
     assert model.submitter_email == "submitter@example.com"
     assert model.artifacts[0].material_sha256 == "a" * 64
+
+
+def test_submission_model_rejects_control_characters_in_subject_bound_fields() -> None:
+    payload = _submission_payload()
+    payload["task"] = "Task A\r\nBcc: attacker@example.com"
+    with pytest.raises(ValidationError, match="control characters"):
+        validate_submission_payload(payload)
+
+
+def test_string_sequence_rejects_control_characters() -> None:
+    with pytest.raises(ValidationError, match="control characters"):
+        normalize_string_sequence(
+            ["hashes_match", "cloud_scan_required\nignored"],
+            field_name="effective_checks",
+        )
 
 
 def test_workflow_model_validation_requires_parent_pair() -> None:
@@ -236,6 +252,28 @@ def test_audit_log_verifies_head_chain_and_fails_after_tamper(tmp_path: Path) ->
 
 
 def test_gate_adapter_contract_requires_clean_gitlab_verdict_and_bindings() -> None:
+    manifest_s = {
+        "schema": "ProductMaterialManifestS/v1",
+        "event_id": "evt-release-1",
+        "round_id": 2,
+        "task": "TASK-1",
+        "module": "client",
+        "policy_profile": "submission-client/v1",
+        "policy_digest": "sha256:" + "2" * 64,
+        "effective_checks": ["hashes_match", "cloud_scan_required"],
+        "artifacts": [
+            {
+                "logical_name": "client.exe",
+                "file_name": "client.exe",
+                "size": 4,
+                "sha1": "5" * 40,
+                "sha256": "4" * 64,
+                "source_ref": "gitlab://artifact/client.exe",
+            }
+        ],
+        "evidence_refs": ["gitlab://job/2", "gitlab://pipeline/1"],
+    }
+    manifest_s["manifest_s_digest"] = freeze_digest(manifest_s)
     payload = {
         "adapter_contract": "GitLabGateResult/v1",
         "provider": "gitlab",
@@ -244,12 +282,16 @@ def test_gate_adapter_contract_requires_clean_gitlab_verdict_and_bindings() -> N
         "round_id": 2,
         "request_digest": "sha256:" + "1" * 64,
         "policy_digest": "sha256:" + "2" * 64,
-        "manifest_digest": "sha256:" + "3" * 64,
+        "manifest_digest": manifest_s["manifest_s_digest"],
         "material_sha256": "4" * 64,
         "evidence_refs": ["gitlab://pipeline/1", "gitlab://job/2"],
         "pipeline_ref": "gitlab://pipeline/1",
         "job_ref": "gitlab://job/2",
         "artifact_ref": "gitlab://artifact/3",
+        "rollback_ref": "gitlab://ref/release-baseline",
+        "risk_level": "high",
+        "lark_evidence_ref": "lark://doc/submission-evidence",
+        "manifest_s": manifest_s,
     }
     evidence = validate_gitlab_gate_result(
         payload,
@@ -264,7 +306,37 @@ def test_gate_adapter_contract_requires_clean_gitlab_verdict_and_bindings() -> N
         },
     )
     assert evidence.verdict == "CLEAN"
+    assert evidence.manifest_s == manifest_s
+    assert evidence.risk_level == "high"
+    assert evidence.lark_evidence_ref == "lark://doc/submission-evidence"
     bad = dict(payload)
     bad["verdict"] = "BLOCKED"
     with pytest.raises(GateAdapterContractError, match="verdict must be CLEAN"):
         validate_gitlab_gate_result(bad)
+
+    tampered = dict(payload)
+    tampered_manifest = json.loads(json.dumps(manifest_s))
+    tampered_manifest["task"] = "FORGED"
+    tampered["manifest_s"] = tampered_manifest
+    with pytest.raises(GateAdapterContractError, match="Manifest-S digest"):
+        validate_gitlab_gate_result(tampered)
+
+    missing_rollback = dict(payload)
+    missing_rollback.pop("rollback_ref")
+    with pytest.raises(GateAdapterContractError, match="rollback_ref"):
+        validate_gitlab_gate_result(missing_rollback)
+
+    invalid_risk = dict(payload)
+    invalid_risk["risk_level"] = "urgent"
+    with pytest.raises(GateAdapterContractError, match="risk_level"):
+        validate_gitlab_gate_result(invalid_risk)
+
+    injected_ref = dict(payload)
+    injected_ref["lark_evidence_ref"] = "lark://doc/1\r\nBcc: attacker@example.test"
+    with pytest.raises(GateAdapterContractError, match="lark_evidence_ref"):
+        validate_gitlab_gate_result(injected_ref)
+
+    injected_rollback = dict(payload)
+    injected_rollback["rollback_ref"] = "gitlab://ref/main\nforged"
+    with pytest.raises(GateAdapterContractError, match="rollback_ref"):
+        validate_gitlab_gate_result(injected_rollback)

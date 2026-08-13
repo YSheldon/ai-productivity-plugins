@@ -34,6 +34,7 @@ class JsonArgumentParser(argparse.ArgumentParser):
 CONTROLLER_OPERATIONS = (
     "preflight",
     "create_submission",
+    "import_submission_gate_handoff",
     "run_submission_gate",
     "run_tests",
     "record_test_result",
@@ -141,6 +142,10 @@ def invoke_controller(
             baseline_manifest_path=payload.get("baseline_manifest_path"),
             new_round_of=payload.get("new_round_of"),
         )
+    if operation == "import_submission_gate_handoff":
+        values = dict(payload)
+        values.setdefault("risk_level", "standard")
+        return controller.import_submission_gate_handoff(**values)
     if operation == "run_submission_gate":
         return controller.run_submission_gate(payload["event_id"])
     if operation == "run_tests":

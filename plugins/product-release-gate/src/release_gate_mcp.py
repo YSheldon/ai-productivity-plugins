@@ -18,7 +18,7 @@ from release_gate_setup import run_setup_operation
 
 
 SERVER_NAME = "product-release-gate"
-SERVER_VERSION = "0.5.0"
+SERVER_VERSION = "0.5.2"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 _CONTROLLER = ProductionReleaseController()
 
@@ -148,6 +148,21 @@ def create_submission(args: dict[str, Any]) -> dict[str, Any]:
         rule_snapshot_id=args.get("rule_snapshot_id"),
         baseline_manifest_path=args.get("baseline_manifest_path"),
         new_round_of=args.get("new_round_of"),
+    )
+
+
+def import_submission_gate_handoff(args: dict[str, Any]) -> dict[str, Any]:
+    return controller(args).import_submission_gate_handoff(
+        event_id=args["event_id"],
+        round_number=args["round_number"],
+        task_id=args["task_id"],
+        module=args["module"],
+        manifest_s=args["manifest_s"],
+        tested_material_dir=args["tested_material_dir"],
+        source_ref=args["source_ref"],
+        rollback_ref=args["rollback_ref"],
+        risk_level=args.get("risk_level", "standard"),
+        rule_snapshot_id=args.get("rule_snapshot_id"),
     )
 
 
@@ -465,6 +480,112 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": create_submission,
+    },
+    "release_gate_import_submission_gate_handoff": {
+        "description": "Atomically import a verified cross-host ProductMaterialManifestS/v1 and bind it to the exact tested-material directory before accepting a test result.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "round_number": {"type": "integer", "minimum": 1},
+                "task_id": {"type": "string"},
+                "module": {"type": "string"},
+                "manifest_s": {
+                    "type": "object",
+                    "properties": {
+                        "schema": {"const": "ProductMaterialManifestS/v1"},
+                        "event_id": {"type": "string"},
+                        "round_id": {"type": "integer", "minimum": 1},
+                        "task": {"type": "string"},
+                        "module": {"type": "string"},
+                        "policy_profile": {"type": "string"},
+                        "policy_digest": {
+                            "type": "string",
+                            "pattern": "^sha256:[0-9a-f]{64}$",
+                        },
+                        "effective_checks": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {"type": "string", "minLength": 1},
+                        },
+                        "artifacts": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "logical_name": {"type": "string"},
+                                    "file_name": {"type": "string"},
+                                    "size": {"type": "integer", "minimum": 0},
+                                    "sha1": {
+                                        "type": "string",
+                                        "pattern": "^[0-9a-f]{40}$",
+                                    },
+                                    "sha256": {
+                                        "type": "string",
+                                        "pattern": "^[0-9a-f]{64}$",
+                                    },
+                                    "source_ref": {"type": "string"},
+                                },
+                                "required": [
+                                    "logical_name",
+                                    "file_name",
+                                    "size",
+                                    "sha1",
+                                    "sha256",
+                                    "source_ref",
+                                ],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "evidence_refs": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1},
+                        },
+                        "manifest_s_digest": {
+                            "type": "string",
+                            "pattern": "^sha256:[0-9a-f]{64}$",
+                        },
+                    },
+                    "required": [
+                        "schema",
+                        "event_id",
+                        "round_id",
+                        "task",
+                        "module",
+                        "policy_profile",
+                        "policy_digest",
+                        "effective_checks",
+                        "artifacts",
+                        "evidence_refs",
+                        "manifest_s_digest",
+                    ],
+                    "additionalProperties": False,
+                },
+                "tested_material_dir": {"type": "string"},
+                "source_ref": {"type": "string"},
+                "rollback_ref": {"type": "string"},
+                "risk_level": {
+                    "type": "string",
+                    "enum": ["standard", "high", "emergency"],
+                    "default": "standard",
+                },
+                "rule_snapshot_id": {"type": "string"},
+                **CONFIG_PROPERTY,
+            },
+            "required": [
+                "event_id",
+                "round_number",
+                "task_id",
+                "module",
+                "manifest_s",
+                "tested_material_dir",
+                "source_ref",
+                "rollback_ref",
+            ],
+            "additionalProperties": False,
+        },
+        "handler": import_submission_gate_handoff,
     },
     "release_gate_run_submission_gate": {
         "description": "Execute every configured T-gate rule. Any FAIL or ERROR blocks testing.",

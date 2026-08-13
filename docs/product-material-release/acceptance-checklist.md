@@ -6,26 +6,36 @@ Use this checklist to confirm the accepted architecture is in place and that the
 
 This checklist does not claim a production deployment.
 
-## Verified Evidence (2026-08-07)
+## Implementation Evidence (2026-08-13)
 
-- GitHub plugin marketplace `main` was refreshed at `6e8cf1cd4d7ccde19870d9ae2bd32d0225ea9cea`. The complete configured test suite passed locally with `992 passed` and `45 subtests passed`.
-- GitLab product CI merge request `!24` passed its merge-request pipeline `1919` and was merged to protected `main` as `84f2161c6c7d6da9b8e14c7132a7f414e9fa1d88`.
-- The GitLab CI repository passed locally with `242 passed`, `3 skipped`, and `39 subtests passed`. The three skips are Windows symlink-privilege cases; live-launcher, policy, bundle, trust, request-binding, and deployment tests were not skipped.
-- Main pipeline `1921` passed Linux unit tests, Windows unit tests, Runner1 binary staging, and controlled fixture `CLEAN` and `BLOCKED` jobs. It is waiting only on the three expected manual production jobs: Runner1 OpenSSH bootstrap, Runner1 install/provisioning, and `live_gate`.
-- Runner `20` is an online Windows/amd64 test Runner locked exclusively to project `59`, has `run_untagged=false`, and carries only the non-production `windows` and `product-material-gate-ci-test` tags. It is valid test evidence and cannot run `live_gate`.
+- GitHub PR #16 implementation commit add98b5bf026f3fec705b1bee78d339072c7ffe6 contains the governed approval-chain changes plus the protected GitLab submission-gate adapter. The rebased Windows local suite passed with 1129 passed, 1 skipped, and 50 subtests passed; the only skip is the upstream POSIX permission-bit test on Windows.
+- GitLab MR !37 candidate 3944390abedf3f9debeaaf3ca90600c0e781f719 contains the production submission runtime, signed configuration staging/SYSTEM broker, protected deployment packaging, and pipeline/job-unique evidence paths. Its local suite passed 296 tests, OK, with 3 skipped symlink-privilege cases; no submission-gate, configuration, cloud-scan, deployment, or live-launcher test was skipped.
+- The GitLab adapter now binds the protected-ref head SHA, triggered pipeline, exact successful job, same-origin HTTPS references, and the per-pipeline/per-job result artifact. It rejects redirects, stale fixed paths, commit/ref/job drift, and malformed Manifest-S evidence.
+- These results prove code and contract behavior only. PR/MR merge, protected Runner installation, real external scans, authorization, deployment/readback, report delivery/readback, and rollback rehearsal remain separate evidence gates.
+
+## Verified Evidence (2026-08-12)
+
+- GitHub plugin marketplace baseline `main` is `cc7300e90f69bf17dd23409698c3f65de522aaa6`. The production-audit topic worktree passed the complete configured local suite with `1050 passed` and `45 subtests passed`; this is implementation evidence, not a production deployment receipt.
+- GitLab product CI protected `main` is `286009c5a86f18e70bbfe4ffaacc825085b1d26a` after the secure Runner1 provisioning bridge merge.
+- The GitLab CI repository passed its current local suite with `246 tests`, `OK`, and `3 skipped`. The skips are Windows symlink-privilege cases; live-launcher, policy, bundle, trust, request-binding, and deployment tests were not skipped.
+- Main pipeline `1927` passed Linux unit tests, Windows unit tests, Runner1 binary staging, and controlled fixture `CLEAN` and `BLOCKED` jobs. The protected `live_gate` remains manual and has not run.
+- Pipeline `1927` job `5055` reached the restricted Runner1 credential handoff and then failed closed as `credential_wait_failed`; its artifact reports `ready=false`, `security_ready=false`, and `credential_cleanup_confirmed=false`. This is not production Runner evidence.
+- Runner `20` is an online Windows/amd64 test Runner locked exclusively to project `59`, has `run_untagged=false`, `access_level=not_protected`, and carries only the non-production `windows` and `product-material-gate-ci-test` tags. Pipeline `1927` job `5049` passed on this Runner. It is valid test evidence and cannot run `live_gate`.
 - Runner `2` provides Linux test and fixture evidence. It is not a production Runner.
 - Runner `1` is an online protected Windows bootstrap plane but remains shared across signing and other projects. It may bootstrap the isolated Runner1 policy; it is not the final `live_gate` execution plane.
 - Runner `8` is protected, locked, and project-exclusive, but it is not the operator-approved remote production host and does not carry the exact `product-material-gate-windows-runner1` identity/tag contract. It is not accepted for production evidence.
 - Project `59` has the two protected OpenSSH bootstrap inputs. Production SVN retrieval, live request/handoff, deployment authority, report delivery, and dedicated Runner1 evidence are not yet provisioned or verified.
 - The authoritative cloud-scan contract is the unauthenticated SVN Version Scan API at `POST /api/v1/scans` plus `GET /api/v1/scans/{scan_id}`. `PMG_CLOUD_SCAN_TOKEN` is neither required nor sent. Fixture coverage is complete; real protected-runner `CLEAN` and controlled `BLOCKED` evidence is still required.
+- GitLab issues `#2` and `#3` were closed with current evidence: the ordinary production environment record is routing metadata rather than an authorization source, and Runner `20` satisfies the isolated Windows test-Runner contract. Issue `#1` remains open for real SVN/cloud-scan evidence and was corrected to forbid `PMG_CLOUD_SCAN_TOKEN`.
 - The enterprise mailbox previously passed IMAP and SMTP login and exact Message-ID readback checks. Production report delivery must still be reverified under the final scheduler identity and locked dependency set.
 
 ## Explicitly Deferred
 
-- Provision and attest the exact `product-material-gate-windows-runner1` service on the approved remote Windows host; no existing Runner currently satisfies that complete identity contract.
+- Provision and attest the exact `product-material-gate-windows-runner1` service on the approved remote Windows host. The current retry must pair a fresh `provision_runner1` job ID with the restricted local credential feeder inside its bounded lease; no existing Runner currently satisfies the complete production identity contract.
 - Install and attest the protected gate bundle built from authenticated `main`, then provision the locked live request, Runner configuration, SVN read-only retrieval boundary, TLS trust, and approval handoff.
 - Execute one real protected `CLEAN` scan and one controlled protected `BLOCKED` scan against `/api/v1/scans`, preserving the scan IDs and GitLab/local receipt bindings.
 - Complete release authorization, pre-production, canary, full production, final readback, production-report delivery/readback, and the four-stage rollback rehearsal. Production deployment is not complete until all of these receipts pass independent readback.
+- Exercise the implemented `rd-flywheel.decision_role_source` path against the final live Feishu role document and preserve one hash-bound, multi-role Visual Companion/email governance receipt. Local contract, persistence, tamper, restart, and verifier tests are complete; the live role snapshot and decisions remain production evidence to collect.
 
 ## Architecture Acceptance
 
@@ -34,6 +44,7 @@ This checklist does not claim a production deployment.
 - [x] `product-release-gate` is the downstream authorization and deploy control plane, not a duplicate policy engine.
 - [x] `release-approval` and `release-approval-verifier` implement the unified multi-role approval flow.
 - [x] `rd-flywheel` owns capability-gap governance and checkpoint recovery.
+- [x] `rd-flywheel` consumes the configured Feishu decision-role source and blocks on a verified multi-role governance-decision receipt before capability construction; live run-bound evidence is tracked separately below.
 - [x] Every workflow plugin exposes MCP, Skill, CLI, and unattended scheduler surfaces.
 - [x] The scheduler runs headless `run-once` behavior only and does not backfill missed intervals.
 - [x] The required subjects are fixed: `【提测】`, `【发布门禁检查】`, and `【发布申请】`.
@@ -88,8 +99,8 @@ This checklist does not claim a production deployment.
 
 ## External Production Prerequisites
 
-- [x] A real mailbox is provisioned and accessible.
-- [x] Feishu permissions are provisioned and verified.
+- [x] A real mailbox has passed baseline SMTP/IMAP access and exact Message-ID readback.
+- [x] Feishu baseline document access has been verified; final role-snapshot and production audit writeback still require run-bound evidence below.
 - [ ] GitLab/host SVN retrieval, deployment authority, live request/handoff, and report-delivery inputs are provisioned. No cloud-scan token is required or permitted.
 - [ ] A new Windows/amd64 runner is registered exclusively to project `59`, bound to the protected `live_gate` tag, and online to accept release jobs.
 - [ ] Any administrator approval required by the environment is complete.
@@ -98,6 +109,8 @@ This checklist does not claim a production deployment.
 ## Blocked-State Readiness
 
 - [ ] The approved remote production host trusts the exact GitLab, SVN, and cloud-scan TLS chains, and the trust evidence has been read back from that host.
+- [ ] The final Feishu role snapshot, required-role set, decision-page SHA-256, SMTP notifications, per-role page/email decisions, and aggregate governance receipt are bound to one `rd-flywheel` event and audit head.
+- [ ] The final release-approval verifier output is independently rebound to the release request and cannot be reused as design-consent or cross-event authority.
 - [ ] The SVN protected credential is bound and auditable without exposing the secret.
 - [ ] GitLab readback proves the selected gate runner is Windows/amd64, protected, exclusive and locked to project `59`, unable to run untagged work, online/idle, and bound to the exact `live_gate` tag.
 - [x] Repository provenance can be reconstructed from the frozen task, module, version, locator or path, fixed revision, and retrieval instructions.

@@ -70,6 +70,8 @@ Incoming requests must come from a configured allowlisted sender, present `Authe
 
 An explicit page open creates a fresh one-time loopback page session. URL bearer material is never persisted. A page decision is role evidence only; it does not aggregate approvals or authorize deployment.
 
+Governance requests carry a frozen `governance_context` that cross-binds the missing capability, originating plugin/event, checkpoint, required completion evidence, Visual Companion HTML SHA-256, exact role snapshot, and `DESIGN_CONSENT_ONLY` authority. The exact canonical machine request is stored and revalidated after restart; governance requests without that payload fail closed. Production-release requests are rejected if they carry governance context.
+
 Mail delivery, page-decision validity, local audit-chain validity, and cloud audit write/readback are separate facts. Optional cloud-audit failure is recorded as `AUDIT_DEGRADED` and never represented as successful cloud readback.
 
 ## Advanced Configuration

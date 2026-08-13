@@ -1,6 +1,6 @@
 {
   "name": "test-submission",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Collect one local-artifact or fixed-revision SVN product-material submission and send a fail-closed request through IMAP/SMTP.",
   "author": {
     "name": "Sheldon"

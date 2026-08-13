@@ -113,6 +113,134 @@ class SubmissionGateSetup:
             config.setdefault("gate_adapter", {})["entrypoint_sha256"] = str(
                 values["gate_adapter_entrypoint_sha256"]
             ).strip().lower()
+        existing_custom_adapter = bool(
+            config.get("gate_adapter", {}).get("command")
+            and not config.get("gitlab_gate_adapter_config")
+            and command_supplied in (None, [], "")
+        )
+        if command_supplied in (None, [], "") and not existing_custom_adapter:
+            adapter_config_path = Path(
+                str(
+                    values.get("gitlab_gate_adapter_config")
+                    or config.get("gitlab_gate_adapter_config")
+                    or self.config_path.parent / "gitlab-gate-adapter.json"
+                )
+            ).expanduser().resolve(strict=False)
+            existing_adapter: dict[str, Any] = {}
+            if adapter_config_path.is_file():
+                loaded_adapter = json.loads(
+                    adapter_config_path.read_text(encoding="utf-8")
+                )
+                if isinstance(loaded_adapter, dict):
+                    existing_adapter = loaded_adapter
+            gitlab_base_url = str(
+                values.get("gitlab_base_url")
+                or existing_adapter.get("base_url")
+                or ""
+            ).strip()
+            if not gitlab_base_url:
+                if non_interactive:
+                    raise SetupError(
+                        "SETUP_INPUT_REQUIRED",
+                        "gitlab_base_url is required",
+                    )
+                gitlab_base_url = self.input_fn("GitLab base URL: ").strip()
+                prompt_count += 1
+            raw_project_id = (
+                values.get("gitlab_project_id")
+                or existing_adapter.get("project_id")
+            )
+            if raw_project_id in (None, ""):
+                if non_interactive:
+                    raise SetupError(
+                        "SETUP_INPUT_REQUIRED",
+                        "gitlab_project_id is required",
+                    )
+                raw_project_id = self.input_fn("GitLab project ID: ").strip()
+                prompt_count += 1
+            try:
+                gitlab_project_id = int(raw_project_id)
+            except (TypeError, ValueError) as exc:
+                raise SetupError(
+                    "SETUP_INPUT_INVALID",
+                    "gitlab_project_id must be a positive integer",
+                ) from exc
+            if gitlab_project_id <= 0:
+                raise SetupError(
+                    "SETUP_INPUT_INVALID",
+                    "gitlab_project_id must be a positive integer",
+                )
+            adapter_config = {
+                "base_url": gitlab_base_url,
+                "project_id": gitlab_project_id,
+                "ref": str(
+                    values.get("gitlab_ref")
+                    or existing_adapter.get("ref")
+                    or "main"
+                ).strip(),
+                "job_name": str(
+                    values.get("gitlab_job_name")
+                    or existing_adapter.get("job_name")
+                    or "submission_gate"
+                ).strip(),
+                "token_env": str(
+                    values.get("gitlab_token_env")
+                    or existing_adapter.get("token_env")
+                    or "PMG_GITLAB_TOKEN"
+                ).strip(),
+                "timeout_seconds": int(
+                    values.get("gitlab_timeout_seconds")
+                    or existing_adapter.get("timeout_seconds")
+                    or 900
+                ),
+                "poll_interval_seconds": float(
+                    values.get("gitlab_poll_interval_seconds")
+                    if values.get("gitlab_poll_interval_seconds") is not None
+                    else existing_adapter.get("poll_interval_seconds", 5)
+                ),
+                "ca_bundle": str(
+                    values.get("gitlab_ca_bundle")
+                    or existing_adapter.get("ca_bundle")
+                    or ""
+                ).strip(),
+            }
+            adapter_config_path.parent.mkdir(parents=True, exist_ok=True)
+            adapter_temp = adapter_config_path.with_name(
+                adapter_config_path.name + ".tmp"
+            )
+            adapter_temp.write_text(
+                json.dumps(adapter_config, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(adapter_temp, adapter_config_path)
+            adapter_entrypoint = (_SOURCE_ROOT / "gitlab_gate_adapter.py").resolve()
+            adapter_command = [
+                os.sys.executable,
+                str(adapter_entrypoint),
+                "--config",
+                str(adapter_config_path),
+            ]
+            integrity_paths = [
+                adapter_entrypoint,
+                adapter_config_path,
+                *sorted(
+                    (_SOURCE_ROOT / "release_workflow_core").rglob("*.py"),
+                    key=lambda path: path.as_posix(),
+                ),
+            ]
+            config["gitlab_gate_adapter_config"] = str(adapter_config_path)
+            config["gate_adapter"] = {
+                "command": adapter_command,
+                "preflight_command": adapter_command + ["--preflight"],
+                "timeout_seconds": adapter_config["timeout_seconds"],
+                "preflight_timeout_seconds": 60,
+                "entrypoint_path": str(adapter_entrypoint),
+                "entrypoint_sha256": sha256_file(adapter_entrypoint),
+                "integrity_files": [
+                    {"path": str(path.resolve()), "sha256": sha256_file(path)}
+                    for path in integrity_paths
+                ],
+            }
         config["scheduler_mode"] = scheduler_mode
         config["dependency_lock"] = str(dependency_lock)
         config["dependency_lock_sha256"] = dependency_lock_sha256

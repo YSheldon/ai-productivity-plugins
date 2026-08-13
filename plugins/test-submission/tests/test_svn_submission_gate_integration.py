@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -76,6 +77,38 @@ class ProtectedGitLabGateAdapter:
 
     def evaluate(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.requests.append(payload)
+        artifact_bytes = b"retrieved-client"
+        evidence_refs = ["gitlab://job/1", "gitlab://pipeline/1"]
+        source_ref = f"{payload['source_locator']}@{payload['revision']}"
+        manifest_s = {
+            "schema": "ProductMaterialManifestS/v1",
+            "event_id": payload["event_id"],
+            "round_id": payload["round_id"],
+            "task": payload["task"],
+            "module": payload["module"],
+            "policy_profile": payload["policy_profile"],
+            "policy_digest": payload["policy_digest"],
+            "effective_checks": payload["effective_checks"],
+            "artifacts": [
+                {
+                    "logical_name": "retrieved-client.pkg",
+                    "file_name": "retrieved-client.pkg",
+                    "size": len(artifact_bytes),
+                    "sha1": hashlib.sha1(artifact_bytes).hexdigest(),
+                    "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+                    "source_ref": source_ref,
+                }
+            ],
+            "evidence_refs": evidence_refs,
+        }
+        manifest_s["manifest_s_digest"] = "sha256:" + hashlib.sha256(
+            json.dumps(
+                manifest_s,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         return {
             "adapter_contract": "GitLabGateResult/v1",
             "provider": "gitlab",
@@ -84,13 +117,14 @@ class ProtectedGitLabGateAdapter:
             "round_id": payload["round_id"],
             "request_digest": payload["request_digest"],
             "policy_digest": payload["policy_digest"],
-            "manifest_digest": "sha256:" + "1" * 64,
-            "material_sha256": "2" * 64,
-            "evidence_refs": ["gitlab://pipeline/1", "gitlab://job/1"],
+            "manifest_digest": manifest_s["manifest_s_digest"],
+            "material_sha256": manifest_s["artifacts"][0]["sha256"],
+            "evidence_refs": evidence_refs,
             "pipeline_ref": "gitlab://pipeline/1",
             "job_ref": "gitlab://job/1",
             "artifact_ref": "gitlab://artifact/1",
-            "artifacts": [{"logical_name": "retrieved-client.pkg"}],
+            "rollback_ref": "svn://repo.example.test/product@12345",
+            "manifest_s": manifest_s,
             "lark_evidence_ref": "lark://doc/1",
         }
 
@@ -193,3 +227,13 @@ def test_fixed_revision_svn_submission_reaches_submission_gate_ci_adapter(tmp_pa
     assert adapter.requests[0]["revision"] == "12345"
     assert adapter.requests[0]["sender_artifact_declarations"] == []
     assert mailbox.sent[0]["subject"].startswith("【提测】TASK-SVN-INTEGRATION-client-")
+    gate_event = json.loads(
+        (
+            tmp_path
+            / "gate-events"
+            / "svn-integration-1"
+            / "round-1"
+            / "gate.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert gate_event["workflow"]["manifest_s"] == gate_event["gate_evidence"]["manifest_s"]

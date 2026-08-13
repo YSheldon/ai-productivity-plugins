@@ -10,7 +10,11 @@ _SOURCE_ROOT = Path(__file__).resolve().parent
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from rd_flywheel_adapters import AdapterError, load_runtime_adapters
+from rd_flywheel_adapters import (
+    AdapterError,
+    load_governance_adapters,
+    load_runtime_adapters,
+)
 from rd_flywheel_config import ConfigError, default_config_path, load_config
 from rd_flywheel_controller import ControllerError, RDFlywheelController
 from rd_flywheel_protocol import ProtocolError, STATES
@@ -40,10 +44,14 @@ class JsonArgumentParser(argparse.ArgumentParser):
 def _default_controller_factory(config_path: Path) -> RDFlywheelController:
     config = load_config(config_path)
     agents, verifiers = load_runtime_adapters(config)
+    role_fetcher, presenter, decision_verifier = load_governance_adapters(config)
     return RDFlywheelController(
         config,
         agent_adapters=agents,
         evidence_verifiers=verifiers,
+        role_snapshot_fetcher=role_fetcher,
+        decision_presenter=presenter,
+        decision_verifier=decision_verifier,
     )
 
 
@@ -71,6 +79,11 @@ def _build_parser() -> JsonArgumentParser:
     setup.add_argument("--governance-inbox")
     setup.add_argument("--state-dir")
     setup.add_argument("--agent-profile")
+    setup.add_argument("--mail-profile")
+    setup.add_argument("--governance-group")
+    setup.add_argument("--role-document-url")
+    setup.add_argument("--role-heading", default="## 决策角色")
+    setup.add_argument("--decision-verifier-config")
     setup.add_argument(
         "--scheduler-mode",
         default="auto",
@@ -118,6 +131,11 @@ def run_cli(
                 governance_inbox=args.governance_inbox,
                 state_dir=args.state_dir,
                 agent_profile=args.agent_profile,
+                mail_profile=args.mail_profile,
+                governance_group=args.governance_group,
+                role_document_url=args.role_document_url,
+                role_heading=args.role_heading,
+                decision_verifier_config=args.decision_verifier_config,
                 scheduler_mode=args.scheduler_mode,
             )
         elif args.command == "scheduler":

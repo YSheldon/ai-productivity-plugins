@@ -16,6 +16,7 @@ _RFC3339_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
 _MODULES = frozenset(("kernel", "client", "server"))
+_MAX_SINGLE_LINE_TEXT_LENGTH = 4096
 
 
 class ValidationError(ValueError):
@@ -43,7 +44,7 @@ def require_non_empty_string(payload: Mapping[str, Any], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValidationError(f"{key} must be a non-empty string.")
-    return value.strip()
+    return _validate_single_line_text(value.strip(), field_name=key)
 
 
 def optional_string(payload: Mapping[str, Any], key: str) -> str:
@@ -160,7 +161,19 @@ def normalize_string_sequence(value: Any, *, field_name: str, allow_empty: bool 
         raise ValidationError(f"{field_name} must contain only non-empty strings.")
     if not allow_empty and not items:
         raise ValidationError(f"{field_name} must not be empty.")
+    for index, item in enumerate(items):
+        _validate_single_line_text(item, field_name=f"{field_name}[{index}]")
     return items
+
+
+def _validate_single_line_text(value: str, *, field_name: str) -> str:
+    if len(value) > _MAX_SINGLE_LINE_TEXT_LENGTH:
+        raise ValidationError(
+            f"{field_name} must not exceed {_MAX_SINGLE_LINE_TEXT_LENGTH} characters."
+        )
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValidationError(f"{field_name} must not contain control characters.")
+    return value
 
 
 def require_mapping(value: Any, *, field_name: str) -> Mapping[str, Any]:

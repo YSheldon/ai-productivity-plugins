@@ -2,6 +2,7 @@ Return-Path: <Approver@Example.COM>
 Authentication-Results: mx.example.net; dkim=pass header.d=example.com; dmarc=pass action=none
 Received-SPF: pass (mx.example.net: domain of Approver@Example.COM designates 192.0.2.1 as permitted sender) client-ip=192.0.2.1; envelope-from=Approver@Example.COM; helo=mail.example.com; spf=pass
 X-RD-Contract: rd.release-approval.v1
+X-RD-Authority-Scope: PRODUCTION_RELEASE
 x-rd-event-id: event-20260715-001
 X-RD-Round-Id: round-2
 X-RD-Task: Release task

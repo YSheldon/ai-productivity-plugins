@@ -11,10 +11,10 @@ from .validation import ValidationError, canonical_json, normalize_email
 
 
 _SUBJECT_RE = re.compile(
-    r"^\[提测\]\[(?P<identifier>[^\]-]+)-(?P<task>[^\]]+)\](?P<submitted_at>\d{8}-\d{2}:\d{2}:\d{2})$"
+    r"^\[提测\]\[(?:(?P<identifier>[^\]-]+)-)?(?P<task>[^\]]+)\](?P<submitted_at>\d{8}-\d{2}:\d{2}:\d{2})$"
 )
 _LINE_RE = re.compile(
-    r"^\s*(?P<label>提测类型|提测标识|提测标题|标题|目录|SVN\s*地址|SVN\s*Revision|SVN[-_\s]*Revision|revision|文件数|修改说明)\s*[：:]\s*(?P<value>.*)$",
+    r"^\s*(?P<label>提测类型|类型|提测标识|标识|提测标题|标题|目录|SVN\s*地址|SVN\s*Revision|SVN[-_\s]*Revision|revision|文件数|修改说明)\s*[：:]\s*(?P<value>.*)$",
     re.IGNORECASE,
 )
 _REVISION_RE = re.compile(r"^[1-9]\d*$")
@@ -51,8 +51,12 @@ def parse_legacy_submission_mail(
 
     fields = _parse_body_fields(body_text)
     submitter_email = _extract_submitter_email(message, headers=headers)
+    subject_identifier = str(subject_match.group("identifier") or "").strip()
     task = fields.get("提测标题") or fields.get("标题") or subject_match.group("task").strip()
-    locator = fields.get("目录") or fields.get("SVN地址") or ""
+    # A production SVN gate requires the credential-free repository URL. The
+    # legacy directory field is only a fallback for older messages that do not
+    # carry an SVN address.
+    locator = fields.get("SVN地址") or fields.get("目录") or ""
     revision = _normalize_revision(fields.get("revision", ""))
     module, module_issue = _detect_module(subject=subject, fields=fields, locator=locator)
 
@@ -76,7 +80,7 @@ def parse_legacy_submission_mail(
         "task": task,
         "module": module,
         "legacy_submission_type": fields.get("提测类型", ""),
-        "legacy_identifier": fields.get("提测标识", subject_match.group("identifier").strip()),
+        "legacy_identifier": fields.get("提测标识", subject_identifier),
         "submitter_email": submitter_email,
         "submitter_email_status": "valid" if submitter_email else "missing_or_invalid",
         "locator": locator,
@@ -150,9 +154,9 @@ def _normalize_label(label: str) -> str:
         return "SVN地址"
     if compact in {"svnrevision", "revision"}:
         return "revision"
-    if compact == "提测类型":
+    if compact in {"提测类型", "类型"}:
         return "提测类型"
-    if compact == "提测标识":
+    if compact in {"提测标识", "标识"}:
         return "提测标识"
     if compact == "提测标题":
         return "提测标题"

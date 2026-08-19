@@ -688,7 +688,11 @@ def build_search_criteria(query: dict[str, Any]) -> list[str]:
 def select_mailbox_info(client: imaplib.IMAP4, mailbox: str) -> tuple[int, str]:
     status, response = client.select(format_mailbox_arg(mailbox), readonly=True)
     require_ok(status, response, f"select mailbox {mailbox}")
-    return extract_selected_count(response), extract_uidvalidity(response)
+    uidvalidity = extract_uidvalidity(response)
+    if not uidvalidity:
+        _response_code, response_data = client.response("UIDVALIDITY")
+        uidvalidity = extract_uidvalidity_response(response_data or [])
+    return extract_selected_count(response), uidvalidity
 
 
 def select_mailbox(client: imaplib.IMAP4, mailbox: str) -> int:
@@ -707,6 +711,16 @@ def extract_uidvalidity(response: list[Any]) -> str:
     text = " ".join(to_text(item) for item in response if item)
     match = re.search(r"UIDVALIDITY\s+(\d+)", text, flags=re.IGNORECASE)
     return match.group(1) if match else ""
+
+
+def extract_uidvalidity_response(response: list[Any]) -> str:
+    explicit = extract_uidvalidity(response)
+    if explicit:
+        return explicit
+    values = [to_text(item).strip() for item in response if item]
+    if len(values) == 1 and re.fullmatch(r"[1-9]\d*", values[0]):
+        return values[0]
+    return ""
 
 
 def format_mailbox_arg(mailbox: str) -> str:

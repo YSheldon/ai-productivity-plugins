@@ -38,7 +38,7 @@ def test_legacy_plain_text_mail_stays_unverified_and_preserves_evidence_bindings
     assert intake["trust_level"] == "UNTRUSTED"
     assert intake["provenance_classification"] == "PLAIN_EMAIL_UNVERIFIED"
     assert intake["module"] == "client"
-    assert intake["locator"] == "/releases/client/"
+    assert intake["locator"] == "https://svn.example.invalid/repos/project/client"
     assert intake["revision"] == "123456"
     assert intake["required_inputs"] == []
     assert intake["source"]["uid"] == "8024"
@@ -78,6 +78,52 @@ def test_legacy_plain_text_mail_accepts_module_found_only_in_full_subject() -> N
     assert intake["module"] == "client"
     assert intake["required_inputs"] == []
     assert intake["promotion_requirements"]["independent_gate_allowed"] is True
+
+
+def test_legacy_plain_text_mail_uses_directory_only_when_svn_address_is_absent() -> None:
+    message = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    message["body_text"] = message["body_text"].replace(
+        "SVN 地址：https://svn.example.invalid/repos/project/client\n",
+        "",
+    )
+
+    intake = parse_legacy_submission_mail(message)
+
+    assert intake["state"] == DRAFT_STATE
+    assert intake["locator"] == "/releases/client/"
+
+
+def test_real_task_only_subject_freezes_svn_address_and_numeric_revision() -> None:
+    message = {
+        "uid": "1686",
+        "message_id": "<redacted-production-submission@example.invalid>",
+        "subject": "[提测][V9客户端驱动生命周期优化]20260814-17:02:05",
+        "from": [{"name": "redacted", "email": "submitter@example.invalid"}],
+        "headers": {},
+        "body_text": "\n".join(
+            [
+                "类型：bug",
+                "标识：2746",
+                "标题：V9客户端驱动生命周期优化",
+                "目录：2746-bug-redacted",
+                "SVN 地址：https://svn.example.invalid/repos/tc/bug/2746-redacted",
+                "SVN Revision：1180",
+                "修改说明：减少驱动生命周期中的重复卸载和安装。",
+            ]
+        ),
+    }
+
+    intake = parse_legacy_submission_mail(message)
+
+    assert intake["state"] == DRAFT_STATE
+    assert intake["task"] == "V9客户端驱动生命周期优化"
+    assert intake["module"] == "client"
+    assert intake["legacy_submission_type"] == "bug"
+    assert intake["legacy_identifier"] == "2746"
+    assert intake["locator"] == "https://svn.example.invalid/repos/tc/bug/2746-redacted"
+    assert intake["revision"] == "1180"
+    assert intake["submitter_email"] == "submitter@example.invalid"
+    assert intake["required_inputs"] == []
 
 
 def test_legacy_plain_text_mail_blocks_conflicting_module_tokens() -> None:

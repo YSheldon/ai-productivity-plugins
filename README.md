@@ -18,6 +18,7 @@ This repository is a local Codex plugin marketplace maintained by Sheldon. The m
 - `remotex`: a credential-reference-first remote operations plugin for SSH, Windows RDP, authenticated Windows guests, vSphere/ESXi, and VMware Workstation. It adds bounded Windows guest execution, hash-verified transfer, preflight-bound VMware snapshots, composite VM identity, managed SSH host keys, hash-linked local audit records, and renewable FIFO leases shared across every access path to the same VM.
 - `wecom-codex-usage`: a WeCom / Enterprise WeChat plugin packaged and maintained by Sheldon. It connects to a self-built WeCom internal application for message delivery and summarizes local Codex usage signals from the current machine's Codex config and logs.
 - `daily-vuln-bulletin-email`: a verified daily vulnerability bulletin workflow. It uses live Feishu subscribers, severity-safe text/HTML content, exact MIME Subject and Message-ID readback, and recipient-header privacy checks while reusing the existing Lark and IMAP/SMTP plugins.
+- `world-time-reminder`: a Windows taskbar Beijing clock with exact-hour first-duty reminders, a `Y` confirmation path, and 16-minute automatic close.
 
 ## Use In Codex
 

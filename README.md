@@ -1,8 +1,9 @@
 # AI Productivity Plugins
 
-This repository is a local Codex plugin marketplace maintained by Sheldon. The marketplace entrypoint is:
+This repository is a plugin marketplace maintained by Sheldon. Codex and Grok share the plugin directories and keep separate indexes:
 
-- `.agents/plugins/marketplace.json`
+- Codex: `.agents/plugins/marketplace.json`
+- Grok: `.grok-plugin/marketplace.json` (currently `gitlab`, `remotex`, and `imap-smtp-mail`)
 
 ## Included Plugins
 
@@ -18,6 +19,26 @@ This repository is a local Codex plugin marketplace maintained by Sheldon. The m
 - `remotex`: a credential-reference-first remote operations plugin for SSH, Windows RDP, authenticated Windows guests, vSphere/ESXi, and VMware Workstation. It adds bounded Windows guest execution, hash-verified transfer, preflight-bound VMware snapshots, composite VM identity, managed SSH host keys, hash-linked local audit records, and renewable FIFO leases shared across every access path to the same VM.
 - `wecom-codex-usage`: a WeCom / Enterprise WeChat plugin packaged and maintained by Sheldon. It connects to a self-built WeCom internal application for message delivery and summarizes local Codex usage signals from the current machine's Codex config and logs.
 - `daily-vuln-bulletin-email`: a verified daily vulnerability bulletin workflow. It uses live Feishu subscribers, severity-safe text/HTML content, exact MIME Subject and Message-ID readback, and recipient-header privacy checks while reusing the existing Lark and IMAP/SMTP plugins.
+
+## Use In Grok
+
+Register the marketplace, then install only the Grok-indexed plugins. Grok does not read the Codex index.
+
+```powershell
+grok plugin marketplace add YSheldon/ai-productivity-plugins
+grok plugin install gitlab --trust
+grok plugin install remotex --trust
+grok plugin install imap-smtp-mail --trust
+```
+
+Enable the plugins in `~/.grok/config.toml` if they stay off after install:
+
+```toml
+[plugins]
+enabled = ["gitlab", "remotex", "imap-smtp-mail"]
+```
+
+GitLab, RemoteX, and mail keep using the same local credential files as Codex. Do not copy tokens, mailbox passwords, or host paths into the repository. The GitHub Copilot MCP used by Codex (`github@openai-curated`) is not part of this marketplace.
 
 ## Use In Codex
 
@@ -122,7 +143,18 @@ Codex and GPT-5.6 were used as engineering assistants to inspect existing plugin
 
 ## Install From GitHub
 
-Register the repository marketplace, then install each workflow plugin independently:
+Register the repository marketplace, then install each workflow plugin independently.
+
+Grok:
+
+```powershell
+grok plugin marketplace add YSheldon/ai-productivity-plugins
+grok plugin install gitlab --trust
+grok plugin install remotex --trust
+grok plugin install imap-smtp-mail --trust
+```
+
+Codex:
 
 ```powershell
 codex plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins.git

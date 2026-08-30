@@ -1,0 +1,42 @@
+{
+  "name": "ai-productivity-plugins",
+  "description": "Sheldon productivity plugins. Codex keeps using .agents/plugins/marketplace.json; Grok reads this index.",
+  "owner": {
+    "name": "Sheldon"
+  },
+  "plugins": [
+    {
+      "name": "gitlab",
+      "description": "GitLab REST workflows, CI analysis, MR tools, and policy-bound Windows Runner provisioning.",
+      "category": "development",
+      "source": {
+        "type": "local",
+        "path": "./plugins/gitlab"
+      },
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/gitlab",
+      "keywords": ["gitlab", "merge-request", "ci", "pipelines"]
+    },
+    {
+      "name": "remotex",
+      "description": "Credential-reference remote operations for SSH, RDP, Windows guests, vSphere/ESXi, and VMware Workstation.",
+      "category": "development",
+      "source": {
+        "type": "local",
+        "path": "./plugins/remotex"
+      },
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/remotex",
+      "keywords": ["ssh", "rdp", "remote", "vmware"]
+    },
+    {
+      "name": "imap-smtp-mail",
+      "description": "IMAP/SMTP mail for QQ, NetEase, Tencent Exmail, Ali Mail, 139, and custom mailboxes.",
+      "category": "productivity",
+      "source": {
+        "type": "local",
+        "path": "./plugins/imap-smtp-mail"
+      },
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/imap-smtp-mail",
+      "keywords": ["email", "imap", "smtp", "exmail"]
+    }
+  ]
+}

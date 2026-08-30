@@ -34,7 +34,7 @@ from typing import Any, Callable
 
 
 SERVER_NAME = "imap-smtp-mail"
-SERVER_VERSION = "0.3.2"
+SERVER_VERSION = "0.3.3"
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 DEFAULT_CONFIG_PATH = pathlib.Path.home() / ".imap-smtp-mail" / "accounts.json"
 DEFAULT_ATTACHMENT_DIR = pathlib.Path.home() / "Downloads" / "imap-smtp-mail-attachments"

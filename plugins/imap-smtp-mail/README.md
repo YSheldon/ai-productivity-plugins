@@ -9,8 +9,8 @@ and custom enterprise mailboxes can all be configured with the same account form
 
 ## Version
 
-Current plugin/server release: `0.3.2`.
-Changelog note: `0.3.2` preserves the release authority scope in allowlisted readback and adds opt-in atomic multi-recipient SMTP delivery that aborts before DATA when any RCPT is refused. `0.3.1` resolves Windows ACL utilities from trusted `SystemRoot` paths instead of the launcher `PATH`, hardens the temporary encrypted config before atomic replacement, honors `IMAP_SMTP_MAIL_CONFIG` in the wizard and migration command, and returns a safe local compatibility message when saving cannot start. `0.3.0` adds an allowlisted `release_workflow_headers` readback payload with duplicate-conflict, control-character, and length validation. `0.2.0` added authenticated thread evidence, constrained reply-thread headers, and the locked CLI bridge.
+Current plugin/server release: `0.3.3`.
+Changelog note: `0.3.3` launches the MCP server through a Node helper that prefers `py -3` on Windows and `python3` elsewhere, so Codex and Grok do not need a host-specific `.mcp.json`. `0.3.2` preserves the release authority scope in allowlisted readback and adds opt-in atomic multi-recipient SMTP delivery that aborts before DATA when any RCPT is refused. `0.3.1` resolves Windows ACL utilities from trusted `SystemRoot` paths instead of the launcher `PATH`, hardens the temporary encrypted config before atomic replacement, honors `IMAP_SMTP_MAIL_CONFIG` in the wizard and migration command, and returns a safe local compatibility message when saving cannot start. `0.3.0` adds an allowlisted `release_workflow_headers` readback payload with duplicate-conflict, control-character, and length validation. `0.2.0` added authenticated thread evidence, constrained reply-thread headers, and the locked CLI bridge.
 
 ## MVP Scope
 
@@ -24,13 +24,14 @@ Changelog note: `0.3.2` preserves the release authority scope in allowlisted rea
 
 ## Marketplace Entry
 
-This plugin is registered by the repository marketplace file:
+This plugin is registered by the repository marketplace files:
 
 ```text
 .agents/plugins/marketplace.json
+.grok-plugin/marketplace.json
 ```
 
-When this repository is opened in Codex App, it appears as `IMAP/SMTP 邮箱` in the `AI 生产力插件集` marketplace.
+When this repository is opened in Codex App, it appears as `IMAP/SMTP 邮箱` in the `AI 生产力插件集` marketplace. Grok reads `.grok-plugin/marketplace.json` and can install the same plugin directory.
 
 ## Configuration
 
@@ -142,19 +143,4 @@ The CLI accepts only `list_accounts`, `test_connection`, `search_messages`, `rea
 
 ## Windows Notes
 
-The checked-in `.mcp.json` uses `python3`, which works on macOS and many developer machines.
-For Windows, change the command to `py` or the absolute path to the Python executable if needed:
-
-```json
-{
-  "mcpServers": {
-    "imap-smtp-mail": {
-      "command": "py",
-      "args": ["-3", "./src/imap_smtp_mail_mcp.py"],
-      "cwd": "."
-    }
-  }
-}
-```
-
-Longer term, this plugin should be packaged with a launcher so users do not need to edit `.mcp.json`.
+The checked-in `.mcp.json` launches `scripts/run_mcp.js`. On Windows the helper tries `py -3`, then `python`, then `python3`. On macOS and Linux it tries `python3`, then `python`. Do not replace this with a host-only `python3` or `py -3` command.

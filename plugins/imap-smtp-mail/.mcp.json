@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "imap-smtp-mail": {
-      "command": "python3",
+      "command": "node",
       "args": [
-        "./src/imap_smtp_mail_mcp.py"
+        "./scripts/run_mcp.js"
       ],
       "cwd": "."
     }

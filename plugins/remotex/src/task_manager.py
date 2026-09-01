@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -10,18 +11,24 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import remotex_core as core
+import secure_paths
 import ssh_vnext
 
 
 TASK_ID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
+WORKER_PAYLOAD_MAGIC = b"REMOTEX_TASK_PAYLOAD_V2\n"
+MAX_WORKER_PAYLOAD_BYTES = 4 * 1024 * 1024
+TASK_START_ACK_SECONDS = 5
+LEGACY_SENSITIVE_FILENAMES = ("stdin.bin", "secrets.json")
 
 
 def task_root() -> Path:
@@ -143,6 +150,60 @@ def _reap_worker(process: subprocess.Popen[Any]) -> None:
         pass
 
 
+def _encode_worker_payload(input_bytes: bytes, secrets: list[str]) -> bytes:
+    if not isinstance(input_bytes, bytes):
+        raise core.ToolError("RemoteX task input must be bytes")
+    if not isinstance(secrets, list) or any(not isinstance(value, str) for value in secrets):
+        raise core.ToolError("RemoteX task redaction values are invalid")
+    document = json.dumps(
+        {
+            "schema": "RemoteXTaskPayload/v2",
+            "inputBase64": base64.b64encode(input_bytes).decode("ascii"),
+            "secrets": secrets,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if not document or len(document) > MAX_WORKER_PAYLOAD_BYTES:
+        raise core.ToolError("RemoteX task payload exceeds the safe size limit")
+    return WORKER_PAYLOAD_MAGIC + len(document).to_bytes(8, "big") + document
+
+
+def _wait_for_worker_ack(
+    directory: Path,
+    process: subprocess.Popen[Any],
+) -> dict[str, Any]:
+    deadline = time.monotonic() + TASK_START_ACK_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            state = _read_json(directory / "state.json", "task state")
+        except core.ToolError:
+            state = {}
+        if state.get("state") in {"running", "completed", "failed", "cancelled"}:
+            return state
+        if process.poll() is not None:
+            raise core.ToolError("RemoteX task worker exited before secret-pipe acknowledgment")
+        time.sleep(0.02)
+    raise core.ToolError("RemoteX task worker secret-pipe acknowledgment timed out")
+
+
+def _terminate_failed_start(process: subprocess.Popen[Any] | None, directory: Path) -> None:
+    if process is not None:
+        try:
+            if process.stdin is not None:
+                process.stdin.close()
+        except OSError:
+            pass
+        try:
+            _kill_pid_tree(int(process.pid))
+        except (OSError, TypeError, ValueError):
+            try:
+                process.kill()
+            except (OSError, subprocess.SubprocessError):
+                pass
+    shutil.rmtree(directory, ignore_errors=True)
+
+
 def start(args: dict[str, Any]) -> dict[str, Any]:
     prepared = ssh_vnext.prepare_script(args)
     with ssh_vnext.queue_owner_operation(prepared["cfg"], args):
@@ -155,14 +216,12 @@ def _start_owned(
 ) -> dict[str, Any]:
     task_id = str(uuid.uuid4())
     directory = _directory(task_id)
-    directory.mkdir(parents=True, exist_ok=False)
-    try:
-        os.chmod(directory, 0o700)
-    except OSError:
-        pass
+    if directory.exists():
+        raise core.ToolError("RemoteX task directory already exists")
+    secure_paths.ensure_private_directory(directory)
     script = core._text(args.get("script"))
     spec = {
-        "schema": "RemoteXTaskSpec/v1",
+        "schema": "RemoteXTaskSpec/v2",
         "taskId": task_id,
         "profile": prepared["cfg"]["profile"],
         "host": prepared["cfg"]["host"],
@@ -183,17 +242,10 @@ def _start_owned(
         "requester": core._text(args.get("requester")).strip() or None,
     }
     _write_json(directory / "spec.json", spec)
-    (directory / "stdin.bin").write_bytes(prepared["input_bytes"])
-    _write_json(directory / "secrets.json", prepared["secrets"])
-    for sensitive in (directory / "stdin.bin", directory / "secrets.json"):
-        try:
-            os.chmod(sensitive, 0o600)
-        except OSError:
-            pass
     _write_json(
         directory / "state.json",
         {
-            "schema": "RemoteXTask/v1",
+            "schema": "RemoteXTask/v2",
             "taskId": task_id,
             "state": "starting",
             "profile": prepared["cfg"]["profile"],
@@ -203,7 +255,7 @@ def _start_owned(
     )
     worker = Path(__file__).with_name("task_worker.py")
     kwargs: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
+        "stdin": subprocess.PIPE,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
@@ -215,15 +267,26 @@ def _start_owned(
         )
     else:
         kwargs["start_new_session"] = True
+    process: subprocess.Popen[Any] | None = None
     try:
         process = subprocess.Popen(
             [sys.executable, str(worker), str(directory)],
             **kwargs,
         )
-    except OSError as exc:
-        shutil.rmtree(directory, ignore_errors=True)
-        raise core.ToolError(f"Unable to start RemoteX task worker: {exc}") from exc
-    (directory / "worker.pid").write_text(str(process.pid), encoding="ascii")
+        (directory / "worker.pid").write_text(str(process.pid), encoding="ascii")
+        if process.stdin is None:
+            raise core.ToolError("RemoteX task worker secret pipe is unavailable")
+        process.stdin.write(
+            _encode_worker_payload(prepared["input_bytes"], prepared["secrets"])
+        )
+        process.stdin.flush()
+        process.stdin.close()
+        acknowledged = _wait_for_worker_ack(directory, process)
+    except (OSError, BrokenPipeError, subprocess.SubprocessError, core.ToolError) as exc:
+        _terminate_failed_start(process, directory)
+        if isinstance(exc, core.ToolError):
+            raise
+        raise core.ToolError("Unable to start RemoteX task worker securely") from exc
     threading.Thread(
         target=_reap_worker,
         args=(process,),
@@ -234,7 +297,7 @@ def _start_owned(
         {
             "ok": True,
             "taskId": task_id,
-            "state": "starting",
+            "state": acknowledged.get("state", "running"),
             "workerPid": process.pid,
             "profile": prepared["cfg"]["profile"],
             "requestedShell": prepared["shell"],
@@ -260,6 +323,9 @@ def status(args: dict[str, Any]) -> dict[str, Any]:
     directory = _directory(task_id)
     state = _read_json(directory / "state.json", "task state")
     result_path = directory / "result.json"
+    legacy_sensitive_count = sum(
+        1 for name in LEGACY_SENSITIVE_FILENAMES if (directory / name).is_file()
+    )
     if result_path.exists():
         result = _read_json(result_path, "task result")
         return core.tool_result(
@@ -275,6 +341,7 @@ def status(args: dict[str, Any]) -> dict[str, Any]:
                 "timedOut": result.get("timedOut"),
                 "terminationReason": result.get("terminationReason"),
                 "completedAt": result.get("completedAt"),
+                "legacySensitiveArtifactCount": legacy_sensitive_count,
             }
         )
     pid = _worker_pid(directory)
@@ -293,6 +360,42 @@ def status(args: dict[str, Any]) -> dict[str, Any]:
             "workerRunning": running,
             "profile": state.get("profile"),
             "startedAt": state.get("startedAt"),
+            "legacySensitiveArtifactCount": legacy_sensitive_count,
+        }
+    )
+
+
+def cleanup_sensitive_artifacts(args: dict[str, Any]) -> dict[str, Any]:
+    task_id = _task_id(args.get("task_id"))
+    if not core.as_bool(args.get("confirm"), False):
+        raise core.ToolError("confirm=true is required to remove legacy sensitive artifacts")
+    directory = _directory(task_id)
+    if not directory.is_dir():
+        raise core.ToolError("RemoteX task directory is unavailable")
+    pid = _worker_pid(directory)
+    if pid and _pid_running(pid):
+        raise core.ToolError("Legacy sensitive artifacts cannot be removed for an active worker")
+    removed = 0
+    for name in LEGACY_SENSITIVE_FILENAMES:
+        candidate = directory / name
+        if candidate.is_file():
+            try:
+                candidate.unlink()
+            except OSError as exc:
+                raise core.ToolError("Unable to remove legacy sensitive artifacts") from exc
+            removed += 1
+    remaining = sum(
+        1 for name in LEGACY_SENSITIVE_FILENAMES if (directory / name).is_file()
+    )
+    return core.tool_result(
+        {
+            "ok": remaining == 0,
+            "taskId": task_id,
+            "removedCount": removed,
+            "remainingSensitiveArtifactCount": remaining,
+            "taskDirectorySha256": hashlib.sha256(
+                str(directory.resolve()).encode("utf-8")
+            ).hexdigest(),
         }
     )
 
@@ -433,5 +536,21 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": collect,
+    },
+    "remotex_ssh_task_cleanup_sensitive_artifacts": {
+        "description": (
+            "Explicitly remove legacy stdin.bin or secrets.json artifacts from one "
+            "inactive RemoteX task directory without reading their contents."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **TASK_ID_PROPERTY,
+                "confirm": {"type": "boolean"},
+            },
+            "required": ["task_id", "confirm"],
+            "additionalProperties": False,
+        },
+        "handler": cleanup_sensitive_artifacts,
     },
 }

@@ -39,33 +39,33 @@
 - Produces MCP tool: `remotex_ssh_task_cleanup_sensitive_artifacts`
 - Preserves: `remotex_ssh_task_start/status/collect/cancel` MCP contracts except `RemoteXTaskSpec/v2` and removal of sensitive files.
 
-- [ ] **Step 1: Write failing IPC tests**
+- [x] **Step 1: Write failing IPC tests**
 
   Add tests that start a mocked worker with a secret injection and assert:
   `stdin.bin` and `secrets.json` never exist, the child receives a bounded framed
   payload over stdin, no secret enters `argv` or `env`, and the manager returns
   only after a `running` acknowledgment.
 
-- [ ] **Step 2: Run the focused tests and observe failure**
+- [x] **Step 2: Run the focused tests and observe failure**
 
   Run:
   `python -m unittest discover -s plugins/remotex/tests -p 'test_task_secret_ipc.py' -v`
 
   Expected: imports or assertions fail because pipe framing and private-path APIs do not exist.
 
-- [ ] **Step 3: Implement cross-platform private-path enforcement**
+- [x] **Step 3: Implement cross-platform private-path enforcement**
 
   Implement POSIX `0700`/`0600` verification and Windows effective ACL setup/readback. Windows grants only the current user SID, SYSTEM, and Built-in Administrators, rejects reparse/network paths, and fails closed when effective read access remains broader.
 
-- [ ] **Step 4: Replace task secret files with a one-shot pipe**
+- [x] **Step 4: Replace task secret files with a one-shot pipe**
 
   Change task startup to create only non-secret spec/state files, spawn the worker with `stdin=PIPE`, send a versioned length-bounded payload, close stdin, and wait up to five seconds for the atomic `running` state. On any write, acknowledgment, ACL, or worker failure, terminate the process tree and remove the task directory.
 
-- [ ] **Step 5: Update the worker and legacy detection**
+- [x] **Step 5: Update the worker and legacy detection**
 
   Read exactly one framed payload from `sys.stdin.buffer`, reject trailing or oversized bytes, write the non-secret running state, and drop in-memory references in `finally`. Status reports counts of inactive legacy `stdin.bin` or `secrets.json` files without reading them. Add `remotex_ssh_task_cleanup_sensitive_artifacts` with `confirm=true`; it validates the task UUID and inactive worker, deletes only those two exact filenames, and reports task/path hashes without contents.
 
-- [ ] **Step 6: Run focused and existing task tests**
+- [x] **Step 6: Run focused and existing task tests**
 
   Run:
   `python -m unittest discover -s plugins/remotex/tests -p 'test_task_secret_ipc.py' -v`
@@ -74,7 +74,7 @@
 
   Expected: all tests pass and no task fixture leaves a sensitive file.
 
-- [ ] **Step 7: Commit the IPC security change**
+- [x] **Step 7: Commit the IPC security change**
 
   Commit message: `fix(remotex): keep asynchronous secrets off disk`
 

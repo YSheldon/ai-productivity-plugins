@@ -1039,8 +1039,12 @@ class HostKeyAndTaskTests(unittest.TestCase):
                     "port": 22,
                 },
                 "shell": "powershell",
-                "argv": ["ssh", "fixed-wrapper"],
-                "input_bytes": b"opaque-stdin-payload",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "import sys,time; sys.stdin.buffer.read(); time.sleep(0.25)",
+                ],
+                "input_bytes": b"opaque-stdin-payload-task-secret-value",
                 "injections": [injection],
                 "secrets": ["task-secret-value"],
                 "timeout": 60,
@@ -1053,28 +1057,30 @@ class HostKeyAndTaskTests(unittest.TestCase):
                     "maxProcesses": 4,
                 },
             }
-            process = mock.Mock(pid=4321)
             with mock.patch.dict(os.environ, {"REMOTEX_TASK_DIR": str(root)}, clear=False):
                 with mock.patch.object(ssh_vnext, "prepare_script", return_value=prepared):
-                    with mock.patch.object(
-                        task_manager.subprocess,
-                        "Popen",
-                        return_value=process,
-                    ):
-                        result = payload(
-                            task_manager.start(
-                                {
-                                    "script": "Write-Output task-secret-value",
-                                    "shell": "powershell",
-                                }
-                            )
+                    result = payload(
+                        task_manager.start(
+                            {
+                                "script": "Write-Output task-secret-value",
+                                "shell": "powershell",
+                            }
                         )
-                task_dir = root / result["taskId"]
+                    )
+                task_id = result["taskId"]
+                task_dir = root / task_id
                 spec_text = (task_dir / "spec.json").read_text(encoding="utf-8")
-                secrets_text = (task_dir / "secrets.json").read_text(encoding="utf-8")
+                self.assertFalse((task_dir / "stdin.bin").exists())
+                self.assertFalse((task_dir / "secrets.json").exists())
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    current = payload(task_manager.status({"task_id": task_id}))
+                    if current["finished"]:
+                        break
+                    time.sleep(0.05)
+                task_manager.collect({"task_id": task_id, "cleanup": True})
         self.assertNotIn("Write-Output", spec_text)
         self.assertNotIn("task-secret-value", spec_text)
-        self.assertIn("task-secret-value", secrets_text)
         self.assertTrue(result["resumeSupported"])
 
     def test_task_worker_uses_the_persisted_queue_owner(self) -> None:
@@ -1082,7 +1088,7 @@ class HostKeyAndTaskTests(unittest.TestCase):
         self.assertIn("leased_owner_operation", inspect.getsource(task_worker._queue_operation))
         self.assertIn("requester", task_manager.TOOLS["remotex_ssh_task_start"]["inputSchema"]["properties"])
 
-    def test_task_worker_persists_status_collects_and_removes_secret_inputs(self) -> None:
+    def test_task_worker_persists_status_without_secret_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "tasks"
             prepared = {

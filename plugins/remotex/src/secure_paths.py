@@ -167,11 +167,16 @@ def private_path_status(path: Path) -> dict[str, Any]:
         sid.casefold(),
         identity_name.casefold(),
     }
-    ready = protected and owner_matches and not unexpected
+    owner_trusted = owner_matches or acl["owner"].casefold() in {
+        WINDOWS_ADMINISTRATORS_SID.casefold(),
+        "ba",
+        "builtin\\administrators",
+    }
+    ready = protected and owner_trusted and not unexpected
     reason = None
     if not protected:
         reason = "windows-acl-inheritance-enabled"
-    elif not owner_matches:
+    elif not owner_trusted:
         reason = "windows-owner-mismatch"
     elif unexpected:
         reason = "windows-acl-too-broad"
@@ -180,6 +185,7 @@ def private_path_status(path: Path) -> dict[str, Any]:
         "reason": reason,
         "pathType": path_type,
         "ownerMatchesCurrentUser": owner_matches,
+        "ownerTrusted": owner_trusted,
         "inheritanceProtected": protected,
         "unexpectedAllowPrincipalCount": len(unexpected),
     }
@@ -234,7 +240,10 @@ def ensure_private_directory(path: Path) -> dict[str, Any]:
         os.chmod(candidate, 0o700)
     status = private_path_status(candidate)
     if not status.get("ready"):
-        raise core.ToolError("Private RemoteX directory protection verification failed")
+        raise core.ToolError(
+            "Private RemoteX directory protection verification failed: "
+            + str(status.get("reason") or "unknown")
+        )
     return status
 
 
@@ -248,5 +257,8 @@ def ensure_private_file(path: Path) -> dict[str, Any]:
         os.chmod(candidate, 0o600)
     status = private_path_status(candidate)
     if not status.get("ready"):
-        raise core.ToolError("Private RemoteX file protection verification failed")
+        raise core.ToolError(
+            "Private RemoteX file protection verification failed: "
+            + str(status.get("reason") or "unknown")
+        )
     return status

@@ -4,6 +4,7 @@ import base64
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -17,6 +18,33 @@ import secure_paths
 
 
 class SecurePathTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows trusted owner test")
+    def test_windows_administrators_owner_is_within_trusted_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            sddl = (
+                "O:BAG:BAD:P"
+                "(A;OICI;FA;;;SY)"
+                "(A;OICI;FA;;;BA)"
+                "(A;OICI;FA;;;S-1-5-21-1234)"
+            )
+            with mock.patch.object(
+                secure_paths,
+                "_windows_identity",
+                return_value=("S-1-5-21-1234", "TEST\\runner"),
+            ):
+                with mock.patch.object(
+                    secure_paths,
+                    "_windows_acl",
+                    return_value={
+                        "owner": secure_paths.WINDOWS_ADMINISTRATORS_SID,
+                        "sddl": sddl,
+                    },
+                ):
+                    status = secure_paths.private_path_status(path)
+        self.assertTrue(status["ready"])
+        self.assertTrue(status["ownerTrusted"])
+
     @unittest.skipUnless(os.name == "nt", "Windows ACL protection test")
     def test_windows_protection_sets_current_user_as_owner(self) -> None:
         completed = subprocess.CompletedProcess(

@@ -330,7 +330,7 @@
 
   Commit message: `docs(remotex): document credential lifecycle workflows`
 
-- [ ] **Step 9: Push and create a pull request**
+- [x] **Step 9: Push and create a pull request**
 
   Fetch `origin/main`, confirm the topic branch base, push only
   `codex/remotex-credential-lifecycle`, create a PR describing security and

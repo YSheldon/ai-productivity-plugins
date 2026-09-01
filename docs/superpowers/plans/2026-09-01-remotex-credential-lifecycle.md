@@ -200,34 +200,34 @@
 - Produces: `credential_store.launch_secure_setup(reference: ResolvedCredential, timeout: int) -> dict[str, Any]`
 - Produces: `credential_store.delete_windows_credential(reference: ResolvedCredential) -> dict[str, Any]`
 
-- [ ] **Step 1: Write failing lifecycle and schema tests**
+- [x] **Step 1: Write failing lifecycle and schema tests**
 
   Assert setup/delete schemas contain only `profile`, `credential_ref`, `confirm`, and bounded timeout fields. Reject arbitrary targets and every password/token/secret/username field. Mock helper launch to verify argv contains only the fixed script path, operation, configured target, receipt path, and no credential value.
 
-- [ ] **Step 2: Run lifecycle tests and observe failure**
+- [x] **Step 2: Run lifecycle tests and observe failure**
 
   Run:
   `python -m unittest discover -s plugins/remotex/tests -p 'test_credential_lifecycle.py' -v`
 
-- [ ] **Step 3: Implement the visible secure helper**
+- [x] **Step 3: Implement the visible secure helper**
 
   Use `Get-Credential` for local interaction and embedded C# P/Invoke for `CredWriteW`. Pass `SecureString` into native code, use `SecureStringToCoTaskMemUnicode`, and call `ZeroFreeCoTaskMemUnicode` in `finally`. The helper accepts fixed operations and configured target input only, writes a sanitized JSON receipt atomically, and never prints credential values.
 
-- [ ] **Step 4: Implement setup and rotation**
+- [x] **Step 4: Implement setup and rotation**
 
   Require Windows, explicit confirmation, a Windows Credential Manager provider, and a protected receipt directory. Launch a visible new console, wait with a bounded timeout, read and delete the receipt, then perform presence readback. Existing entries are rotated by the same secure prompt; cancellation preserves the old entry.
 
-- [ ] **Step 5: Implement deletion with consumer safeguards**
+- [x] **Step 5: Implement deletion with consumer safeguards**
 
   Require explicit confirmation and a configured alias/profile. Reject arbitrary targets. Report consumers before deletion, call `CredDeleteW`, verify absence, and return only alias, consumer count, provider, and target digest.
 
-- [ ] **Step 6: Run lifecycle, protocol, and redaction tests**
+- [x] **Step 6: Run lifecycle, protocol, and redaction tests**
 
   Run:
   `python -m unittest discover -s plugins/remotex/tests -p 'test_credential_lifecycle.py' -v`
   followed by the complete RemoteX test discovery command.
 
-- [ ] **Step 7: Commit lifecycle tools**
+- [x] **Step 7: Commit lifecycle tools**
 
   Commit message: `feat(remotex): add secure credential lifecycle tools`
 

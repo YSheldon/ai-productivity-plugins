@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
+import json
 import os
 import re
+import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
 import remotex_core as core
+import secure_paths
+import windows_credentials
 
 
 CREDENTIAL_ALIAS_PATTERN = re.compile(
@@ -303,3 +309,227 @@ def resolve_profile_reference(
         configuration_version=version,
         reference=reference,
     )
+
+
+def resolve_named_reference(
+    bundle: core.ConfigBundle,
+    alias: str,
+) -> ResolvedCredential:
+    name = core._required_text(alias, "credential_ref")
+    credentials = bundle.data.get("credentials", {})
+    if not isinstance(credentials, dict) or name not in credentials:
+        raise core.ToolError(f"RemoteX credential_ref not found: {name}")
+    reference = _validate_record(credentials[name], f"credentials.{name}")
+    return ResolvedCredential.create(
+        profile_name="",
+        kind="credential",
+        alias=name,
+        configuration_version=int(bundle.data.get("version", 1)),
+        reference=reference,
+    )
+
+
+def _setup_root() -> Path:
+    configured = os.environ.get("REMOTEX_CREDENTIAL_SETUP_DIR")
+    if configured:
+        return core.expand_path(configured, "REMOTEX_CREDENTIAL_SETUP_DIR")
+    if os.name == "nt":
+        root = Path(
+            os.environ.get("LOCALAPPDATA")
+            or (core.DEFAULT_CONFIG_PATH.parents[2] / "AppData" / "Local")
+        )
+    else:
+        root = Path(
+            os.environ.get("XDG_STATE_HOME")
+            or (core.DEFAULT_CONFIG_PATH.parents[2] / ".local" / "state")
+        )
+    return root / "RemoteX" / "credential-setup"
+
+
+def _powershell_path() -> str:
+    root = Path(os.environ.get("SystemRoot") or r"C:\Windows")
+    return str(
+        root
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+
+
+def _setup_arguments(
+    reference: ResolvedCredential,
+    receipt_path: Path,
+) -> list[str]:
+    if reference.source != "windows-credential-manager":
+        raise core.ToolError(
+            "Secure setup supports Windows Credential Manager references only"
+        )
+    target = core._required_text(
+        reference.reference_dict().get("target"),
+        "credential.target",
+    )
+    helper = Path(__file__).resolve().parents[1] / "scripts" / "manage_windows_credential.ps1"
+    if not helper.is_file():
+        raise core.ToolError("RemoteX credential setup helper is unavailable")
+    return [
+        _powershell_path(),
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(helper),
+        "-Operation",
+        "Store",
+        "-Target",
+        target,
+        "-ReceiptPath",
+        str(receipt_path),
+    ]
+
+
+def _decode_setup_receipt(path: Path, expected_target_sha256: str) -> dict[str, Any]:
+    secure_paths.ensure_private_file(path)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise core.ToolError("RemoteX credential setup receipt is invalid") from exc
+    expected_fields = {
+        "schema",
+        "status",
+        "existingBefore",
+        "referencePresent",
+        "targetSha256",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected_fields
+        or value.get("schema") != "RemoteXCredentialSetupReceipt/v1"
+        or value.get("status") not in {"stored", "cancelled", "failed"}
+        or type(value.get("existingBefore")) is not bool
+        or type(value.get("referencePresent")) is not bool
+        or value.get("targetSha256") != expected_target_sha256
+    ):
+        raise core.ToolError("RemoteX credential setup receipt is invalid")
+    return value
+
+
+def launch_secure_setup(
+    reference: ResolvedCredential,
+    *,
+    timeout: int,
+) -> dict[str, Any]:
+    if os.name != "nt":
+        raise core.ToolError("Secure credential setup requires Windows")
+    if reference.source != "windows-credential-manager":
+        raise core.ToolError(
+            "Secure setup supports Windows Credential Manager references only"
+        )
+    target = core._required_text(
+        reference.reference_dict().get("target"),
+        "credential.target",
+    )
+    target_sha256 = _digest(target)
+    root = _setup_root()
+    secure_paths.ensure_private_directory(root)
+    receipt_path = root / f"{uuid.uuid4()}.json"
+    arguments = _setup_arguments(reference, receipt_path)
+    process: subprocess.Popen[Any] | None = None
+    try:
+        process = subprocess.Popen(
+            arguments,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=(
+                subprocess.CREATE_NEW_CONSOLE
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+            ),
+        )
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            process.wait(timeout=10)
+            raise core.ToolError("RemoteX credential setup timed out") from exc
+        if not receipt_path.is_file():
+            raise core.ToolError("RemoteX credential setup did not produce a receipt")
+        receipt = _decode_setup_receipt(receipt_path, target_sha256)
+        expected_exit = 0 if receipt["status"] == "stored" else 2
+        if process.returncode != expected_exit:
+            raise core.ToolError(
+                "RemoteX credential setup receipt and exit status differ"
+            )
+        if receipt["status"] == "failed":
+            raise core.ToolError("RemoteX credential setup failed")
+        present = windows_credentials.credential_exists(
+            target,
+            credential_types=(1, 2),
+        )
+        if receipt["status"] == "stored" and not present:
+            raise core.ToolError("RemoteX credential setup presence readback failed")
+        return {
+            "status": receipt["status"],
+            "existingBefore": receipt["existingBefore"],
+            "referencePresent": present,
+            "targetSha256": target_sha256,
+        }
+    except OSError as exc:
+        raise core.ToolError("Unable to launch RemoteX credential setup securely") from exc
+    finally:
+        try:
+            receipt_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _delete_windows_credential_type(target: str, credential_type: int) -> bool:
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("Advapi32.dll", use_last_error=True)
+    advapi32.CredDeleteW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    advapi32.CredDeleteW.restype = wintypes.BOOL
+    if advapi32.CredDeleteW(target, credential_type, 0):
+        return True
+    error_code = ctypes.get_last_error()
+    if error_code == 1168:
+        return False
+    raise core.ToolError(
+        f"Unable to delete Windows credential (Win32 error {error_code})"
+    )
+
+
+def delete_windows_credential(reference: ResolvedCredential) -> dict[str, Any]:
+    if os.name != "nt":
+        raise core.ToolError("Windows credential deletion requires Windows")
+    if reference.source != "windows-credential-manager":
+        raise core.ToolError(
+            "Credential deletion supports Windows Credential Manager references only"
+        )
+    target = core._required_text(
+        reference.reference_dict().get("target"),
+        "credential.target",
+    )
+    deleted = sum(
+        1
+        for credential_type in (1, 2)
+        if _delete_windows_credential_type(target, credential_type)
+    )
+    present = windows_credentials.credential_exists(
+        target,
+        credential_types=(1, 2),
+    )
+    if present:
+        raise core.ToolError("Windows credential deletion presence readback failed")
+    return {
+        "removed": deleted > 0,
+        "deletedRecordCount": deleted,
+        "referencePresent": False,
+        "targetSha256": _digest(target),
+    }

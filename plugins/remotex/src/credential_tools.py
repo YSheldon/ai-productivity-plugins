@@ -198,6 +198,109 @@ def doctor(args: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _lifecycle_reference(
+    args: dict[str, Any],
+) -> tuple[
+    core.ConfigBundle,
+    credential_store.ResolvedCredential,
+    list[str],
+]:
+    bundle = core.load_config()
+    profile_name = core._text(args.get("profile")).strip()
+    alias = core._text(args.get("credential_ref")).strip()
+    if bool(profile_name) == bool(alias):
+        raise core.ToolError("Pass exactly one of profile or credential_ref")
+    if profile_name:
+        profile = bundle.data["profiles"].get(profile_name)
+        if not isinstance(profile, dict):
+            raise core.ToolError(f"RemoteX profile not found: {profile_name}")
+        kind = core.normalize_kind(profile.get("kind"))
+        resolved = credential_store.resolve_profile_reference(
+            bundle,
+            profile_name,
+            profile,
+            kind,
+        )
+    else:
+        resolved = credential_store.resolve_named_reference(bundle, alias)
+    key = _reference_key(resolved)
+    consumers: list[str] = []
+    for name, profile in bundle.data["profiles"].items():
+        if not isinstance(profile, dict):
+            continue
+        kind = core.normalize_kind(profile.get("kind"))
+        if kind == "vmware-workstation":
+            continue
+        try:
+            candidate = credential_store.resolve_profile_reference(
+                bundle,
+                name,
+                profile,
+                kind,
+            )
+        except core.ToolError:
+            continue
+        if _reference_key(candidate) == key:
+            consumers.append(name)
+    return bundle, resolved, sorted(consumers)
+
+
+def setup(args: dict[str, Any]) -> dict[str, Any]:
+    if not core.as_bool(args.get("confirm"), False):
+        raise core.ToolError("confirm=true is required to open secure credential setup")
+    _, resolved, consumers = _lifecycle_reference(args)
+    if resolved.source != "windows-credential-manager":
+        raise core.ToolError(
+            "Secure setup supports Windows Credential Manager references only"
+        )
+    timeout = core.validate_timeout(args.get("timeout_seconds"), 300)
+    lifecycle = credential_store.launch_secure_setup(resolved, timeout=timeout)
+    stored = lifecycle.get("status") == "stored"
+    cancelled = lifecycle.get("status") == "cancelled"
+    return core.tool_result(
+        {
+            "ok": bool(stored and lifecycle.get("referencePresent")),
+            "cancelled": cancelled,
+            "status": lifecycle.get("status"),
+            "credentialRef": resolved.alias,
+            "source": resolved.source,
+            "consumerCount": len(consumers),
+            "rotated": bool(stored and lifecycle.get("existingBefore")),
+            "referencePresent": bool(lifecycle.get("referencePresent")),
+            "targetSha256": lifecycle.get("targetSha256"),
+            "nextStep": (
+                "run-protocol-authentication-test"
+                if stored
+                else "credential-setup-cancelled"
+            ),
+        }
+    )
+
+
+def delete(args: dict[str, Any]) -> dict[str, Any]:
+    if not core.as_bool(args.get("confirm"), False):
+        raise core.ToolError("confirm=true is required to delete a configured credential")
+    _, resolved, consumers = _lifecycle_reference(args)
+    if resolved.source != "windows-credential-manager":
+        raise core.ToolError(
+            "Credential deletion supports Windows Credential Manager references only"
+        )
+    lifecycle = credential_store.delete_windows_credential(resolved)
+    return core.tool_result(
+        {
+            "ok": not lifecycle.get("referencePresent"),
+            "credentialRef": resolved.alias,
+            "source": resolved.source,
+            "consumerCount": len(consumers),
+            "removed": bool(lifecycle.get("removed")),
+            "deletedRecordCount": int(lifecycle.get("deletedRecordCount") or 0),
+            "referencePresent": bool(lifecycle.get("referencePresent")),
+            "targetSha256": lifecycle.get("targetSha256"),
+            "nextStep": "credential-reference-is-now-missing",
+        }
+    )
+
+
 TOOLS: dict[str, dict[str, Any]] = {
     "remotex_credential_doctor": {
         "description": (
@@ -213,5 +316,44 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": doctor,
-    }
+    },
+    "remotex_credential_setup": {
+        "description": (
+            "Open a visible local Windows secure prompt to store or rotate one configured "
+            "Credential Manager reference without accepting credential values in MCP."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "profile": {"type": "string"},
+                "credential_ref": {"type": "string"},
+                "confirm": {"type": "boolean"},
+                "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": core.MAX_TIMEOUT_SECONDS,
+                },
+            },
+            "required": ["confirm"],
+            "additionalProperties": False,
+        },
+        "handler": setup,
+    },
+    "remotex_credential_delete": {
+        "description": (
+            "Delete one configured Windows Credential Manager reference after explicit "
+            "confirmation and absence readback."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "profile": {"type": "string"},
+                "credential_ref": {"type": "string"},
+                "confirm": {"type": "boolean"},
+            },
+            "required": ["confirm"],
+            "additionalProperties": False,
+        },
+        "handler": delete,
+    },
 }

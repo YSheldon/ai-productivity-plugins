@@ -14,6 +14,7 @@ import remotex_core as core
 
 WINDOWS_SYSTEM_SID = "S-1-5-18"
 WINDOWS_ADMINISTRATORS_SID = "S-1-5-32-544"
+WINDOWS_LOCAL_ADMINISTRATOR_ALIAS = "LA"
 _ACE_PATTERN = re.compile(r"\(([^()]*)\)")
 
 
@@ -160,6 +161,7 @@ def private_path_status(path: Path) -> dict[str, Any]:
         WINDOWS_ADMINISTRATORS_SID,
         "SY",
         "BA",
+        WINDOWS_LOCAL_ADMINISTRATOR_ALIAS,
     }
     unexpected = sorted(_allow_trustees(acl["sddl"]) - allowed)
     protected = "D:P" in acl["sddl"]
@@ -170,6 +172,7 @@ def private_path_status(path: Path) -> dict[str, Any]:
     owner_trusted = owner_matches or acl["owner"].casefold() in {
         WINDOWS_ADMINISTRATORS_SID.casefold(),
         "ba",
+        WINDOWS_LOCAL_ADMINISTRATOR_ALIAS.casefold(),
         "builtin\\administrators",
     }
     ready = protected and owner_trusted and not unexpected

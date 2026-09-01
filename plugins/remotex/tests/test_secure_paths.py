@@ -18,6 +18,31 @@ import secure_paths
 
 
 class SecurePathTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows local administrator alias test")
+    def test_windows_local_administrator_alias_is_trusted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            sddl = (
+                "O:LAG:LAD:P"
+                "(A;OICI;FA;;;SY)"
+                "(A;OICI;FA;;;BA)"
+                "(A;OICI;FA;;;LA)"
+            )
+            with mock.patch.object(
+                secure_paths,
+                "_windows_identity",
+                return_value=("S-1-5-21-1234-500", "TEST\\Administrator"),
+            ):
+                with mock.patch.object(
+                    secure_paths,
+                    "_windows_acl",
+                    return_value={"owner": "LA", "sddl": sddl},
+                ):
+                    status = secure_paths.private_path_status(path)
+        self.assertTrue(status["ready"])
+        self.assertEqual(status["unexpectedAllowTrustees"], [])
+        self.assertTrue(status["ownerTrusted"])
+
     @unittest.skipUnless(os.name == "nt", "Windows unexpected trustee test")
     def test_windows_status_reports_unexpected_allow_trustees(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -18,6 +18,32 @@ import secure_paths
 
 
 class SecurePathTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows unexpected trustee test")
+    def test_windows_status_reports_unexpected_allow_trustees(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            sddl = (
+                "O:S-1-5-21-1234G:S-1-5-21-1234D:P"
+                "(A;OICI;FA;;;SY)"
+                "(A;OICI;FA;;;BA)"
+                "(A;OICI;FA;;;S-1-5-21-1234)"
+                "(A;OICI;FR;;;BU)"
+            )
+            with mock.patch.object(
+                secure_paths,
+                "_windows_identity",
+                return_value=("S-1-5-21-1234", "TEST\\runner"),
+            ):
+                with mock.patch.object(
+                    secure_paths,
+                    "_windows_acl",
+                    return_value={"owner": "S-1-5-21-1234", "sddl": sddl},
+                ):
+                    status = secure_paths.private_path_status(path)
+        self.assertFalse(status["ready"])
+        self.assertEqual(status["reason"], "windows-acl-too-broad")
+        self.assertEqual(status["unexpectedAllowTrustees"], ["BU"])
+
     @unittest.skipUnless(os.name == "nt", "Windows trusted owner test")
     def test_windows_administrators_owner_is_within_trusted_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

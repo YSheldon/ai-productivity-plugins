@@ -188,6 +188,7 @@ def private_path_status(path: Path) -> dict[str, Any]:
         "ownerTrusted": owner_trusted,
         "inheritanceProtected": protected,
         "unexpectedAllowPrincipalCount": len(unexpected),
+        "unexpectedAllowTrustees": unexpected[:8],
     }
 
 
@@ -232,9 +233,11 @@ def ensure_private_directory(path: Path) -> dict[str, Any]:
         os.chmod(candidate, 0o700)
     status = private_path_status(candidate)
     if not status.get("ready"):
+        details = ",".join(status.get("unexpectedAllowTrustees") or [])
         raise core.ToolError(
             "Private RemoteX directory protection verification failed: "
             + str(status.get("reason") or "unknown")
+            + (f":{details}" if details else "")
         )
     return status
 
@@ -249,8 +252,10 @@ def ensure_private_file(path: Path) -> dict[str, Any]:
         os.chmod(candidate, 0o600)
     status = private_path_status(candidate)
     if not status.get("ready"):
+        details = ",".join(status.get("unexpectedAllowTrustees") or [])
         raise core.ToolError(
             "Private RemoteX file protection verification failed: "
             + str(status.get("reason") or "unknown")
+            + (f":{details}" if details else "")
         )
     return status

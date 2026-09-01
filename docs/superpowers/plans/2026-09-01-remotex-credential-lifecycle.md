@@ -246,34 +246,34 @@
 - Produces CLI: `migrate_remotex_config.py --config PATH --check`
 - Produces CLI: `migrate_remotex_config.py --config PATH --write --confirm`
 
-- [ ] **Step 1: Write failing migration tests**
+- [x] **Step 1: Write failing migration tests**
 
   Cover deterministic alias names, deduplication of identical inline references, semantic profile equivalence, no credential-value reads, preview without writes, required confirmation, adjacent backup, atomic replace, private protection, and reload/readback rollback on failure.
 
-- [ ] **Step 2: Run migration tests and observe failure**
+- [x] **Step 2: Run migration tests and observe failure**
 
   Run:
   `python -m unittest discover -s plugins/remotex/tests -p 'test_config_migration.py' -v`
 
-- [ ] **Step 3: Implement deterministic migration**
+- [x] **Step 3: Implement deterministic migration**
 
   Generate aliases from profile names with collision-safe numeric suffixes, deduplicate byte-for-byte identical normalized references, replace inline objects with `credential_ref`, set version 2, and preserve defaults and every non-credential profile field.
 
-- [ ] **Step 4: Implement preview and confirmed write**
+- [x] **Step 4: Implement preview and confirmed write**
 
   `--check` prints only a sanitized structural summary and the candidate JSON without secret values. `--write --confirm` creates a protected backup, atomically replaces the config, reloads through RemoteX validation, compares semantic normalized profiles, and restores the backup on failure.
 
-- [ ] **Step 5: Update the example config to version 2**
+- [x] **Step 5: Update the example config to version 2**
 
   Demonstrate separate SSH, RDP, Windows guest, and vSphere aliases without any literal value or product-specific endpoint.
 
-- [ ] **Step 6: Run migration and contract tests**
+- [x] **Step 6: Run migration and contract tests**
 
   Run:
   `python -m unittest discover -s plugins/remotex/tests -p 'test_config_migration.py' -v`
   followed by the complete RemoteX test discovery command.
 
-- [ ] **Step 7: Commit migration support**
+- [x] **Step 7: Commit migration support**
 
   Commit message: `feat(remotex): add explicit credential config migration`
 

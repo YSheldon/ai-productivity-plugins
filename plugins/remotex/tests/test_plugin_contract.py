@@ -43,8 +43,12 @@ class PluginContractTests(unittest.TestCase):
         serialized = json.dumps(config).lower()
         for forbidden in ('"password":', '"secret":', '"token":', '"private_key":'):
             self.assertNotIn(forbidden, serialized)
-        self.assertEqual(config["version"], 1)
+        self.assertEqual(config["version"], 2)
         self.assertEqual(config["defaults"]["windows-guest"], "windows-guest-lab")
+        self.assertEqual(
+            config["credentials"]["windows-guest"]["source"],
+            "windows-credential-manager",
+        )
 
         windows_ssh = config["profiles"]["windows-ssh-lab"]
         windows_rdp = config["profiles"]["windows-lab"]
@@ -70,7 +74,13 @@ class PluginContractTests(unittest.TestCase):
             },
             {"lab-windows-vm"},
         )
-        self.assertEqual(windows_guest["credential"]["source"], "windows-credential-manager")
+        self.assertEqual(windows_guest["credential_ref"], "windows-guest")
+        self.assertTrue(
+            all(
+                "credential" not in profile
+                for profile in config["profiles"].values()
+            )
+        )
         self.assertEqual(windows_guest["guest_machine_id"], "WINDOWS-LAB")
         self.assertEqual(windows_ssh["queue_lease_seconds"], 14400)
         self.assertEqual(

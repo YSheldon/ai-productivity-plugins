@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import copy
 import hashlib
 import json
 import os
@@ -533,3 +534,66 @@ def delete_windows_credential(reference: ResolvedCredential) -> dict[str, Any]:
         "referencePresent": False,
         "targetSha256": _digest(target),
     }
+
+
+def _migration_alias(profile_name: str, used: set[str]) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", profile_name.casefold()).strip("-")
+    if not base:
+        base = "credential"
+    base = base[:63].rstrip("-") or "credential"
+    candidate = base
+    suffix = 2
+    while candidate in used:
+        tail = f"-{suffix}"
+        candidate = (base[: 63 - len(tail)].rstrip("-") + tail)
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def migrate_v1_config(data: dict[str, Any]) -> dict[str, Any]:
+    validated = core._validate_config(copy.deepcopy(data))
+    if validated.get("version") != 1:
+        raise core.ToolError("Only RemoteX version 1 configuration can be migrated")
+    profiles: dict[str, dict[str, Any]] = {}
+    credentials: dict[str, dict[str, Any]] = {}
+    canonical_aliases: dict[str, str] = {}
+    used_aliases: set[str] = set()
+    for profile_name, raw_profile in validated["profiles"].items():
+        profile = copy.deepcopy(raw_profile)
+        kind = core.normalize_kind(profile.get("kind"))
+        record: dict[str, Any] | None = None
+        if isinstance(profile.get("credential"), dict):
+            record = _validate_record(
+                profile["credential"],
+                f"profiles.{profile_name}.credential",
+            )
+        elif kind == "ssh":
+            record = _validate_record(
+                _legacy_ssh_reference(profile),
+                f"profiles.{profile_name}.credential",
+            )
+        if record is not None:
+            canonical = json.dumps(
+                record,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            alias = canonical_aliases.get(canonical)
+            if alias is None:
+                alias = _migration_alias(profile_name, used_aliases)
+                canonical_aliases[canonical] = alias
+                credentials[alias] = record
+            profile.pop("credential", None)
+            if kind == "ssh":
+                profile.pop("identity_file", None)
+            profile["credential_ref"] = alias
+        profiles[profile_name] = profile
+    candidate = {
+        "version": 2,
+        "credentials": credentials,
+        "defaults": copy.deepcopy(validated["defaults"]),
+        "profiles": profiles,
+    }
+    return core._validate_config(candidate)

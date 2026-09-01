@@ -132,6 +132,14 @@ class PluginContractTests(unittest.TestCase):
         )
         self.assertIn("sys.version_info >= (3, 10)", launcher)
 
+    def test_repository_ci_collects_remotex_changes_and_tests(self) -> None:
+        pytest_config = (REPO_ROOT / "pytest.ini").read_text(encoding="utf-8")
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "release-gate-ci.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("plugins/remotex/tests", pytest_config)
+        self.assertGreaterEqual(workflow.count('"plugins/remotex/**"'), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

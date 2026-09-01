@@ -219,19 +219,39 @@ class ResolvedCredential:
 
     def presence(self) -> dict[str, Any]:
         result = self.public()
-        if self.source in {"windows-credential-manager", "environment"}:
+        if self.source == "windows-credential-manager":
+            target = core._required_text(
+                self._reference.get("target"),
+                "credential.target",
+            )
+            credential_types = (1, 2) if self.kind == "rdp" else (1,)
+            present = windows_credentials.credential_exists(
+                target,
+                credential_types=credential_types,
+            )
+            result.update(
+                {
+                    "present": present,
+                    "reason": (
+                        None
+                        if present
+                        else "windows-credential-reference-missing"
+                    ),
+                }
+            )
+            return result
+        if self.source == "environment":
             status = core.credential_status(self.reference_dict())
             present = bool(status.get("ready"))
-            reason = None if present else (
-                "environment-reference-missing"
-                if self.source == "environment"
-                else "windows-credential-reference-missing"
+            result.update(
+                {
+                    "present": present,
+                    "reason": None if present else "environment-reference-missing",
+                }
             )
-            result.update({"present": present, "reason": reason})
-            if self.source == "environment":
-                result["missingEnvironmentVariableCount"] = len(
-                    status.get("missing_environment_variables") or []
-                )
+            result["missingEnvironmentVariableCount"] = len(
+                status.get("missing_environment_variables") or []
+            )
             return result
         if self.source == "windows-integrated":
             present = os.name == "nt"

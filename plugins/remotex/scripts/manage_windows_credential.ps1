@@ -23,7 +23,6 @@ $nativeSource = @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ComTypes;
 using System.Security;
 
 public static class RemoteXCredentialNative
@@ -35,7 +34,7 @@ public static class RemoteXCredentialNative
         public UInt32 Type;
         public string TargetName;
         public string Comment;
-        public FILETIME LastWritten;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
         public UInt32 CredentialBlobSize;
         public IntPtr CredentialBlob;
         public UInt32 Persist;
@@ -54,15 +53,35 @@ public static class RemoteXCredentialNative
     [DllImport("Advapi32.dll", EntryPoint = "CredFree", SetLastError = false)]
     private static extern void CredFree(IntPtr credential);
 
-    public static bool Exists(string target)
+    public static bool Exists(string target, UInt32 credentialType)
     {
         IntPtr credential;
-        if (!CredRead(target, 1, 0, out credential))
+        if (!CredRead(target, credentialType, 0, out credential))
         {
             return false;
         }
         CredFree(credential);
         return true;
+    }
+
+    private static void WriteType(
+        string target,
+        string username,
+        SecureString securePassword,
+        UInt32 credentialType,
+        IntPtr secret)
+    {
+        CREDENTIAL credential = new CREDENTIAL();
+        credential.Type = credentialType;
+        credential.TargetName = target;
+        credential.UserName = username;
+        credential.CredentialBlob = secret;
+        credential.CredentialBlobSize = checked((UInt32)(securePassword.Length * 2));
+        credential.Persist = 2;
+        if (!CredWrite(ref credential, 0))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
     }
 
     public static void Write(string target, string username, SecureString securePassword)
@@ -76,16 +95,22 @@ public static class RemoteXCredentialNative
         try
         {
             secret = Marshal.SecureStringToCoTaskMemUnicode(securePassword);
-            CREDENTIAL credential = new CREDENTIAL();
-            credential.Type = 1;
-            credential.TargetName = target;
-            credential.UserName = username;
-            credential.CredentialBlob = secret;
-            credential.CredentialBlobSize = checked((UInt32)(securePassword.Length * 2));
-            credential.Persist = 2;
-            if (!CredWrite(ref credential, 0))
+            bool genericExists = Exists(target, 1);
+            bool domainExists = Exists(target, 2);
+            if (!genericExists && !domainExists)
             {
-                throw new Win32Exception(Marshal.GetLastWin32Error());
+                WriteType(target, username, securePassword, 1, secret);
+            }
+            else
+            {
+                if (genericExists)
+                {
+                    WriteType(target, username, securePassword, 1, secret);
+                }
+                if (domainExists)
+                {
+                    WriteType(target, username, securePassword, 2, secret);
+                }
             }
         }
         finally
@@ -125,7 +150,10 @@ try {
         [Array]::Clear($targetBytes, 0, $targetBytes.Length)
     }
 
-    $receipt.existingBefore = [RemoteXCredentialNative]::Exists($Target)
+    $receipt.existingBefore = (
+        [RemoteXCredentialNative]::Exists($Target, 1) -or
+        [RemoteXCredentialNative]::Exists($Target, 2)
+    )
     $credential = Get-Credential -Message ('RemoteX credential setup for configured reference ' + $receipt.targetSha256.Substring(0, 12))
     if ($null -eq $credential) {
         $receipt.status = 'cancelled'
@@ -133,7 +161,10 @@ try {
     }
     else {
         [RemoteXCredentialNative]::Write($Target, $credential.UserName, $credential.Password)
-        $receipt.referencePresent = [RemoteXCredentialNative]::Exists($Target)
+        $receipt.referencePresent = (
+            [RemoteXCredentialNative]::Exists($Target, 1) -or
+            [RemoteXCredentialNative]::Exists($Target, 2)
+        )
         if (-not $receipt.referencePresent) {
             throw 'Credential presence readback failed.'
         }

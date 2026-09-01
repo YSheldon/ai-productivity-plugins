@@ -19,6 +19,7 @@ import remotex_core as core
 import remotex_mcp
 import secure_paths
 import authentication_evidence
+import credential_store
 import vsphere_adapter
 import windows_guest
 
@@ -84,14 +85,15 @@ class CredentialToolsTests(unittest.TestCase):
                 },
             )
 
-            def credential_status(reference: dict) -> dict:
-                return {
-                    "source": reference["source"],
-                    "ready": reference.get("target") == "TERMSRV/ready.example",
-                }
+            def credential_exists(target: str, credential_types=(1,)) -> bool:
+                return target == "TERMSRV/ready.example"
 
             with mock.patch.dict(os.environ, {"REMOTEX_CONFIG": str(path)}, clear=True):
-                with mock.patch.object(core, "credential_status", side_effect=credential_status):
+                with mock.patch.object(
+                    credential_store.windows_credentials,
+                    "credential_exists",
+                    side_effect=credential_exists,
+                ):
                     with mock.patch.object(
                         secure_paths,
                         "private_path_status",
@@ -144,12 +146,9 @@ class CredentialToolsTests(unittest.TestCase):
             )
             with mock.patch.dict(os.environ, {"REMOTEX_CONFIG": str(path)}, clear=True):
                 with mock.patch.object(
-                    core,
-                    "credential_status",
-                    return_value={
-                        "source": "windows-credential-manager",
-                        "ready": False,
-                    },
+                    credential_store.windows_credentials,
+                    "credential_exists",
+                    return_value=False,
                 ):
                     with mock.patch.object(
                         secure_paths,

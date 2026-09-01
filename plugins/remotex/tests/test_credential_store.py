@@ -215,15 +215,53 @@ class CredentialStoreTests(unittest.TestCase):
             "windows-guest",
         )
         with mock.patch.object(
-            core,
-            "credential_status",
-            return_value={"source": "windows-credential-manager", "ready": True},
+            store.windows_credentials,
+            "credential_exists",
+            return_value=True,
         ):
             status = resolved.presence()
         self.assertTrue(status["present"])
         self.assertNotIn("username", status)
         self.assertNotIn("password", status)
         self.assertNotIn("RemoteX/lab-admin", str(status))
+
+    def test_rdp_presence_accepts_generic_or_domain_credential_records(self) -> None:
+        store = credential_store_module()
+        config = bundle(
+            {
+                "version": 2,
+                "credentials": {
+                    "rdp-admin": {
+                        "source": "windows-credential-manager",
+                        "target": "TERMSRV/windows.example",
+                    }
+                },
+                "defaults": {},
+                "profiles": {
+                    "rdp": {
+                        "kind": "rdp",
+                        "credential_ref": "rdp-admin",
+                    }
+                },
+            }
+        )
+        resolved = store.resolve_profile_reference(
+            config,
+            "rdp",
+            config.data["profiles"]["rdp"],
+            "rdp",
+        )
+        with mock.patch.object(
+            store.windows_credentials,
+            "credential_exists",
+            return_value=True,
+        ) as exists:
+            status = resolved.presence()
+        self.assertTrue(status["present"])
+        exists.assert_called_once_with(
+            "TERMSRV/windows.example",
+            credential_types=(1, 2),
+        )
 
     def test_expected_ssh_fingerprint_blocks_before_network(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

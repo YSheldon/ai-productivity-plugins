@@ -21,7 +21,7 @@ import windows_guest
 
 
 SERVER_NAME = "remotex"
-SERVER_VERSION = "0.4.1"
+SERVER_VERSION = "0.5.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 queue_leases.install_hooks()
 

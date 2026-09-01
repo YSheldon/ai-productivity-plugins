@@ -30,7 +30,7 @@ class PluginContractTests(unittest.TestCase):
         legacy_entry = next(item for item in marketplace["plugins"] if item["name"] == "ssh")
         self.assertEqual(manifest["name"], "remotex")
         self.assertEqual(manifest["version"], remotex_mcp.SERVER_VERSION)
-        self.assertEqual(manifest["version"], "0.4.1")
+        self.assertEqual(manifest["version"], "0.5.0")
         self.assertEqual(remotex_entry["source"]["path"], "./plugins/remotex")
         self.assertEqual(remotex_entry["policy"]["installation"], "AVAILABLE")
         self.assertEqual(remotex_entry["policy"]["authentication"], "ON_USE")
@@ -95,6 +95,31 @@ class PluginContractTests(unittest.TestCase):
         self.assertTrue((PLUGIN_ROOT / manifest["mcpServers"]).is_file())
         self.assertTrue((PLUGIN_ROOT / manifest["interface"]["composerIcon"]).is_file())
         self.assertTrue((PLUGIN_ROOT / "skills" / "remotex" / "SKILL.md").is_file())
+        lifecycle = PLUGIN_ROOT / "docs" / "credential-lifecycle.md"
+        self.assertTrue(lifecycle.is_file())
+        documentation = lifecycle.read_text(encoding="utf-8")
+        for required in (
+            "credential_ref",
+            "remotex_credential_doctor",
+            "remotex_credential_setup",
+            "remotex_credential_delete",
+            "stdin.bin",
+            "authentication",
+        ):
+            self.assertIn(required, documentation)
+
+    def test_credential_lifecycle_tools_have_no_value_fields(self) -> None:
+        for name in (
+            "remotex_credential_doctor",
+            "remotex_credential_setup",
+            "remotex_credential_delete",
+        ):
+            properties = remotex_mcp.TOOLS[name]["inputSchema"]["properties"]
+            self.assertTrue(
+                {key.casefold() for key in properties}.isdisjoint(
+                    {"username", "password", "token", "secret", "target"}
+                )
+            )
 
     def test_mcp_uses_cross_platform_launcher(self) -> None:
         mcp = json.loads((PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8"))

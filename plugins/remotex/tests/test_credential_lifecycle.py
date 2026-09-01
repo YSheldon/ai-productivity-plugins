@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import inspect
 import json
 import os
+import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -149,8 +152,68 @@ class CredentialLifecycleTests(unittest.TestCase):
         self.assertIn("CredWriteW", source)
         self.assertIn("SecureStringToCoTaskMemUnicode", source)
         self.assertIn("ZeroFreeCoTaskMemUnicode", source)
+        self.assertIn("credential.Type = credentialType", source)
+        self.assertIn("Exists($Target, 2)", source)
+        self.assertNotIn("credential.Type = 1;", source)
         self.assertNotIn("GetNetworkCredential().Password", source)
         self.assertNotIn("cmdkey", source.casefold())
+
+    @unittest.skipUnless(os.name == "nt", "Windows PowerShell C# compiler test")
+    def test_secure_helper_native_code_compiles_on_windows_powershell(self) -> None:
+        script = (
+            PLUGIN_ROOT / "scripts" / "manage_windows_credential.ps1"
+        ).read_text(encoding="utf-8")
+        match = re.search(
+            r"\$nativeSource = @'\r?\n(?P<code>.*?)\r?\n'@",
+            script,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        encoded_source = base64.b64encode(
+            match.group("code").encode("utf-8")
+        ).decode("ascii")
+        command = (
+            "$ErrorActionPreference='Stop';"
+            "$code=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('"
+            + encoded_source
+            + "'));"
+            "Add-Type -TypeDefinition $code -Language CSharp;"
+            "[Console]::Out.Write('CSHARP_COMPILE_OK')"
+        )
+        encoded_command = base64.b64encode(
+            command.encode("utf-16-le")
+        ).decode("ascii")
+        powershell = (
+            Path(os.environ.get("SystemRoot") or r"C:\Windows")
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
+        completed = subprocess.run(
+            [
+                str(powershell),
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                encoded_command,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=30,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=completed.stderr,
+        )
+        self.assertIn("CSHARP_COMPILE_OK", completed.stdout)
 
     def test_setup_launcher_arguments_contain_reference_but_no_value_fields(self) -> None:
         self.assertTrue(hasattr(credential_store, "_setup_arguments"))

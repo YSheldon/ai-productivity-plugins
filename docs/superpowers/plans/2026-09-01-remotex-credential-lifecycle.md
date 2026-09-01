@@ -294,39 +294,39 @@
 - Produces: RemoteX 0.5.0 manifest and server version.
 - Documents: secure prompt, aliases, doctor, migration, setup/rotation/delete, no-disk IPC, and authentication boundaries.
 
-- [ ] **Step 1: Write failing version and documentation contract tests**
+- [x] **Step 1: Write failing version and documentation contract tests**
 
   Assert manifest/server/marketplace version `0.5.0`, new MCP tools, example version 2, required documentation sections, and absence of password-like tool fields.
 
-- [ ] **Step 2: Run contract tests and observe failure**
+- [x] **Step 2: Run contract tests and observe failure**
 
   Run:
   `python -m unittest discover -s plugins/remotex/tests -p 'test_plugin_contract.py' -v`
   and
   `python -m unittest discover -s plugins/remotex/tests -p 'test_mcp_protocol.py' -v`
 
-- [ ] **Step 3: Update docs, skill, manifest, and version**
+- [x] **Step 3: Update docs, skill, manifest, and version**
 
   Explain that setup is local interactive, presence is not authentication, RDP has no login receipt, version 1 remains supported, environment references are ephemeral-only, and installed-plugin update is a separate gate.
 
-- [ ] **Step 4: Run RemoteX tests**
+- [x] **Step 4: Run RemoteX tests**
 
   Run:
   `python -m unittest discover -s plugins/remotex/tests -p 'test_*.py' -v`
 
-- [ ] **Step 5: Run plugin and skill validation**
+- [x] **Step 5: Run plugin and skill validation**
 
   Run the bundled `validate_plugin.py` against `plugins/remotex` and `quick_validate.py` against `plugins/remotex/skills/remotex`.
 
-- [ ] **Step 6: Run repository-wide configured tests**
+- [x] **Step 6: Run repository-wide configured tests**
 
   Run the repository `pytest.ini` test set with the bundled Python runtime and temporary dependencies. Remove test caches and dependencies before staging.
 
-- [ ] **Step 7: Scan and review the final diff**
+- [x] **Step 7: Scan and review the final diff**
 
   Run Python compilation, `git diff --check`, known-secret-pattern scanning, MCP schema scanning for forbidden secret fields, and explicit staged-file review.
 
-- [ ] **Step 8: Commit the release update**
+- [x] **Step 8: Commit the release update**
 
   Commit message: `docs(remotex): document credential lifecycle workflows`
 

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Iterator
 
+import credential_store
 import execution
 import remotex_core as core
 import vm_identity
@@ -291,7 +292,13 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
     authentication = str(raw.get("authentication") or "kerberos").strip().lower()
     if authentication not in {"kerberos", "negotiate"}:
         raise core.ToolError("Windows guest authentication must be kerberos or negotiate")
-    credential = raw.get("credential")
+    resolved_credential = credential_store.resolve_profile_reference(
+        bundle,
+        name,
+        raw,
+        "windows-guest",
+    )
+    credential = resolved_credential.reference_dict()
     credential_state = _credential_status(credential)
     if not credential_state.get("ready"):
         raise core.ToolError(str(credential_state.get("reason") or "guest credential reference is unavailable"))
@@ -311,6 +318,8 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
         "authentication": authentication,
         "credential": credential,
         "credentialState": credential_state,
+        "credentialAlias": resolved_credential.alias,
+        "configurationVersion": resolved_credential.configuration_version,
         "stagingRoot": _staging_root(raw.get("staging_root")),
         "powershellPath": raw.get("powershell_path"),
         "identity": identity,
@@ -423,7 +432,21 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
         errors.append("Windows guest transport must be winrm")
     if authentication not in {"kerberos", "negotiate"}:
         errors.append("Windows guest authentication must be kerberos or negotiate")
-    credential_state = _credential_status(raw.get("credential"))
+    try:
+        bundle = core.load_config()
+        resolved_credential = credential_store.resolve_profile_reference(
+            bundle,
+            name,
+            raw,
+            "windows-guest",
+        )
+        credential_state = _credential_status(
+            resolved_credential.reference_dict()
+        )
+        result["credential_alias"] = resolved_credential.alias
+        result["configuration_version"] = resolved_credential.configuration_version
+    except core.ToolError as exc:
+        credential_state = {"source": None, "ready": False, "reason": str(exc)}
     result["credential_source"] = credential_state.get("source")
     result["credential_reference_ready"] = credential_state.get("ready")
     if not credential_state.get("ready"):

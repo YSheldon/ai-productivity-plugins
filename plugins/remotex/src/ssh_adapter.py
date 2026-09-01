@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import credential_store
 import remotex_core as core
 
 
@@ -18,11 +19,18 @@ def _strict_host_key_mode(value: Any) -> str:
     raise core.ToolError("strict_host_key_checking must be yes, accept-new, or no")
 
 
-def _credential_config(raw: dict[str, Any]) -> tuple[str, Path | None]:
-    credential = raw.get("credential")
-    if credential is not None and not isinstance(credential, dict):
-        raise core.ToolError("credential must be an object")
-    credential = credential or {}
+def _credential_config(
+    raw: dict[str, Any],
+    profile_name: str,
+    bundle: core.ConfigBundle,
+) -> tuple[str, Path | None, credential_store.ResolvedCredential]:
+    resolved = credential_store.resolve_profile_reference(
+        bundle,
+        profile_name,
+        raw,
+        "ssh",
+    )
+    credential = resolved.reference_dict()
     identity_value = credential.get("identity_file") or raw.get("identity_file")
     identity_file = (
         core.expand_path(identity_value, "credential.identity_file") if identity_value else None
@@ -33,12 +41,12 @@ def _credential_config(raw: dict[str, Any]) -> tuple[str, Path | None]:
         raise core.ToolError("SSH credential.source must be identity-file or ssh-agent")
     if source == "identity-file" and identity_file is None:
         raise core.ToolError("SSH identity-file credentials require credential.identity_file")
-    return source, identity_file
+    return source, identity_file, resolved
 
 
 def connection_config(profile: Any = None) -> dict[str, Any]:
     name, raw, bundle = core.select_profile("ssh", profile)
-    source, identity_file = _credential_config(raw)
+    source, identity_file, resolved = _credential_config(raw, name, bundle)
     known_hosts = (
         core.expand_path(raw.get("known_hosts_file"), "known_hosts_file")
         if raw.get("known_hosts_file")
@@ -52,6 +60,11 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
         "user": core.validate_user(raw.get("user")),
         "port": core.validate_port(raw.get("port"), DEFAULT_PORT),
         "credential_source": source,
+        "credential_alias": resolved.alias,
+        "configuration_version": resolved.configuration_version,
+        "expected_public_key_sha256": resolved.reference_dict().get(
+            "expected_public_key_sha256"
+        ),
         "identity_file": identity_file,
         "known_hosts_file": known_hosts,
         "strict_host_key_checking": _strict_host_key_mode(raw.get("strict_host_key_checking")),
@@ -75,8 +88,11 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
         core.validate_host(raw.get("host"))
         core.validate_user(raw.get("user"))
         core.validate_port(raw.get("port"), DEFAULT_PORT)
-        source, identity_file = _credential_config(raw)
+        bundle = core.load_config()
+        source, identity_file, resolved = _credential_config(raw, name, bundle)
         result["credential_source"] = source
+        result["credential_alias"] = resolved.alias
+        result["configuration_version"] = resolved.configuration_version
         if source == "identity-file":
             result["identity_file_exists"] = bool(identity_file and identity_file.is_file())
             if not result["identity_file_exists"]:

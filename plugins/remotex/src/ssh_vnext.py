@@ -276,6 +276,7 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
 
 
 def _enforce_host_key(cfg: dict[str, Any], timeout: int) -> dict[str, Any]:
+    _enforce_expected_public_key(cfg)
     import host_keys
 
     return host_keys.enforce(cfg, timeout)
@@ -362,7 +363,7 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _public_key_evidence(cfg: dict[str, Any]) -> dict[str, Any] | None:
-    if cfg["credential_source"] != "identity-file":
+    if cfg["credential_source"] not in {"identity-file", "ssh-agent"}:
         return None
     identity_file = cfg.get("identity_file")
     if not identity_file:
@@ -390,12 +391,30 @@ def _public_key_evidence(cfg: dict[str, Any]) -> dict[str, Any] | None:
         fingerprint = base64.b64encode(
             hashlib.sha256(public_key_blob).digest()
         ).decode("ascii").rstrip("=")
-        return {
+        result = {
             "state": "available",
             "algorithm": fields[0],
             "fingerprint": f"SHA256:{fingerprint}",
         }
+        expected = cfg.get("expected_public_key_sha256")
+        if expected:
+            result["expectedFingerprint"] = expected
+            result["matchesExpected"] = result["fingerprint"] == expected
+            if not result["matchesExpected"]:
+                result["state"] = "mismatch"
+        return result
     return {"state": "missing"}
+
+
+def _enforce_expected_public_key(cfg: dict[str, Any]) -> None:
+    expected = cfg.get("expected_public_key_sha256")
+    if not expected:
+        return
+    evidence = _public_key_evidence(cfg)
+    if not evidence or evidence.get("state") != "available":
+        raise core.ToolError(
+            "Configured SSH public-key fingerprint does not match the local identity"
+        )
 
 
 def _server_advertised_methods(stderr: str) -> list[str]:

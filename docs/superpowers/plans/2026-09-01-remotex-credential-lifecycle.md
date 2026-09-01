@@ -100,36 +100,36 @@
 - Produces: `ResolvedCredential.presence() -> dict[str, Any]`
 - Consumes: existing `remotex_core.read_windows_generic_credential()` until native functions move into the store.
 
-- [ ] **Step 1: Write failing version 2 resolver tests**
+- [x] **Step 1: Write failing version 2 resolver tests**
 
   Cover alias resolution for every provider, v1 inline compatibility, missing aliases, inline-plus-reference conflicts, unknown provider fields, provider/kind incompatibility, token/PEM/userinfo rejection, and alias output that excludes credential values.
 
-- [ ] **Step 2: Run resolver tests and observe failure**
+- [x] **Step 2: Run resolver tests and observe failure**
 
   Run:
   `python -m unittest discover -s plugins/remotex/tests -p 'test_credential_store.py' -v`
 
   Expected: module or resolver imports fail.
 
-- [ ] **Step 3: Implement strict config versions and alias schemas**
+- [x] **Step 3: Implement strict config versions and alias schemas**
 
   Accept configuration versions 1 and 2. Version 2 validates the exact top-level `credentials` object and exact fields for `identity-file`, `ssh-agent`, `windows-credential-manager`, `windows-integrated`, and `environment`. Profiles accept exactly one of inline `credential` and `credential_ref`.
 
-- [ ] **Step 4: Implement normalized credential resolution**
+- [x] **Step 4: Implement normalized credential resolution**
 
   Resolve inline and alias records into an immutable object containing alias, source, safe references, and provider-specific local readiness methods. Enforce SSH/RDP/Windows guest/vSphere/VMware compatibility before any client process starts.
 
-- [ ] **Step 5: Route all adapters through the resolver**
+- [x] **Step 5: Route all adapters through the resolver**
 
   Preserve current v1 result fields while adding `credentialAlias` and `configurationVersion`. Ensure SSH arguments, RDP launch, WinRM stdin, and govc child environment remain value-compatible and never include secrets in result data.
 
-- [ ] **Step 6: Run resolver, adapter, and core tests**
+- [x] **Step 6: Run resolver, adapter, and core tests**
 
   Run:
   `python -m unittest discover -s plugins/remotex/tests -p 'test_credential_store.py' -v`
   followed by the complete RemoteX test discovery command.
 
-- [ ] **Step 7: Commit alias support**
+- [x] **Step 7: Commit alias support**
 
   Commit message: `feat(remotex): add reusable credential aliases`
 

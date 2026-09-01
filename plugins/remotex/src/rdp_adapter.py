@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import credential_store
 import remotex_core as core
 import vm_identity
 import vm_queue
@@ -15,12 +16,22 @@ import windows_credentials
 DEFAULT_PORT = 3389
 
 
-def _credential_target(raw: dict[str, Any], host: str) -> str:
-    credential = raw.get("credential")
-    if not isinstance(credential, dict):
-        raise core.ToolError(
-            "RDP profile credential must reference Windows Credential Manager"
-        )
+def _credential_reference(
+    name: str,
+    raw: dict[str, Any],
+    bundle: core.ConfigBundle,
+) -> credential_store.ResolvedCredential:
+    return credential_store.resolve_profile_reference(bundle, name, raw, "rdp")
+
+
+def _credential_target(
+    raw: dict[str, Any],
+    host: str,
+    name: str,
+    bundle: core.ConfigBundle,
+) -> tuple[str, credential_store.ResolvedCredential]:
+    resolved = _credential_reference(name, raw, bundle)
+    credential = resolved.reference_dict()
     source = str(credential.get("source") or "").strip().lower()
     if source != "windows-credential-manager":
         raise core.ToolError(
@@ -31,12 +42,15 @@ def _credential_target(raw: dict[str, Any], host: str) -> str:
     )
     if not target.upper().startswith("TERMSRV/"):
         raise core.ToolError("RDP credential.target must start with TERMSRV/")
-    return target
+    return target, resolved
 
 
 def connection_config(profile: Any = None) -> dict[str, Any]:
     name, raw, bundle = core.select_profile("rdp", profile)
     host = core.validate_host(raw.get("host"))
+    credential_target, resolved_credential = _credential_target(
+        raw, host, name, bundle
+    )
     rdp_file: Path | None = None
     if raw.get("rdp_file"):
         rdp_file = core.expand_path(raw.get("rdp_file"), "rdp_file")
@@ -67,7 +81,9 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
         "config_source": bundle.source,
         "host": host,
         "port": core.validate_port(raw.get("port"), DEFAULT_PORT),
-        "credential_target": _credential_target(raw, host),
+        "credential_target": credential_target,
+        "credential_alias": resolved_credential.alias,
+        "configuration_version": resolved_credential.configuration_version,
         "rdp_file": rdp_file,
         "admin": core.as_bool(raw.get("admin"), False),
         "fullscreen": core.as_bool(raw.get("fullscreen"), False),
@@ -93,9 +109,12 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
     try:
         host = core.validate_host(raw.get("host"))
         core.validate_port(raw.get("port"), DEFAULT_PORT)
-        target = _credential_target(raw, host)
+        bundle = core.load_config()
+        target, resolved_credential = _credential_target(raw, host, name, bundle)
         result["credential_source"] = "windows-credential-manager"
         result["credential_target"] = target
+        result["credential_alias"] = resolved_credential.alias
+        result["configuration_version"] = resolved_credential.configuration_version
         result["credential_present"] = _credential_present(target)
         if not result["credential_present"]:
             errors.append(f"Windows Credential Manager entry is missing: {target}")

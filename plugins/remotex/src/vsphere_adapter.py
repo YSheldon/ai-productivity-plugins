@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import credential_store
 import remotex_core as core
 import vm_queue
 
@@ -21,11 +22,10 @@ def _validate_url(value: Any) -> str:
 
 def connection_config(profile: Any = None) -> dict[str, Any]:
     name, raw, bundle = core.select_profile("vsphere", profile)
-    credential = raw.get("credential")
-    if not isinstance(credential, dict):
-        raise core.ToolError(
-            "vSphere/ESXi credential must reference environment variables or Windows Credential Manager"
-        )
+    resolved_credential = credential_store.resolve_profile_reference(
+        bundle, name, raw, "vsphere"
+    )
+    credential = resolved_credential.reference_dict()
     tls = raw.get("tls") or {}
     if not isinstance(tls, dict):
         raise core.ToolError("tls must be an object")
@@ -37,6 +37,8 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
         "config_source": bundle.source,
         "url": _validate_url(raw.get("url")),
         "credential": credential,
+        "credential_alias": resolved_credential.alias,
+        "configuration_version": resolved_credential.configuration_version,
         "insecure": core.as_bool(tls.get("insecure"), False),
         "ca_file": ca_file,
         "datacenter": str(raw.get("datacenter") or "").strip() or None,
@@ -53,8 +55,14 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
     errors: list[str] = []
     try:
         _validate_url(raw.get("url"))
-        credential = core.credential_status(raw.get("credential"))
+        bundle = core.load_config()
+        resolved_credential = credential_store.resolve_profile_reference(
+            bundle, name, raw, "vsphere"
+        )
+        credential = core.credential_status(resolved_credential.reference_dict())
         result["credential"] = credential
+        result["credential_alias"] = resolved_credential.alias
+        result["configuration_version"] = resolved_credential.configuration_version
         if not credential.get("ready"):
             errors.append("vSphere/ESXi credential reference is not ready")
         tls = raw.get("tls") or {}

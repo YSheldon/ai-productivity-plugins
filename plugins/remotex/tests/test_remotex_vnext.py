@@ -18,6 +18,7 @@ SRC = PLUGIN_ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 import audit_log
+import authentication_evidence
 import execution
 import host_keys
 import queue_leases
@@ -677,15 +678,24 @@ class SshAuthenticationDiagnosticTests(unittest.TestCase):
                             "run_process",
                             return_value=self._execution_outcome(0),
                         ):
-                            result = payload(
-                                ssh_vnext.test_connection({"profile": "lab"})
-                            )
+                            with mock.patch.object(
+                                authentication_evidence,
+                                "record_verified",
+                            ) as record:
+                                result = payload(
+                                    ssh_vnext.test_connection({"profile": "lab"})
+                                )
         authentication = result["authentication"]
         self.assertTrue(result["ok"])
         self.assertEqual(authentication["state"], "authenticated")
         self.assertTrue(authentication["verified"])
         self.assertNotIn("failureCode", authentication)
         self.assertFalse(authentication["passwordFallbackAllowed"])
+        record.assert_called_once_with(
+            "lab",
+            "identity-file",
+            "lab.example:22",
+        )
 
 
 class StatusAndAuditTests(unittest.TestCase):

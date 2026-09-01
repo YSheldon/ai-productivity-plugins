@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import authentication_evidence
 import execution
 import remotex_core as core
 import ssh_adapter as legacy
@@ -787,9 +788,21 @@ def test_connection(args: dict[str, Any]) -> dict[str, Any]:
         legacy.ssh_arguments(cfg, timeout, "hostname"),
         timeout=timeout,
     )
-    return core.tool_result(
-        _connection_result(cfg, outcome, authentication_attempt=True)
-    )
+    result = _connection_result(cfg, outcome, authentication_attempt=True)
+    if result["authentication"].get("verified"):
+        try:
+            authentication_evidence.record_verified(
+                cfg["profile"],
+                cfg["credential_source"],
+                f"{cfg['host']}:{cfg['port']}",
+            )
+            result["authenticationEvidenceRecorded"] = True
+        except core.ToolError:
+            result["authenticationEvidenceRecorded"] = False
+            result["authenticationEvidenceFailureCode"] = (
+                "local-authentication-evidence-unavailable"
+            )
+    return core.tool_result(result)
 
 
 def run_command(args: dict[str, Any]) -> dict[str, Any]:

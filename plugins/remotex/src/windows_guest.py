@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Iterator
 
+import authentication_evidence
 import credential_store
 import execution
 import remotex_core as core
@@ -497,18 +498,29 @@ def test_connection(args: dict[str, Any]) -> dict[str, Any]:
                 "error": str(exc),
             }
         )
-    return core.tool_result(
-        {
-            "ok": True,
-            "profile": cfg["profile"],
-            "transport": "winrm",
-            "credentialSource": cfg["credentialState"]["source"],
-            "authenticatedReadback": True,
-            "machineId": identity["machineId"],
-            "bootIdentity": identity["bootIdentity"],
-            "vmIdentity": identity["vmIdentity"],
-        }
-    )
+    result = {
+        "ok": True,
+        "profile": cfg["profile"],
+        "transport": "winrm",
+        "credentialSource": cfg["credentialState"]["source"],
+        "authenticatedReadback": True,
+        "machineId": identity["machineId"],
+        "bootIdentity": identity["bootIdentity"],
+        "vmIdentity": identity["vmIdentity"],
+    }
+    try:
+        authentication_evidence.record_verified(
+            cfg["profile"],
+            cfg["credentialState"]["source"],
+            f"{cfg['host']}:{cfg['port']}",
+        )
+        result["authenticationEvidenceRecorded"] = True
+    except core.ToolError:
+        result["authenticationEvidenceRecorded"] = False
+        result["authenticationEvidenceFailureCode"] = (
+            "local-authentication-evidence-unavailable"
+        )
+    return core.tool_result(result)
 
 
 def _ps_decode(value: str) -> str:

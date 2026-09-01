@@ -48,8 +48,9 @@ class MCPProtocolTests(unittest.TestCase):
         self.assertIn("remotex_vm_queue_heartbeat", names)
         self.assertIn("remotex_vm_queue_recover_stale", names)
         self.assertIn("remotex_ssh_task_cleanup_sensitive_artifacts", names)
+        self.assertIn("remotex_credential_doctor", names)
         self.assertEqual(names, set(remotex_mcp.TOOLS))
-        self.assertEqual(len(names), 43)
+        self.assertEqual(len(names), 44)
 
     def test_side_effectful_vm_tools_require_requester(self) -> None:
         response = remotex_mcp.handle_request(

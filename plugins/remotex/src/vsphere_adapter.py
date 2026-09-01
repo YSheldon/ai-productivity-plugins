@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import authentication_evidence
 import credential_store
 import remotex_core as core
 import vm_queue
@@ -131,7 +132,21 @@ def about(args: dict[str, Any]) -> dict[str, Any]:
     cfg = connection_config(args.get("profile"))
     timeout = core.validate_timeout(args.get("timeout_seconds"), 30)
     outcome = _run_govc(cfg, ["about", "-json"], timeout)
-    return core.tool_result(_result(cfg, outcome, operation="about"))
+    result = _result(cfg, outcome, operation="about")
+    if result["ok"]:
+        try:
+            authentication_evidence.record_verified(
+                cfg["profile"],
+                cfg["credential"]["source"],
+                cfg["url"],
+            )
+            result["authenticationEvidenceRecorded"] = True
+        except core.ToolError:
+            result["authenticationEvidenceRecorded"] = False
+            result["authenticationEvidenceFailureCode"] = (
+                "local-authentication-evidence-unavailable"
+            )
+    return core.tool_result(result)
 
 
 def list_vms(args: dict[str, Any]) -> dict[str, Any]:

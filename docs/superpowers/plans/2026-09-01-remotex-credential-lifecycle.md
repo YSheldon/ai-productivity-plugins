@@ -151,34 +151,34 @@
 - Consumes: `credential_store.ResolvedCredential`
 - Consumes: `secure_paths.private_path_status`
 
-- [ ] **Step 1: Write failing doctor and schema tests**
+- [x] **Step 1: Write failing doctor and schema tests**
 
   Assert collection-wide counts by provider and kind, unique missing aliases and targets, consumer counts, profile/alias filters, v1 migration advice, environment-provider warnings, local protection state, and `authenticationVerified=null` when no protocol evidence exists. Assert no username, password, blob, private-key contents, or environment values appear.
 
-- [ ] **Step 2: Run doctor tests and observe failure**
+- [x] **Step 2: Run doctor tests and observe failure**
 
   Run:
   `python -m unittest discover -s plugins/remotex/tests -p 'test_credential_tools.py' -v`
 
-- [ ] **Step 3: Implement batch diagnostics**
+- [x] **Step 3: Implement batch diagnostics**
 
   Return `configured`, `present`, `missing`, `incompatible`, and `uniqueMissing` totals plus sanitized per-reference results. Deduplicate shared aliases/targets so one missing reference has one setup action even when several profiles consume it.
 
-- [ ] **Step 4: Add independent authentication evidence fields**
+- [x] **Step 4: Add independent authentication evidence fields**
 
   Add a bounded local evidence cache containing only profile, provider, endpoint digest, verified state, and timestamp. Existing SSH, Windows guest, and vSphere authentication tools update it after positive readback; RDP remains `authenticationVerified=null`.
 
-- [ ] **Step 5: Register the MCP tool and audit metadata**
+- [x] **Step 5: Register the MCP tool and audit metadata**
 
   The tool schema accepts optional `profile` and `credential_ref` selectors only. Audit records store alias/provider/target digest and never raw references when a digest suffices.
 
-- [ ] **Step 6: Run doctor, MCP, audit, and status tests**
+- [x] **Step 6: Run doctor, MCP, audit, and status tests**
 
   Run:
   `python -m unittest discover -s plugins/remotex/tests -p 'test_credential_tools.py' -v`
   followed by the complete RemoteX test discovery command.
 
-- [ ] **Step 7: Commit batch diagnostics**
+- [x] **Step 7: Commit batch diagnostics**
 
   Commit message: `feat(remotex): diagnose missing credentials in batches`
 

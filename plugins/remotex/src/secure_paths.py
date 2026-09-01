@@ -188,28 +188,37 @@ def private_path_status(path: Path) -> dict[str, Any]:
 def _protect_windows(path: Path, *, directory: bool) -> None:
     sid, _ = _windows_identity()
     suffix = "(OI)(CI)F" if directory else "F"
-    arguments = [
-        "icacls.exe",
-        str(path),
-        "/inheritance:r",
-        "/grant:r",
-        f"*{sid}:{suffix}",
-        f"*{WINDOWS_SYSTEM_SID}:{suffix}",
-        f"*{WINDOWS_ADMINISTRATORS_SID}:{suffix}",
+    commands = [
+        [
+            "icacls.exe",
+            str(path),
+            "/setowner",
+            f"*{sid}",
+        ],
+        [
+            "icacls.exe",
+            str(path),
+            "/inheritance:r",
+            "/grant:r",
+            f"*{sid}:{suffix}",
+            f"*{WINDOWS_SYSTEM_SID}:{suffix}",
+            f"*{WINDOWS_ADMINISTRATORS_SID}:{suffix}",
+        ],
     ]
-    try:
-        completed = subprocess.run(
-            arguments,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=15,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise core.ToolError("Unable to protect Windows path") from exc
-    if completed.returncode != 0:
-        raise core.ToolError("Unable to protect Windows path")
+    for arguments in commands:
+        try:
+            completed = subprocess.run(
+                arguments,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise core.ToolError("Unable to protect Windows path") from exc
+        if completed.returncode != 0:
+            raise core.ToolError("Unable to protect Windows path")
 
 
 def ensure_private_directory(path: Path) -> dict[str, Any]:

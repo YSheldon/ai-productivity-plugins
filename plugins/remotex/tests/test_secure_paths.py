@@ -46,35 +46,31 @@ class SecurePathTests(unittest.TestCase):
         self.assertTrue(status["ownerTrusted"])
 
     @unittest.skipUnless(os.name == "nt", "Windows ACL protection test")
-    def test_windows_protection_sets_current_user_as_owner(self) -> None:
-        completed = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout=b"",
-            stderr=b"",
-        )
+    def test_windows_protection_writes_an_exact_sddl(self) -> None:
         with mock.patch.object(
             secure_paths,
             "_windows_identity",
             return_value=("S-1-5-21-1234", "TEST\\runner"),
         ):
             with mock.patch.object(
-                secure_paths.subprocess,
-                "run",
-                return_value=completed,
-            ) as run:
+                secure_paths,
+                "_run_windows_powershell",
+                return_value="",
+            ) as powershell:
                 secure_paths._protect_windows(Path(r"C:\private"), directory=True)
-        self.assertEqual(run.call_count, 2)
-        owner_argv = run.call_args_list[0].args[0]
-        dacl_argv = run.call_args_list[1].args[0]
-        self.assertIn("/setowner", owner_argv)
+        powershell.assert_called_once()
+        script, path, sddl = powershell.call_args.args
+        self.assertIn("SetSecurityDescriptorSddlForm", script)
+        self.assertIn("SetAccessControl", script)
+        self.assertIn("AccessControlSections]::Access", script)
+        self.assertEqual(path, r"C:\private")
         self.assertEqual(
-            owner_argv[owner_argv.index("/setowner") + 1],
-            "*S-1-5-21-1234",
+            sddl,
+            "O:S-1-5-21-1234G:S-1-5-21-1234D:P"
+            "(A;OICI;FA;;;SY)"
+            "(A;OICI;FA;;;BA)"
+            "(A;OICI;FA;;;S-1-5-21-1234)",
         )
-        self.assertIn("/inheritance:r", dacl_argv)
-        self.assertIn("/grant:r", dacl_argv)
-        self.assertNotIn("/setowner", dacl_argv)
 
     @unittest.skipUnless(os.name == "nt", "Windows PowerShell transport test")
     def test_windows_powershell_arguments_are_encoded_not_appended(self) -> None:

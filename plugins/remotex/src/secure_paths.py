@@ -193,38 +193,30 @@ def private_path_status(path: Path) -> dict[str, Any]:
 
 def _protect_windows(path: Path, *, directory: bool) -> None:
     sid, _ = _windows_identity()
-    suffix = "(OI)(CI)F" if directory else "F"
-    commands = [
-        [
-            "icacls.exe",
-            str(path),
-            "/setowner",
-            f"*{sid}",
-        ],
-        [
-            "icacls.exe",
-            str(path),
-            "/inheritance:r",
-            "/grant:r",
-            f"*{sid}:{suffix}",
-            f"*{WINDOWS_SYSTEM_SID}:{suffix}",
-            f"*{WINDOWS_ADMINISTRATORS_SID}:{suffix}",
-        ],
-    ]
-    for arguments in commands:
-        try:
-            completed = subprocess.run(
-                arguments,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-                timeout=15,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise core.ToolError("Unable to protect Windows path") from exc
-        if completed.returncode != 0:
-            raise core.ToolError("Unable to protect Windows path")
+    flags = "OICI" if directory else ""
+    sddl = (
+        f"O:{sid}G:{sid}D:P"
+        f"(A;{flags};FA;;;SY)"
+        f"(A;{flags};FA;;;BA)"
+        f"(A;{flags};FA;;;{sid})"
+    )
+    _run_windows_powershell(
+        "$path=$args[0];$sddl=$args[1];"
+        "$sections=([Security.AccessControl.AccessControlSections]::Owner -bor "
+        "[Security.AccessControl.AccessControlSections]::Group -bor "
+        "[Security.AccessControl.AccessControlSections]::Access);"
+        "if([IO.Directory]::Exists($path)){"
+        "$acl=New-Object Security.AccessControl.DirectorySecurity;"
+        "$acl.SetSecurityDescriptorSddlForm($sddl,$sections);"
+        "[IO.Directory]::SetAccessControl($path,$acl)"
+        "}elseif([IO.File]::Exists($path)){"
+        "$acl=New-Object Security.AccessControl.FileSecurity;"
+        "$acl.SetSecurityDescriptorSddlForm($sddl,$sections);"
+        "[IO.File]::SetAccessControl($path,$acl)"
+        "}else{throw 'path is unavailable'}",
+        str(path),
+        sddl,
+    )
 
 
 def ensure_private_directory(path: Path) -> dict[str, Any]:

@@ -3,9 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
-import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +13,7 @@ from typing import Any
 SOURCE_DIRECTORY = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SOURCE_DIRECTORY))
 
+import config_store  # noqa: E402
 import credential_store  # noqa: E402
 import remotex_core as core  # noqa: E402
 import secure_paths  # noqa: E402
@@ -42,35 +41,6 @@ def _read(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise core.ToolError("RemoteX migration config is invalid")
     return value
-
-
-def _serialized(value: dict[str, Any]) -> bytes:
-    return (
-        json.dumps(value, ensure_ascii=False, indent=2) + "\n"
-    ).encode("utf-8")
-
-
-def _atomic_write(path: Path, content: bytes) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=str(path.parent),
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        secure_paths.ensure_private_file(temporary)
-        os.replace(temporary, path)
-        secure_paths.ensure_private_file(path)
-    except Exception:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
 
 
 def _backup_path(path: Path) -> Path:
@@ -104,19 +74,19 @@ def main(argv: list[str] | None = None) -> int:
         raise core.ToolError("--confirm is required with --write")
 
     original = path.read_bytes()
-    candidate_bytes = _serialized(candidate)
+    candidate_bytes = config_store._serialized(candidate)
     backup = _backup_path(path)
     secure_paths.ensure_private_directory(path.parent)
     backup.write_bytes(original)
     secure_paths.ensure_private_file(backup)
     try:
-        _atomic_write(path, candidate_bytes)
+        config_store._atomic_write(path, candidate_bytes)
         readback = core._validate_config(_read(path))
         if readback != candidate:
             raise core.ToolError("RemoteX migration semantic readback differs")
     except Exception as exc:
         try:
-            _atomic_write(path, original)
+            config_store._atomic_write(path, original)
         except Exception as restore_exc:
             raise core.ToolError(
                 "RemoteX migration failed and rollback could not be verified"

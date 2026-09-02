@@ -1,6 +1,6 @@
 # RemoteX Credential Lifecycle
 
-RemoteX `0.5.0` separates credential configuration, local reference presence,
+RemoteX `0.5.1` separates profile creation, credential configuration, local reference presence,
 and verified remote authentication. A saved entry or existing key file is not a
 successful-login receipt.
 
@@ -39,6 +39,40 @@ Writing requires `--write --confirm`. It creates a protected adjacent backup,
 uses atomic replacement, reloads the candidate, and verifies semantic readback.
 Migration reads reference metadata only; it never reads Credential Manager
 values.
+
+## Profile Setup Wizard
+
+Use `remotex_profile_setup` when the intended Profile or `credential_ref` does
+not exist. The tool never accepts `target`, credential username, password,
+token, secret, or private-key material.
+
+1. Supply non-secret connection metadata, a lowercase safe Profile name and
+   alias, the credential Provider, and a required `queue_resource`.
+2. Call with `confirm=false`. Review the canonical kind, endpoint digest,
+   Provider, queue, migration state, and whether a local prompt is required.
+3. Obtain explicit confirmation and repeat the same request with
+   `confirm=true`.
+4. For Windows Credential Manager, enter credentials only in the visible local
+   `Get-Credential` window.
+5. Run the returned protocol-specific test. Reference presence is still not
+   proof of remote authentication.
+
+Supported inputs are deliberately bounded:
+
+- SSH requires `host` and `user`, and uses `ssh-agent` or `identity-file`.
+- RDP requires `host`; its target is derived as `TERMSRV/<host>`.
+- Windows guest requires `host`, `vm_identity`, `guest_machine_id`, and an
+  absolute `staging_root`; its target is `RemoteX/<alias>` unless Windows
+  integrated authentication is selected.
+- vSphere or ESXi requires an absolute HTTPS `url`; TLS verification remains
+  enabled and its target is `RemoteX/<alias>`.
+
+Confirmed setup migrates a v1 config in memory, writes a protected adjacent
+backup, performs an atomic replacement, applies private local permissions, and
+verifies semantic readback. A changed config, Profile collision, alias
+collision, arbitrary target, or cross-kind field fails closed. Identical
+requests are idempotent. If a new credential prompt is cancelled or fails, the
+new Profile, alias, and transaction backup are rolled back.
 
 ## Batch Missing Check
 

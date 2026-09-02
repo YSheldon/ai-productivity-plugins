@@ -20,6 +20,29 @@ Treat `referencePresent`, `localProtectionReady`, and
 `authenticationVerified` as independent evidence. A present Credential Manager
 entry is not proof that the remote system accepts it.
 
+When the intended Profile does not exist, do not stop at the old credential
+setup flow and do not edit JSON ad hoc:
+
+1. Collect only non-secret metadata required by the selected kind: Profile
+   name, endpoint, SSH user when applicable, credential Provider and alias,
+   and `queue_resource`. Windows guest also requires `vm_identity`,
+   `guest_machine_id`, and `staging_root`.
+2. Call `remotex_profile_setup` with `confirm=false` and show its sanitized
+   preview. Never add `target`, credential username, password, token, secret,
+   or private-key material.
+3. Report whether v1 migration, a protected backup, and a local credential
+   prompt will be required. Obtain explicit confirmation.
+4. Repeat the identical request with `confirm=true`. Enter Windows credential
+   values only in the visible local `Get-Credential` window.
+5. Run the returned protocol-specific host-key, reachability, or authentication
+   test and report it separately from configuration and reference presence.
+
+New profiles must use a local `queue_resource`. The wizard derives bounded
+Credential Manager targets, rejects collisions and cross-kind fields, and
+rolls back a newly written Profile and alias when the prompt is cancelled or
+fails. Identical requests are idempotent. SSH remains public-key only and never
+opens a password prompt.
+
 When a configured Windows Credential Manager reference is missing:
 
 1. Report its alias, source, consumer count, and sanitized next step.

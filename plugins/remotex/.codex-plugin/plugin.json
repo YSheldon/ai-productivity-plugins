@@ -1,7 +1,7 @@
 {
   "name": "remotex",
-  "version": "0.5.0",
-  "description": "Operate remote systems with reusable credential aliases, secure local credential lifecycle tools, bounded execution, verified transfer, VM identity, snapshots, and cooperative leases.",
+  "version": "0.5.1",
+  "description": "Operate remote systems with confirmed profile setup, reusable credential aliases, secure local credential lifecycle tools, bounded execution, verified transfer, VM identity, snapshots, and cooperative leases.",
   "author": {
     "name": "Sheldon",
     "url": "https://github.com/YSheldon"
@@ -26,7 +26,7 @@
   "interface": {
     "displayName": "RemoteX",
     "shortDescription": "Operate remote systems with bounded execution",
-    "longDescription": "Use local OpenSSH, Remote Desktop, PowerShell WinRM, govc, and vmrun clients through named profiles, reusable credential_ref aliases, a local secure credential prompt, batch missing-reference diagnostics, secret-free asynchronous task IPC, composite VM identity, preflight-bound snapshots, host-key governance, tamper-evident audit records, and renewable FIFO VM leases.",
+    "longDescription": "Use local OpenSSH, Remote Desktop, PowerShell WinRM, govc, and vmrun clients through a confirmed profile setup wizard, named profiles, reusable credential_ref aliases, a local secure credential prompt, batch missing-reference diagnostics, secret-free asynchronous task IPC, composite VM identity, preflight-bound snapshots, host-key governance, tamper-evident audit records, and renewable FIFO VM leases.",
     "developerName": "Sheldon",
     "category": "Developer Tools",
     "capabilities": [
@@ -35,6 +35,7 @@
     ],
     "defaultPrompt": [
       "Check my selected RemoteX profile readiness",
+      "Create a new RemoteX profile and configure its credential safely",
       "Check and configure missing RemoteX credentials safely",
       "Inspect a configured remote host safely",
       "Show my RemoteX VM queue leases"

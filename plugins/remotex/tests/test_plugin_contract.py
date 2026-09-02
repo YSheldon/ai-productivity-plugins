@@ -30,7 +30,7 @@ class PluginContractTests(unittest.TestCase):
         legacy_entry = next(item for item in marketplace["plugins"] if item["name"] == "ssh")
         self.assertEqual(manifest["name"], "remotex")
         self.assertEqual(manifest["version"], remotex_mcp.SERVER_VERSION)
-        self.assertEqual(manifest["version"], "0.4.1")
+        self.assertEqual(manifest["version"], "0.5.0")
         self.assertEqual(remotex_entry["source"]["path"], "./plugins/remotex")
         self.assertEqual(remotex_entry["policy"]["installation"], "AVAILABLE")
         self.assertEqual(remotex_entry["policy"]["authentication"], "ON_USE")
@@ -43,8 +43,12 @@ class PluginContractTests(unittest.TestCase):
         serialized = json.dumps(config).lower()
         for forbidden in ('"password":', '"secret":', '"token":', '"private_key":'):
             self.assertNotIn(forbidden, serialized)
-        self.assertEqual(config["version"], 1)
+        self.assertEqual(config["version"], 2)
         self.assertEqual(config["defaults"]["windows-guest"], "windows-guest-lab")
+        self.assertEqual(
+            config["credentials"]["windows-guest"]["source"],
+            "windows-credential-manager",
+        )
 
         windows_ssh = config["profiles"]["windows-ssh-lab"]
         windows_rdp = config["profiles"]["windows-lab"]
@@ -70,7 +74,13 @@ class PluginContractTests(unittest.TestCase):
             },
             {"lab-windows-vm"},
         )
-        self.assertEqual(windows_guest["credential"]["source"], "windows-credential-manager")
+        self.assertEqual(windows_guest["credential_ref"], "windows-guest")
+        self.assertTrue(
+            all(
+                "credential" not in profile
+                for profile in config["profiles"].values()
+            )
+        )
         self.assertEqual(windows_guest["guest_machine_id"], "WINDOWS-LAB")
         self.assertEqual(windows_ssh["queue_lease_seconds"], 14400)
         self.assertEqual(
@@ -85,6 +95,31 @@ class PluginContractTests(unittest.TestCase):
         self.assertTrue((PLUGIN_ROOT / manifest["mcpServers"]).is_file())
         self.assertTrue((PLUGIN_ROOT / manifest["interface"]["composerIcon"]).is_file())
         self.assertTrue((PLUGIN_ROOT / "skills" / "remotex" / "SKILL.md").is_file())
+        lifecycle = PLUGIN_ROOT / "docs" / "credential-lifecycle.md"
+        self.assertTrue(lifecycle.is_file())
+        documentation = lifecycle.read_text(encoding="utf-8")
+        for required in (
+            "credential_ref",
+            "remotex_credential_doctor",
+            "remotex_credential_setup",
+            "remotex_credential_delete",
+            "stdin.bin",
+            "authentication",
+        ):
+            self.assertIn(required, documentation)
+
+    def test_credential_lifecycle_tools_have_no_value_fields(self) -> None:
+        for name in (
+            "remotex_credential_doctor",
+            "remotex_credential_setup",
+            "remotex_credential_delete",
+        ):
+            properties = remotex_mcp.TOOLS[name]["inputSchema"]["properties"]
+            self.assertTrue(
+                {key.casefold() for key in properties}.isdisjoint(
+                    {"username", "password", "token", "secret", "target"}
+                )
+            )
 
     def test_mcp_uses_cross_platform_launcher(self) -> None:
         mcp = json.loads((PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8"))
@@ -96,6 +131,14 @@ class PluginContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("sys.version_info >= (3, 10)", launcher)
+
+    def test_repository_ci_collects_remotex_changes_and_tests(self) -> None:
+        pytest_config = (REPO_ROOT / "pytest.ini").read_text(encoding="utf-8")
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "release-gate-ci.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("plugins/remotex/tests", pytest_config)
+        self.assertGreaterEqual(workflow.count('"plugins/remotex/**"'), 2)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,10 @@
 # RemoteX
 
+Version `0.5.0` adds reusable `credential_ref` aliases, batch missing-reference
+diagnostics, a visible local Windows secure prompt for setup and rotation,
+confirmed deletion, explicit v1-to-v2 migration, and secret-free asynchronous
+task IPC.
+
 RemoteX provides named profiles for SSH, Windows Remote Desktop, authenticated Windows guest management, vSphere or ESXi, and VMware Workstation. It uses established local clients:
 
 - ssh and sftp for SSH profiles
@@ -25,9 +30,31 @@ RemoteX accepts only credential references:
 - Windows Credential Manager Generic Credentials or native Windows integrated authentication for Windows guest WinRM
 - Windows Credential Manager or named environment references for vSphere or ESXi
 
+Version 2 configuration stores reusable references under top-level
+`credentials`; profiles select them with `credential_ref`. Version 1 inline
+references remain readable. Preview a deterministic migration with
+`scripts/migrate_remotex_config.py --config PATH --check`; writing requires
+`--write --confirm`, a protected adjacent backup, atomic replacement, and
+semantic readback.
+
+Run `remotex_credential_doctor` to batch-check all references. It deduplicates a
+missing alias shared by multiple profiles and reports configuration, reference
+presence, local protection, and authentication evidence independently. It never
+returns usernames or credential values.
+
+For a missing Windows Credential Manager reference, call
+`remotex_credential_setup` with a configured profile or `credential_ref` and
+`confirm=true`. RemoteX opens a visible local `Get-Credential` prompt; the user
+enters the value there, outside chat and the MCP request. Running setup again
+rotates the entry. `remotex_credential_delete` removes only a configured
+reference after `confirm=true` and absence readback. See
+`docs/credential-lifecycle.md`.
+
 Do not put a password in a profile, tool argument, script, shell command, VMX path, audit record, or standard output. RemoteX never uses VMware vmrun -gp or -gu guest-password arguments.
 
-For RDP, create the matching TERMSRV/host entry with the Windows Credential Manager UI. remotex_rdp_open fails closed when it is absent, then starts mstsc without receiving or forwarding a password.
+For RDP, configure a matching `TERMSRV/host` reference and use the secure setup
+tool or Windows Credential Manager UI. `remotex_rdp_open` fails closed when it
+is absent, then starts mstsc without receiving or forwarding a password.
 
 For a Windows guest profile, use a Generic Credential such as RemoteX/windows-guest-lab, or windows-integrated when the current Windows identity is authorized. RemoteX passes credential material only through a local PowerShell stdin envelope and redacts it from process output, errors, receipts, and audit records.
 
@@ -90,6 +117,12 @@ For host_key_policy=managed, call remotex_ssh_host_key_status before the first S
 
 Use remotex_ssh_run_script for PowerShell, pwsh, cmd, sh, or bash. The fixed launcher is the only remote command placed in the SSH argument vector. Script text and resolved environment values travel through SSH stdin. remotex_ssh_copy_to and remotex_ssh_copy_from use SFTP first and return requested and actual paths, byte counts, hashes, and integrity state.
 
+Synchronous and resumable scripts keep injected values out of process
+arguments. Resumable task input is delivered to the worker through one bounded
+anonymous pipe and acknowledged before start returns. Version `0.5.0` never
+creates `stdin.bin` or `secrets.json`; an explicit cleanup tool is available for
+inactive legacy task directories.
+
 remotex_ssh_test returns server-side authentication evidence. If authentication.failureCode is configured-public-key-rejected, the local profile is valid but the target has rejected that identity. Authorize authentication.publicKey.fingerprint through an approved out-of-band channel, then rerun the test. The response also identifies the server-advertised authentication methods and confirms that password fallback was not attempted.
 
 Use remotex_rdp_test to distinguish TCP reachability from saved-credential readiness. Use remotex_vsphere_about for a read-only endpoint check and remotex_vsphere_list_vms for inventory. remotex_vsphere_power requires an explicit profile, inventory path, action, and queue owner. Keep TLS verification enabled and prefer a configured CA.
@@ -105,6 +138,7 @@ Report reachability, credential readiness, composite identity status, queue owne
 ## Tool Summary
 
 - remotex_status
+- Credentials: doctor, secure setup/rotation, confirmed deletion
 - SSH: test, command or script execution, transfer, resumable tasks, agent and host-key governance
 - RDP: remotex_rdp_test and remotex_rdp_open
 - Windows guest: test, preflight, bounded script, verified copy, authenticated reboot wait

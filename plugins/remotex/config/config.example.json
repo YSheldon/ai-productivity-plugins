@@ -1,5 +1,27 @@
 {
-  "version": 1,
+  "version": 2,
+  "credentials": {
+    "windows-ssh-key": {
+      "source": "ssh-agent",
+      "identity_file": "~/.ssh/id_ed25519"
+    },
+    "linux-admin-key": {
+      "source": "identity-file",
+      "identity_file": "~/.ssh/id_ed25519"
+    },
+    "windows-rdp": {
+      "source": "windows-credential-manager",
+      "target": "TERMSRV/windows.example.internal"
+    },
+    "windows-guest": {
+      "source": "windows-credential-manager",
+      "target": "RemoteX/windows-guest-lab"
+    },
+    "esxi-admin": {
+      "source": "windows-credential-manager",
+      "target": "RemoteX/esxi-lab"
+    }
+  },
   "defaults": {
     "ssh": "windows-ssh-lab",
     "rdp": "windows-lab",
@@ -17,10 +39,7 @@
       "queue_resource": "lab:windows-vm",
       "queue_lease_seconds": 14400,
       "vm_identity": "lab-windows-vm",
-      "credential": {
-        "source": "ssh-agent",
-        "identity_file": "~/.ssh/id_ed25519"
-      },
+      "credential_ref": "windows-ssh-key",
       "known_hosts_file": "~/.ssh/known_hosts",
       "strict_host_key_checking": "yes",
       "host_key_policy": "managed",
@@ -34,10 +53,7 @@
       "platform": "posix",
       "queue_resource": "lab:linux-vm",
       "queue_lease_seconds": 14400,
-      "credential": {
-        "source": "identity-file",
-        "identity_file": "~/.ssh/id_ed25519"
-      },
+      "credential_ref": "linux-admin-key",
       "known_hosts_file": "~/.ssh/known_hosts",
       "strict_host_key_checking": "yes",
       "host_key_policy": "managed",
@@ -50,10 +66,7 @@
       "queue_resource": "lab:windows-vm",
       "queue_lease_seconds": 14400,
       "vm_identity": "lab-windows-vm",
-      "credential": {
-        "source": "windows-credential-manager",
-        "target": "TERMSRV/windows.example.internal"
-      },
+      "credential_ref": "windows-rdp",
       "admin": false,
       "fullscreen": false,
       "width": 1600,
@@ -71,20 +84,14 @@
       "guest_machine_id": "WINDOWS-LAB",
       "staging_root": "C:\\RemoteX\\Staging",
       "powershell_path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-      "credential": {
-        "source": "windows-credential-manager",
-        "target": "RemoteX/windows-guest-lab"
-      }
+      "credential_ref": "windows-guest"
     },
     "esxi-lab": {
       "kind": "esxi",
       "url": "https://esxi.example.internal/sdk",
       "queue_resource": "lab:esxi:{virtual_machine}",
       "queue_lease_seconds": 14400,
-      "credential": {
-        "source": "windows-credential-manager",
-        "target": "RemoteX/esxi-lab"
-      },
+      "credential_ref": "esxi-admin",
       "tls": {
         "insecure": false,
         "ca_file": "~/.config/remotex/esxi-ca.pem"

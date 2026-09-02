@@ -30,6 +30,112 @@ class AdapterTests(unittest.TestCase):
         )
         return path
 
+    def _version_two_config(
+        self,
+        directory: str,
+        credentials: dict,
+        profiles: dict,
+        defaults: dict,
+    ) -> Path:
+        path = Path(directory) / "config-v2.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "credentials": credentials,
+                    "defaults": defaults,
+                    "profiles": profiles,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_version_two_ssh_alias_reaches_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            identity = Path(directory) / "id_ed25519"
+            identity.write_text("test fixture", encoding="utf-8")
+            path = self._version_two_config(
+                directory,
+                {
+                    "linux-key": {
+                        "source": "identity-file",
+                        "identity_file": str(identity),
+                    }
+                },
+                {
+                    "linux": {
+                        "kind": "ssh",
+                        "host": "linux.example",
+                        "user": "root",
+                        "credential_ref": "linux-key",
+                    }
+                },
+                {"ssh": "linux"},
+            )
+            with mock.patch.dict(os.environ, {"REMOTEX_CONFIG": str(path)}, clear=True):
+                cfg = ssh_adapter.connection_config()
+        self.assertEqual(cfg["credential_source"], "identity-file")
+        self.assertEqual(cfg["credential_alias"], "linux-key")
+        self.assertEqual(cfg["configuration_version"], 2)
+        self.assertEqual(cfg["identity_file"], identity)
+
+    def test_version_two_rdp_alias_reaches_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._version_two_config(
+                directory,
+                {
+                    "rdp-admin": {
+                        "source": "windows-credential-manager",
+                        "target": "TERMSRV/windows.example",
+                    }
+                },
+                {
+                    "windows": {
+                        "kind": "rdp",
+                        "host": "windows.example",
+                        "credential_ref": "rdp-admin",
+                    }
+                },
+                {"rdp": "windows"},
+            )
+            with mock.patch.dict(os.environ, {"REMOTEX_CONFIG": str(path)}, clear=True):
+                cfg = rdp_adapter.connection_config()
+        self.assertEqual(cfg["credential_target"], "TERMSRV/windows.example")
+        self.assertEqual(cfg["credential_alias"], "rdp-admin")
+        self.assertEqual(cfg["configuration_version"], 2)
+
+    def test_version_two_vsphere_alias_reaches_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._version_two_config(
+                directory,
+                {
+                    "esxi-admin": {
+                        "source": "windows-credential-manager",
+                        "target": "RemoteX/esxi-admin",
+                    }
+                },
+                {
+                    "esxi": {
+                        "kind": "vsphere",
+                        "url": "https://esxi.example/sdk",
+                        "credential_ref": "esxi-admin",
+                    }
+                },
+                {"vsphere": "esxi"},
+            )
+            with mock.patch.dict(os.environ, {"REMOTEX_CONFIG": str(path)}, clear=True):
+                cfg = vsphere_adapter.connection_config()
+        self.assertEqual(
+            cfg["credential"],
+            {
+                "source": "windows-credential-manager",
+                "target": "RemoteX/esxi-admin",
+            },
+        )
+        self.assertEqual(cfg["credential_alias"], "esxi-admin")
+        self.assertEqual(cfg["configuration_version"], 2)
+
     def test_ssh_arguments_disable_interactive_passwords(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             identity = Path(directory) / "id_ed25519"

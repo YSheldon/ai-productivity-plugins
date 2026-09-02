@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -14,6 +15,10 @@ import execution
 import queue_leases
 import remotex_core as core
 import ssh_vnext
+
+
+WORKER_PAYLOAD_MAGIC = b"REMOTEX_TASK_PAYLOAD_V2\n"
+MAX_WORKER_PAYLOAD_BYTES = 4 * 1024 * 1024
 
 
 def _now() -> str:
@@ -46,11 +51,50 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
-def _remove(path: Path) -> None:
+def _read_exact(stream: Any, length: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = length
+    while remaining:
+        chunk = stream.read(remaining)
+        if not chunk:
+            raise core.ToolError("RemoteX task worker payload ended unexpectedly")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _read_worker_payload(stream: Any) -> tuple[bytes, list[str]]:
+    if _read_exact(stream, len(WORKER_PAYLOAD_MAGIC)) != WORKER_PAYLOAD_MAGIC:
+        raise core.ToolError("RemoteX task worker payload header is invalid")
+    length = int.from_bytes(_read_exact(stream, 8), "big")
+    if length < 1 or length > MAX_WORKER_PAYLOAD_BYTES:
+        raise core.ToolError("RemoteX task worker payload size is invalid")
+    raw = _read_exact(stream, length)
+    if stream.read(1):
+        raise core.ToolError("RemoteX task worker payload has trailing data")
     try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass
+        value = json.loads(raw.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise core.ToolError("RemoteX task worker payload is invalid") from exc
+    if not isinstance(value, dict) or set(value) != {
+        "schema",
+        "inputBase64",
+        "secrets",
+    }:
+        raise core.ToolError("RemoteX task worker payload is invalid")
+    if value.get("schema") != "RemoteXTaskPayload/v2":
+        raise core.ToolError("RemoteX task worker payload version is unsupported")
+    encoded = value.get("inputBase64")
+    secrets_value = value.get("secrets")
+    if not isinstance(encoded, str) or not isinstance(secrets_value, list):
+        raise core.ToolError("RemoteX task worker payload is invalid")
+    if any(not isinstance(item, str) for item in secrets_value):
+        raise core.ToolError("RemoteX task worker redaction values are invalid")
+    try:
+        input_bytes = base64.b64decode(encoded, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise core.ToolError("RemoteX task worker input encoding is invalid") from exc
+    return input_bytes, list(secrets_value)
 
 
 def _queue_operation(spec: dict[str, Any]):
@@ -61,31 +105,30 @@ def _queue_operation(spec: dict[str, Any]):
     return queue_leases.leased_owner_operation(resource, requester)
 
 
-def run(task_directory: Path) -> int:
+def run(task_directory: Path, input_stream: Any | None = None) -> int:
     spec_path = task_directory / "spec.json"
-    input_path = task_directory / "stdin.bin"
-    secrets_path = task_directory / "secrets.json"
     state_path = task_directory / "state.json"
     result_path = task_directory / "result.json"
     spec = _read_json(spec_path)
-    input_bytes = input_path.read_bytes()
-    secrets_value = _read_json(secrets_path)
-    secrets = [str(value) for value in secrets_value] if isinstance(secrets_value, list) else []
-    _remove(input_path)
-    _remove(secrets_path)
-    _write_json(
-        state_path,
-        {
-            "schema": "RemoteXTask/v1",
-            "taskId": spec["taskId"],
-            "state": "running",
-            "workerPid": os.getpid(),
-            "profile": spec["profile"],
-            "shell": spec["shell"],
-            "startedAt": _now(),
-        },
-    )
+    input_bytes = b""
+    secrets: list[str] = []
     try:
+        if spec.get("schema") != "RemoteXTaskSpec/v2":
+            raise core.ToolError("RemoteX task specification version is unsupported")
+        stream = input_stream if input_stream is not None else sys.stdin.buffer
+        input_bytes, secrets = _read_worker_payload(stream)
+        _write_json(
+            state_path,
+            {
+                "schema": "RemoteXTask/v2",
+                "taskId": spec["taskId"],
+                "state": "running",
+                "workerPid": os.getpid(),
+                "profile": spec["profile"],
+                "shell": spec["shell"],
+                "startedAt": _now(),
+            },
+        )
         with _queue_operation(spec):
             outcome = execution.run_process(
                 list(spec["argv"]),
@@ -102,7 +145,7 @@ def run(task_directory: Path) -> int:
             )
         clean_stderr, metadata = ssh_vnext._extract_metadata(outcome["stderr"])
         result = {
-            "schema": "RemoteXTaskResult/v1",
+            "schema": "RemoteXTaskResult/v2",
             "taskId": spec["taskId"],
             "state": "completed",
             "ok": outcome["returncode"] == 0 and not outcome["timed_out"],
@@ -139,7 +182,7 @@ def run(task_directory: Path) -> int:
         _write_json(
             state_path,
             {
-                "schema": "RemoteXTask/v1",
+                "schema": "RemoteXTask/v2",
                 "taskId": spec["taskId"],
                 "state": "completed",
                 "workerPid": os.getpid(),
@@ -154,7 +197,7 @@ def run(task_directory: Path) -> int:
         _write_json(
             result_path,
             {
-                "schema": "RemoteXTaskResult/v1",
+                "schema": "RemoteXTaskResult/v2",
                 "taskId": spec.get("taskId"),
                 "state": "failed",
                 "ok": False,
@@ -165,7 +208,7 @@ def run(task_directory: Path) -> int:
         _write_json(
             state_path,
             {
-                "schema": "RemoteXTask/v1",
+                "schema": "RemoteXTask/v2",
                 "taskId": spec.get("taskId"),
                 "state": "failed",
                 "workerPid": os.getpid(),
@@ -178,6 +221,7 @@ def run(task_directory: Path) -> int:
     finally:
         for index in range(len(secrets)):
             secrets[index] = ""
+        input_bytes = b""
 
 
 def main() -> int:

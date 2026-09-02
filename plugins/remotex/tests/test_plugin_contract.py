@@ -30,7 +30,7 @@ class PluginContractTests(unittest.TestCase):
         legacy_entry = next(item for item in marketplace["plugins"] if item["name"] == "ssh")
         self.assertEqual(manifest["name"], "remotex")
         self.assertEqual(manifest["version"], remotex_mcp.SERVER_VERSION)
-        self.assertEqual(manifest["version"], "0.5.0")
+        self.assertEqual(manifest["version"], "0.5.1")
         self.assertEqual(remotex_entry["source"]["path"], "./plugins/remotex")
         self.assertEqual(remotex_entry["policy"]["installation"], "AVAILABLE")
         self.assertEqual(remotex_entry["policy"]["authentication"], "ON_USE")

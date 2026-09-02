@@ -9,6 +9,7 @@ from typing import Any, Callable
 import audit_log
 import credential_tools
 import host_keys
+import profile_tools
 import queue_leases
 import rdp_adapter
 import remotex_core as core
@@ -21,7 +22,7 @@ import windows_guest
 
 
 SERVER_NAME = "remotex"
-SERVER_VERSION = "0.5.0"
+SERVER_VERSION = "0.5.1"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 queue_leases.install_hooks()
 
@@ -216,6 +217,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
         "handler": status,
     },
+    **profile_tools.TOOLS,
     **credential_tools.TOOLS,
     **ssh_vnext.TOOLS,
     **task_manager.TOOLS,

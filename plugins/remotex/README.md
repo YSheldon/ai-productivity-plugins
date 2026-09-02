@@ -1,9 +1,11 @@
 # RemoteX
 
-Version `0.5.0` adds reusable `credential_ref` aliases, batch missing-reference
-diagnostics, a visible local Windows secure prompt for setup and rotation,
-confirmed deletion, explicit v1-to-v2 migration, and secret-free asynchronous
-task IPC.
+Version `0.5.1` adds a confirmed profile setup wizard that previews and creates
+credential-backed SSH, RDP, Windows guest, and vSphere profiles. It derives
+credential targets, requires a non-preemptive local queue, migrates v1 metadata
+to v2 atomically, and opens the visible Windows secure prompt when required.
+Version `0.5.0` added reusable `credential_ref` aliases, lifecycle diagnostics,
+confirmed deletion, and secret-free asynchronous task IPC.
 
 RemoteX provides named profiles for SSH, Windows Remote Desktop, authenticated Windows guest management, vSphere or ESXi, and VMware Workstation. It uses established local clients:
 
@@ -18,6 +20,14 @@ RemoteX does not accept passwords, tokens, private-key bodies, or other secret v
 ## Setup
 
 Copy config/config.example.json to ~/.config/remotex/config.json, or set REMOTEX_CONFIG to another protected JSON file. Run remotex_status with the intended profile before connecting. For SSH profiles, selected-profile readiness proves local configuration and host-key policy only; run remotex_ssh_test to verify that the server accepts the configured public key. Aggregate readiness reports all configured profiles separately.
+
+When a profile does not exist, call `remotex_profile_setup` with `confirm=false`
+to validate a sanitized preview. After reviewing the canonical kind, alias,
+queue resource, migration state, endpoint digest, and prompt requirement, call
+the same tool with `confirm=true`. The confirmed path writes a protected backup,
+atomically stores and reads back v2 configuration, and opens `Get-Credential`
+only for a derived Windows Credential Manager reference. SSH setup remains
+public-key only. Cancellation or prompt failure restores the original config.
 
 RemoteX reads the old SSH_CONFIG file or ~/.config/codex-ssh/config.json when the RemoteX config does not exist. Existing SSH_HOST and SSH_USER environment configuration is also recognized. This compatibility path is read-only.
 
@@ -138,6 +148,7 @@ Report reachability, credential readiness, composite identity status, queue owne
 ## Tool Summary
 
 - remotex_status
+- Profile setup: confirmed preview, v1-to-v2 write, credential prompt, rollback
 - Credentials: doctor, secure setup/rotation, confirmed deletion
 - SSH: test, command or script execution, transfer, resumable tasks, agent and host-key governance
 - RDP: remotex_rdp_test and remotex_rdp_open

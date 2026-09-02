@@ -19,6 +19,7 @@ This repository is a plugin marketplace maintained by Sheldon. Codex and Grok sh
 - `remotex`: a credential-reference-first remote operations plugin for SSH, Windows RDP, authenticated Windows guests, vSphere/ESXi, and VMware Workstation. It adds reusable credential aliases, batch missing-reference checks, a local secure setup/rotation prompt, confirmed deletion, secret-free asynchronous tasks, bounded guest execution, verified transfer, VM identity, snapshots, audit records, and renewable FIFO leases.
 - `wecom-codex-usage`: a WeCom / Enterprise WeChat plugin packaged and maintained by Sheldon. It connects to a self-built WeCom internal application for message delivery and summarizes local Codex usage signals from the current machine's Codex config and logs.
 - `daily-vuln-bulletin-email`: a verified daily vulnerability bulletin workflow. It uses live Feishu subscribers, severity-safe text/HTML content, exact MIME Subject and Message-ID readback, and recipient-header privacy checks while reusing the existing Lark and IMAP/SMTP plugins.
+- `world-time-reminder`: a Windows taskbar Beijing clock with exact-hour first-duty reminders, a `Y` confirmation path, and 16-minute automatic close.
 
 ## Use In Grok
 

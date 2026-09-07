@@ -28,6 +28,7 @@ TASK_ID_PATTERN = re.compile(
 WORKER_PAYLOAD_MAGIC = b"REMOTEX_TASK_PAYLOAD_V2\n"
 MAX_WORKER_PAYLOAD_BYTES = 4 * 1024 * 1024
 TASK_START_ACK_SECONDS = 5
+TASK_CLEANUP_WAIT_SECONDS = 5
 LEGACY_SENSITIVE_FILENAMES = ("stdin.bin", "secrets.json")
 
 
@@ -318,6 +319,31 @@ def _worker_pid(directory: Path) -> int | None:
     return value if value > 0 else None
 
 
+def _wait_for_worker_exit(directory: Path) -> None:
+    pid = _worker_pid(directory)
+    if not pid:
+        return
+    deadline = time.monotonic() + TASK_CLEANUP_WAIT_SECONDS
+    while _pid_running(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if _pid_running(pid):
+        raise core.ToolError(
+            "RemoteX task worker is still running; refusing cleanup"
+        )
+
+
+def _remove_task_directory(directory: Path) -> None:
+    last_error: OSError | None = None
+    for _ in range(20):
+        try:
+            shutil.rmtree(directory)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(0.05)
+    raise core.ToolError("Unable to remove RemoteX task artifacts") from last_error
+
+
 def status(args: dict[str, Any]) -> dict[str, Any]:
     task_id = _task_id(args.get("task_id"))
     directory = _directory(task_id)
@@ -463,7 +489,8 @@ def collect(args: dict[str, Any]) -> dict[str, Any]:
     result["collected"] = True
     result["cleanupRequested"] = cleanup
     if cleanup:
-        shutil.rmtree(directory)
+        _wait_for_worker_exit(directory)
+        _remove_task_directory(directory)
         result["taskArtifactsRemoved"] = True
     else:
         result["taskArtifactsRemoved"] = False

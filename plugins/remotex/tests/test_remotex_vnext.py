@@ -1185,6 +1185,26 @@ class HostKeyAndTaskTests(unittest.TestCase):
         self.assertEqual(second["cancelStatus"], "already-finished")
         self.assertTrue(second["idempotent"])
 
+    def test_task_collect_cleanup_refuses_a_running_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            task_id = "00000000-0000-0000-0000-000000000002"
+            task_dir = Path(directory) / task_id
+            task_dir.mkdir()
+            (task_dir / "result.json").write_text(
+                json.dumps({"taskId": task_id, "state": "completed"}),
+                encoding="utf-8",
+            )
+            (task_dir / "worker.pid").write_text("12345", encoding="ascii")
+            with mock.patch.dict(
+                os.environ,
+                {"REMOTEX_TASK_DIR": directory},
+                clear=False,
+            ):
+                with mock.patch.object(task_manager, "_pid_running", return_value=True):
+                    with self.assertRaisesRegex(core.ToolError, "worker is still running"):
+                        task_manager.collect({"task_id": task_id, "cleanup": True})
+            self.assertTrue(task_dir.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -559,7 +559,30 @@ def profile_owner_operation(
     profile: Any,
     requester: Any,
     virtual_machine: Any = None,
+    *,
+    expected_resource: str | None = None,
+    expected_config_sha256: str | None = None,
 ) -> Iterator[dict[str, Any]]:
+    if expected_config_sha256:
+        config_path = core.config_path()
+        lock_path = config_path.with_name(
+            f".{config_path.name}.profile-setup.lock"
+        )
+        with _exclusive_lock(lock_path, "RemoteX config"):
+            bundle = core.load_config()
+            if core.config_fingerprint(bundle.data) != expected_config_sha256:
+                raise core.ToolError(
+                    "RemoteX configuration changed before the operation; refusing to continue"
+                )
+            target = resolve_profile_resource(profile, virtual_machine)
+            if expected_resource and target["resource"] != expected_resource:
+                raise core.ToolError(
+                    "RemoteX queue resource changed before the operation; refusing to continue"
+                )
+            with owner_operation(target["resource"], requester) as result:
+                result.update({key: value for key, value in target.items() if key != "resource"})
+                yield result
+        return
     target = resolve_profile_resource(profile, virtual_machine)
     with owner_operation(target["resource"], requester) as result:
         result.update({key: value for key, value in target.items() if key != "resource"})

@@ -689,6 +689,50 @@ class ProfileSetupTests(unittest.TestCase):
         self.assertEqual(profile["staging_root"], r"C:\RemoteX\Staging")
         self.assertEqual(result["nextStep"], "run-remotex-windows-guest-test")
 
+    def test_physical_windows_guest_preview_accepts_host_identity_without_vmx(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "credentials": {},
+                        "defaults": {},
+                        "profiles": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = {
+                "profile": "hlk-202-guest",
+                "kind": "windows-guest",
+                "host": "hlk-202.example.internal",
+                "credential_ref": "hlk-202-guest",
+                "credential_source": "windows-integrated",
+                "queue_resource": "hlk:202",
+                "host_identity": "hlk-202-host",
+                "guest_machine_id": "HLK-202",
+                "staging_root": r"C:\RemoteX\Staging",
+                "authentication": "kerberos",
+                "confirm": False,
+            }
+            with mock.patch.dict(
+                os.environ,
+                {"REMOTEX_CONFIG": str(path)},
+                clear=True,
+            ):
+                try:
+                    result = payload(profile_tools.setup(args))
+                except core.ToolError as exc:
+                    self.fail(f"physical host preview failed: {exc}")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["preview"])
+        self.assertEqual(result["kind"], "windows-guest")
+        self.assertEqual(result["identityKind"], "physical-host")
+        self.assertEqual(result["hostIdentity"], "hlk-202-host")
+        self.assertFalse(result["credentialPromptRequired"])
+
     def test_vsphere_setup_keeps_tls_verification_and_vm_queue_template(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"

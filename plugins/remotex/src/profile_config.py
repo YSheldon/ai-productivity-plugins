@@ -46,6 +46,7 @@ PROFILE_SETUP_PROPERTIES: dict[str, dict[str, Any]] = {
         "maximum": 604800,
     },
     "vm_identity": {"type": "string"},
+    "host_identity": {"type": "string"},
     "guest_machine_id": {"type": "string"},
     "staging_root": {"type": "string"},
     "authentication": {
@@ -84,12 +85,13 @@ KIND_PROFILE_SETUP_FIELDS: dict[str, frozenset[str]] = {
             "expected_public_key_sha256",
         }
     ),
-    "rdp": frozenset({"host", "port"}),
+    "rdp": frozenset({"host", "port", "host_identity"}),
     "windows-guest": frozenset(
         {
             "host",
             "port",
             "vm_identity",
+            "host_identity",
             "guest_machine_id",
             "staging_root",
             "authentication",
@@ -181,7 +183,7 @@ def _rdp_profile(args: dict[str, Any], credential_ref: str) -> dict[str, Any]:
         "windows-credential-manager"
     ):
         raise core.ToolError("RDP profile setup requires Windows Credential Manager")
-    return {
+    profile = {
         "kind": "rdp",
         "host": _host(args.get("host")),
         "port": core.validate_port(args.get("port"), 3389),
@@ -193,6 +195,11 @@ def _rdp_profile(args: dict[str, Any], credential_ref: str) -> dict[str, Any]:
         "admin": False,
         "fullscreen": False,
     }
+    if args.get("host_identity") not in (None, ""):
+        profile["host_identity"] = vm_identity.normalize_host_identity(
+            args.get("host_identity")
+        )
+    return profile
 
 
 def _windows_guest_profile(
@@ -216,7 +223,7 @@ def _windows_guest_profile(
         raise core.ToolError(
             "staging_root must be an absolute Windows path without traversal"
         )
-    return {
+    profile = {
         "kind": "windows-guest",
         "host": _host(args.get("host")),
         "port": core.validate_port(args.get("port"), 5985),
@@ -226,7 +233,6 @@ def _windows_guest_profile(
         "queue_lease_seconds": queue_leases._lease_seconds(
             args.get("queue_lease_seconds")
         ),
-        "vm_identity": vm_identity._identity_id(args.get("vm_identity")),
         "guest_machine_id": vm_identity.normalize_machine_id(
             args.get("guest_machine_id")
         ),
@@ -236,6 +242,24 @@ def _windows_guest_profile(
         ),
         "credential_ref": credential_ref,
     }
+    profile.update(_identity_fields(args))
+    return profile
+
+
+def _identity_fields(args: dict[str, Any]) -> dict[str, str]:
+    vm_identity_value = args.get("vm_identity")
+    host_identity_value = args.get("host_identity")
+    if vm_identity_value not in (None, "") and host_identity_value not in (None, ""):
+        raise core.ToolError("Profile cannot configure both vm_identity and host_identity")
+    if vm_identity_value not in (None, ""):
+        return {"vm_identity": vm_identity._identity_id(vm_identity_value)}
+    if host_identity_value not in (None, ""):
+        return {
+            "host_identity": vm_identity.normalize_host_identity(host_identity_value)
+        }
+    raise core.ToolError(
+        "Windows guest profile setup requires vm_identity or host_identity"
+    )
 
 
 def _vsphere_url(value: Any) -> str:

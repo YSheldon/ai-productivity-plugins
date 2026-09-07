@@ -25,8 +25,9 @@ setup flow and do not edit JSON ad hoc:
 
 1. Collect only non-secret metadata required by the selected kind: Profile
    name, endpoint, SSH user when applicable, credential Provider and alias,
-   and `queue_resource`. Windows guest also requires `vm_identity`,
-   `guest_machine_id`, and `staging_root`.
+   and `queue_resource`. A VM Windows guest requires `vm_identity`,
+   `guest_machine_id`, and `staging_root`; a physical Windows host requires
+   `host_identity`, `guest_machine_id`, and `staging_root` instead.
 2. Call `remotex_profile_setup` with `confirm=false` and show its sanitized
    preview. Never add `target`, credential username, password, token, secret,
    or private-key material.
@@ -78,13 +79,19 @@ Before any SSH side effect, remotex_rdp_open, Windows guest mutation, VMware Wor
 
 Expiry and stale recovery release ownership only to the unowned state. Never transfer ownership silently. remotex_vm_queue_recover_stale needs confirm=true and must report the recovered owner and first waiter.
 
-Profiles for one VM must share one queue_resource. This queue is cooperative and local to this machine; it does not detect direct access outside RemoteX.
+Profiles for one VM or physical host must share one queue_resource. This queue
+is cooperative and local to this machine; it does not detect direct access
+outside RemoteX.
 
 ## Composite VM Identity
 
-VMware Workstation and Windows guest mutations require one vm_identity group with exactly one VMware Workstation profile, one RDP profile, and one Windows guest profile. The profiles must share the same queue_resource.
+VMware Workstation mutations require one `vm_identity` group with exactly one
+VMware Workstation profile, one RDP profile, and one Windows guest profile. A
+physical Windows guest uses `host_identity`, `guest_machine_id`, and one exact
+queue resource instead; it may have one matching RDP profile and must not bind
+a VMware profile.
 
-Before VMware changes, RemoteX compares vmware_uuid with the selected VMX UUID. Before Windows guest changes, it compares an authenticated guest machine identifier with guest_machine_id. RDP and WinRM endpoints are part of the binding. Any mismatch is a hard stop before the operation.
+Before VMware changes, RemoteX compares vmware_uuid with the selected VMX UUID. Before Windows guest changes, it compares an authenticated guest machine identifier with guest_machine_id. RDP and WinRM endpoints are part of the binding. Any mismatch is a hard stop before the operation. Physical hosts skip VMX validation but retain authenticated machine and queue checks.
 
 ## Windows Guest And Preflight
 

@@ -17,6 +17,9 @@
       "source": "windows-credential-manager",
       "target": "RemoteX/windows-guest-lab"
     },
+    "physical-windows-guest": {
+      "source": "windows-integrated"
+    },
     "esxi-admin": {
       "source": "windows-credential-manager",
       "target": "RemoteX/esxi-lab"
@@ -85,6 +88,20 @@
       "staging_root": "C:\\RemoteX\\Staging",
       "powershell_path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       "credential_ref": "windows-guest"
+    },
+    "physical-windows-guest-lab": {
+      "kind": "windows-guest",
+      "host": "hlk.example.internal",
+      "port": 5985,
+      "transport": "winrm",
+      "authentication": "kerberos",
+      "host_identity": "hlk-physical-host",
+      "queue_resource": "lab:hlk-physical-host",
+      "queue_lease_seconds": 14400,
+      "guest_machine_id": "HLK-PHYSICAL",
+      "staging_root": "C:\\RemoteX\\Staging",
+      "powershell_path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "credential_ref": "physical-windows-guest"
     },
     "esxi-lab": {
       "kind": "esxi",

@@ -1,6 +1,6 @@
 # RemoteX Credential Lifecycle
 
-RemoteX `0.5.1` separates profile creation, credential configuration, local reference presence,
+RemoteX `0.5.2` separates profile creation, credential configuration, local reference presence,
 and verified remote authentication. A saved entry or existing key file is not a
 successful-login receipt.
 
@@ -61,9 +61,10 @@ Supported inputs are deliberately bounded:
 
 - SSH requires `host` and `user`, and uses `ssh-agent` or `identity-file`.
 - RDP requires `host`; its target is derived as `TERMSRV/<host>`.
-- Windows guest requires `host`, `vm_identity`, `guest_machine_id`, and an
-  absolute `staging_root`; its target is `RemoteX/<alias>` unless Windows
-  integrated authentication is selected.
+- VM Windows guest requires `host`, `vm_identity`, `guest_machine_id`, and an
+  absolute `staging_root`; a physical Windows host uses `host_identity` instead
+  and does not require a VMX or VMware profile. Its target is `RemoteX/<alias>`
+  unless Windows integrated authentication is selected.
 - vSphere or ESXi requires an absolute HTTPS `url`; TLS verification remains
   enabled and its target is `RemoteX/<alias>`.
 

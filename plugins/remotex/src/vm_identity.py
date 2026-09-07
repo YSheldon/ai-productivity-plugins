@@ -21,6 +21,20 @@ def _identity_id(value: Any) -> str:
     return identity_id
 
 
+def _host_identity(value: Any) -> str:
+    identity_id = core._required_text(value, "host_identity")
+    if not IDENTITY_ID_PATTERN.fullmatch(identity_id):
+        raise core.ToolError(
+            "host_identity must use 1-128 ASCII letters, digits, dots, underscores, "
+            "colons, or hyphens"
+        )
+    return identity_id
+
+
+def normalize_host_identity(value: Any) -> str:
+    return _host_identity(value)
+
+
 def normalize_machine_id(value: Any, field: str = "guest_machine_id") -> str:
     machine_id = core._required_text(value, field)
     if not MACHINE_ID_PATTERN.fullmatch(machine_id):
@@ -62,12 +76,109 @@ def _configured_resource(raw: dict[str, Any], profile: str) -> str:
     configured = raw.get("queue_resource")
     if configured in (None, ""):
         raise core.ToolError(
-            f"Profile '{profile}' must configure queue_resource when vm_identity is used"
+            f"Profile '{profile}' must configure queue_resource when an identity binding is used"
         )
     # Import lazily so this module stays usable while vm_queue imports core.
     import vm_queue
 
     return vm_queue._validate_resource(configured)
+
+
+def _physical_binding(
+    profile: str,
+    raw: dict[str, Any],
+    *,
+    require_guest_profile: bool,
+) -> dict[str, Any] | None:
+    configured_id = raw.get("host_identity")
+    if configured_id in (None, ""):
+        return None
+    identity_id = _host_identity(configured_id)
+    bundle = core.load_config()
+    members: list[tuple[str, dict[str, Any], str]] = []
+    for candidate_name, candidate_raw in bundle.data["profiles"].items():
+        if not isinstance(candidate_raw, dict):
+            continue
+        if candidate_raw.get("host_identity") in (None, ""):
+            continue
+        if _host_identity(candidate_raw.get("host_identity")) != identity_id:
+            continue
+        if candidate_raw.get("vm_identity") not in (None, ""):
+            raise core.ToolError(
+                f"host_identity '{identity_id}' cannot be mixed with vm_identity"
+            )
+        member_kind = core.normalize_kind(candidate_raw.get("kind"))
+        if member_kind not in {"windows-guest", "rdp"}:
+            raise core.ToolError(
+                f"host_identity '{identity_id}' cannot bind unsupported profile kind "
+                f"{member_kind}"
+            )
+        members.append((candidate_name, candidate_raw, member_kind))
+    if not members:
+        raise core.ToolError(f"host_identity '{identity_id}' has no configured profiles")
+    resources = {
+        _configured_resource(member_raw, member_name)
+        for member_name, member_raw, _ in members
+    }
+    if len(resources) != 1:
+        raise core.ToolError(
+            f"host_identity '{identity_id}' profiles must share one exact queue_resource"
+        )
+    guest_members = [item for item in members if item[2] == "windows-guest"]
+    rdp_members = [item for item in members if item[2] == "rdp"]
+    vmware_members = [item for item in members if item[2] == "vmware-workstation"]
+    if vmware_members:
+        raise core.ToolError(
+            f"host_identity '{identity_id}' cannot bind a VMware Workstation profile"
+        )
+    if len(guest_members) > 1:
+        raise core.ToolError(
+            f"host_identity '{identity_id}' must bind at most one windows-guest profile"
+        )
+    if len(rdp_members) > 1:
+        raise core.ToolError(
+            f"host_identity '{identity_id}' must bind at most one RDP profile"
+        )
+    if require_guest_profile and len(guest_members) != 1:
+        raise core.ToolError(
+            f"host_identity '{identity_id}' must bind exactly one windows-guest profile"
+        )
+    if not guest_members:
+        if profile not in {item[0] for item in rdp_members}:
+            raise core.ToolError(
+                f"host_identity '{identity_id}' has no windows-guest profile"
+            )
+        guest_name = None
+        guest_raw = None
+        guest_machine_id = None
+    else:
+        guest_name, guest_raw, _ = guest_members[0]
+        guest_machine_id = normalize_machine_id(guest_raw.get("guest_machine_id"))
+    rdp_name, rdp_raw, _ = rdp_members[0] if rdp_members else (None, None, None)
+    result: dict[str, Any] = {
+        "identityKind": "physical-host",
+        "id": identity_id,
+        "hostIdentity": identity_id,
+        "queueResource": next(iter(resources)),
+        "guestProfile": guest_name,
+        "guestMachineId": guest_machine_id,
+        "members": [
+            {"profile": member_name, "kind": kind}
+            for member_name, _, kind in sorted(members)
+        ],
+    }
+    if guest_raw is not None:
+        result["guestEndpoint"] = {
+            "host": core.validate_host(guest_raw.get("host")),
+            "port": core.validate_port(guest_raw.get("port"), 5985),
+        }
+    if rdp_raw is not None:
+        result["rdpProfile"] = rdp_name
+        result["rdpEndpoint"] = {
+            "host": core.validate_host(rdp_raw.get("host")),
+            "port": core.validate_port(rdp_raw.get("port"), 3389),
+        }
+    return result
 
 
 def binding_for_profile(
@@ -79,11 +190,22 @@ def binding_for_profile(
 ) -> dict[str, Any] | None:
     configured_id = raw.get("vm_identity")
     if configured_id in (None, ""):
+        physical = _physical_binding(
+            profile,
+            raw,
+            require_guest_profile=require_guest_profile,
+        )
+        if physical is not None:
+            return physical
         if require_identity:
             raise core.ToolError(
-                f"Profile '{profile}' must configure vm_identity for this mutating operation"
+                f"Profile '{profile}' must configure vm_identity or host_identity for this operation"
             )
         return None
+    if raw.get("host_identity") not in (None, ""):
+        raise core.ToolError(
+            f"Profile '{profile}' cannot configure both vm_identity and host_identity"
+        )
     identity_id = _identity_id(configured_id)
     bundle = core.load_config()
     members: list[tuple[str, dict[str, Any], str]] = []
@@ -94,6 +216,10 @@ def binding_for_profile(
             continue
         if _identity_id(candidate_raw.get("vm_identity")) != identity_id:
             continue
+        if candidate_raw.get("host_identity") not in (None, ""):
+            raise core.ToolError(
+                f"vm_identity '{identity_id}' cannot mix host_identity on a bound profile"
+            )
         members.append(
             (candidate_name, candidate_raw, core.normalize_kind(candidate_raw.get("kind")))
         )
@@ -142,6 +268,7 @@ def binding_for_profile(
         )
 
     return {
+        "identityKind": "vmx",
         "id": identity_id,
         "queueResource": next(iter(resources)),
         "vmwareProfile": vmware_name,
@@ -191,13 +318,13 @@ def verify_guest_machine(binding: dict[str, Any], observed: Any) -> str:
     expected = binding.get("guestMachineId")
     if not expected:
         raise core.ToolError(
-            f"vm_identity '{binding['id']}' has no configured guest_machine_id"
+            f"identity '{binding['id']}' has no configured guest_machine_id"
         )
     actual = normalize_machine_id(observed, "observed guest machine identifier")
     if actual != expected:
         raise core.ToolError(
             "guest-identity-mismatch: authenticated guest machine identifier does not match "
-            "the VMX-bound logical VM"
+            "the configured logical host"
         )
     return actual
 
@@ -216,6 +343,6 @@ def status_for_profile(profile: str, raw: dict[str, Any]) -> dict[str, Any]:
         return {
             "configured": False,
             "ready": False,
-            "error": "vm_identity is not configured",
+            "error": "vm_identity or host_identity is not configured",
         }
     return {"configured": True, "ready": True, **binding}

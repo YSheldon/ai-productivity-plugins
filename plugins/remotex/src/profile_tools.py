@@ -21,6 +21,12 @@ def _preview(prepared: profile_config.PreparedProfile) -> dict[str, Any]:
         "preview": True,
         "profile": prepared.profile_name,
         "kind": profile["kind"],
+        "identityKind": (
+            "physical-host"
+            if profile.get("host_identity") is not None
+            else ("vmx" if profile.get("vm_identity") is not None else None)
+        ),
+        "hostIdentity": profile.get("host_identity"),
         "credentialRef": prepared.credential_ref,
         "credentialSource": prepared.record["source"],
         "queueResource": profile["queue_resource"],

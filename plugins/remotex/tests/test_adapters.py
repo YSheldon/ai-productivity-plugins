@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import os
 import sys
 import tempfile
@@ -342,6 +342,52 @@ class AdapterTests(unittest.TestCase):
                         with self.assertRaisesRegex(core.ToolError, "cannot preempt"):
                             rdp_adapter.open_connection({"requester": "bob"})
         process.assert_not_called()
+
+    def test_rdp_open_binds_snapshot_resource_and_config_fingerprint(self) -> None:
+        cfg = {
+            "profile": "physical-rdp",
+            "host": "hlk.example",
+            "port": 3389,
+            "credential_target": "TERMSRV/hlk.example",
+            "credential_alias": "hlk-rdp",
+            "admin": False,
+            "fullscreen": False,
+            "width": None,
+            "height": None,
+            "rdp_file": None,
+            "mstsc_path": None,
+            "vmIdentity": {
+                "identityKind": "physical-host",
+                "queueResource": "hlk:physical",
+            },
+            "queueResource": "hlk:physical",
+            "configurationSha256": "a" * 64,
+        }
+        observed: dict[str, object] = {}
+
+        @contextmanager
+        def owner(*args, **kwargs):
+            observed["args"] = args
+            observed["kwargs"] = kwargs
+            yield {"resource": "hlk:physical", "owner": {"requester": "alice"}}
+
+        process = mock.Mock(pid=123)
+        with mock.patch.object(rdp_adapter, "connection_config", return_value=cfg):
+            with mock.patch.object(rdp_adapter, "_credential_present", return_value=True):
+                with mock.patch.object(rdp_adapter, "rdp_arguments", return_value=["mstsc"]):
+                    with mock.patch.object(rdp_adapter, "vm_queue") as queue:
+                        queue.profile_owner_operation.side_effect = owner
+                        with mock.patch.object(
+                            rdp_adapter.subprocess,
+                            "Popen",
+                            return_value=process,
+                        ):
+                            result = rdp_adapter.open_connection(
+                                {"profile": "physical-rdp", "requester": "alice"}
+                            )
+        self.assertEqual(observed["kwargs"]["expected_resource"], "hlk:physical")
+        self.assertEqual(observed["kwargs"]["expected_config_sha256"], "a" * 64)
+        self.assertTrue(json.loads(result["content"][0]["text"])["ok"])
 
 
 if __name__ == "__main__":

@@ -74,7 +74,16 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
         require_identity=False,
         require_guest_profile=False,
     )
-    bound_vmx_path = vm_identity.verify_bound_vmx(identity, bundle) if identity else None
+    queue_resource = (
+        identity.get("queueResource")
+        if identity is not None
+        else vm_queue.resolve_profile_resource(name)["resource"]
+    )
+    bound_vmx_path = (
+        vm_identity.verify_bound_vmx(identity, bundle)
+        if identity and identity.get("identityKind") == "vmx"
+        else None
+    )
     return {
         "profile": name,
         "raw": raw,
@@ -84,6 +93,8 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
         "credential_target": credential_target,
         "credential_alias": resolved_credential.alias,
         "configuration_version": resolved_credential.configuration_version,
+        "configurationSha256": core.config_fingerprint(bundle.data),
+        "queueResource": queue_resource,
         "rdp_file": rdp_file,
         "admin": core.as_bool(raw.get("admin"), False),
         "fullscreen": core.as_bool(raw.get("fullscreen"), False),
@@ -125,9 +136,12 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
                 errors.append("rdp_file does not exist")
         identity = vm_identity.status_for_profile(name, raw)
         result["vmIdentity"] = identity
-        if raw.get("vm_identity") not in (None, "") and not identity.get("ready"):
+        if (
+            raw.get("vm_identity") not in (None, "")
+            or raw.get("host_identity") not in (None, "")
+        ) and not identity.get("ready"):
             errors.append(str(identity.get("error") or "VM identity binding is invalid"))
-        elif identity.get("ready"):
+        elif identity.get("ready") and identity.get("identityKind") == "vmx":
             result["bound_vmx_path"] = str(vm_identity.verify_bound_vmx(identity))
     except (core.ToolError, ValueError) as exc:
         errors.append(str(exc))
@@ -198,8 +212,12 @@ def open_connection(args: dict[str, Any]) -> dict[str, Any]:
         )
     else:
         popen_args["start_new_session"] = True
+    owner_kwargs: dict[str, Any] = {
+        "expected_resource": cfg.get("queueResource"),
+        "expected_config_sha256": cfg.get("configurationSha256"),
+    }
     with vm_queue.profile_owner_operation(
-        cfg["profile"], args.get("requester")
+        cfg["profile"], args.get("requester"), **owner_kwargs
     ) as ownership:
         try:
             process = subprocess.Popen(rdp_arguments(cfg), **popen_args)

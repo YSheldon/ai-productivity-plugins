@@ -1,6 +1,8 @@
 # RemoteX
 
-Version `0.5.1` adds a confirmed profile setup wizard that previews and creates
+Version `0.5.2` adds physical Windows host admission for HLK and other bare-metal
+hosts. It uses authenticated host identity plus a cooperative queue without
+requiring VMX or VMware profiles. Version `0.5.1` added a confirmed profile setup wizard that previews and creates
 credential-backed SSH, RDP, Windows guest, and vSphere profiles. It derives
 credential targets, requires a non-preemptive local queue, migrates v1 metadata
 to v2 atomically, and opens the visible Windows secure prompt when required.
@@ -70,7 +72,7 @@ For a Windows guest profile, use a Generic Credential such as RemoteX/windows-gu
 
 ## Composite VM Identity
 
-Any mutating VMware Workstation or Windows guest operation requires a vm_identity group. The group must contain exactly one of each:
+VMware Workstation operations require a `vm_identity` group. The group must contain exactly one of each:
 
 - VMware Workstation profile with vmx_path and vmware_uuid
 - RDP profile
@@ -78,7 +80,18 @@ Any mutating VMware Workstation or Windows guest operation requires a vm_identit
 
 Every member must use the same exact queue_resource. RemoteX reads the VMX UUID before a VMware mutation, records the RDP and guest endpoint bindings, and probes the authenticated Windows guest machine identifier before guest mutations. A VMX UUID, guest machine identifier, endpoint configuration, or queue mismatch fails closed before the operation starts.
 
-Use sanitized stable identifiers only: vm_identity and guest_machine_id accept ASCII letters, digits, dots, underscores, and hyphens; vmware_uuid must be a 128-bit VMware UUID.
+Physical Windows hosts use `host_identity` instead of `vm_identity`. A physical
+host group requires `guest_machine_id` and one exact `queue_resource`; it may
+also include one matching RDP profile, but it must not include a VMware profile
+or VMX path. RemoteX verifies the authenticated WinRM machine identifier before
+guest operations. Physical hosts support guest test, preflight, bounded script,
+verified copy, and reboot-wait; VMware power and snapshot capabilities remain
+disabled with explicit `physical-host-no-vm-*` failure codes.
+
+Use sanitized stable identifiers only: `vm_identity` and `host_identity` accept
+ASCII letters, digits, dots, underscores, colons, and hyphens;
+`guest_machine_id` accepts ASCII letters, digits, dots, underscores, and
+hyphens; vmware_uuid must be a 128-bit VMware UUID.
 
 remotex_status exposes a per-profile capability matrix for power, snapshot, guest_exec, guest_copy, and reboot_wait, with a failure code when a required client, credential reference, or identity binding is unavailable.
 
@@ -102,7 +115,7 @@ The queue coordinates RemoteX processes on one machine. It is not an authorizati
 
 ## Windows Guest Operations
 
-Windows guest profiles use WinRM only, with Kerberos or Negotiate authentication. Before any guest operation, RemoteX probes an authenticated machine and boot identity. Guest scripts are sent through a fixed local PowerShell wrapper, bounded by timeout, memory, process-count, and output limits.
+Windows guest profiles use WinRM only, with Kerberos or Negotiate authentication. Before any guest operation, RemoteX probes an authenticated machine and boot identity. VM guests additionally require VMX-bound identity; physical hosts use host_identity and do not require VMX. Guest scripts are sent through a fixed local PowerShell wrapper, bounded by timeout, memory, process-count, and output limits.
 
 Use remotex_windows_guest_preflight before snapshot or test-sensitive work. It runs a PowerShell 2.0-compatible read-only probe with a caller-supplied policy. The bounded receipt includes operating system and architecture, PowerShell and .NET versions, required KB and cmdlet checks, pending reboot state, free system-drive space, guest UTC and boot identity, and declared process, service, driver, and ETW inactivity checks.
 

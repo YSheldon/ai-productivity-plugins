@@ -2,8 +2,11 @@
   "mcpServers": {
     "rd-flywheel": {
       "command": "py",
-      "args": ["-3", "./src/rd_flywheel_mcp.py"],
-      "cwd": "."
+      "args": [
+        "-3",
+        "${PLUGIN_ROOT}/src/rd_flywheel_mcp.py"
+      ],
+      "cwd": "${PLUGIN_ROOT}"
     }
   }
 }

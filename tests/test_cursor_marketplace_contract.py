@@ -75,9 +75,15 @@ def test_cursor_plugin_manifests_reuse_codex_skills_and_mcp() -> None:
             assert mcp == "./mcp.json"
             assert (plugin_root / ".mcp.json").is_file()
             assert (plugin_root / "mcp.json").is_file()
-            assert (plugin_root / "mcp.json").read_bytes() == (
-                plugin_root / ".mcp.json"
-            ).read_bytes()
+            cursor_mcp = cursor_sync.load_json(plugin_root / "mcp.json")
+            expected_mcp = cursor_sync.cursor_mcp_config(
+                cursor_sync.load_json(plugin_root / ".mcp.json")
+            )
+            assert cursor_mcp == expected_mcp
+            serialized = json.dumps(cursor_mcp)
+            assert "${PLUGIN_ROOT}" in serialized
+            assert "./scripts/" not in serialized
+            assert "./src/" not in serialized
         else:
             assert not (plugin_root / ".mcp.json").exists()
             assert not (plugin_root / "mcp.json").exists()
@@ -100,9 +106,10 @@ def test_codex_and_grok_indexes_are_unchanged_by_cursor_packaging() -> None:
         assert (ROOT / "plugins" / name / ".cursor-plugin" / "plugin.json").is_file()
         assert (ROOT / "plugins" / name / ".mcp.json").is_file()
         assert (ROOT / "plugins" / name / "mcp.json").is_file()
-        assert (ROOT / "plugins" / name / "mcp.json").read_bytes() == (
-            ROOT / "plugins" / name / ".mcp.json"
-        ).read_bytes()
+        cursor_mcp = cursor_sync.load_json(ROOT / "plugins" / name / "mcp.json")
+        assert cursor_mcp == cursor_sync.cursor_mcp_config(
+            cursor_sync.load_json(ROOT / "plugins" / name / ".mcp.json")
+        )
 
 
 def test_readme_documents_cursor_install_without_replacing_codex() -> None:

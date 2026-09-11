@@ -4,9 +4,10 @@
 Codex keeps using `.agents/plugins/marketplace.json` and each plugin's
 `.codex-plugin/plugin.json`. Cursor reads `.cursor-plugin/marketplace.json`
 and each plugin's `.cursor-plugin/plugin.json`. Skills and local credential
-files stay shared. Cursor discovers `mcp.json`; Codex keeps `.mcp.json`.
-The generator mirrors `.mcp.json` to `mcp.json` so both hosts load the same
-stdio launcher.
+files stay shared. Codex MCP stays in `.mcp.json` with relative `./` paths.
+Cursor `mcp.json` rewrites those paths to `${PLUGIN_ROOT}/...` because Cursor
+spawns plugin MCP with cwd set to the Cursor install directory, not the
+plugin root.
 """
 
 from __future__ import annotations
@@ -46,6 +47,43 @@ def relative_asset(path: str) -> str:
     return path[2:] if path.startswith("./") else path
 
 
+def plugin_rooted(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    if normalized in {".", "./"}:
+        return "${PLUGIN_ROOT}"
+    if normalized.startswith("./"):
+        return "${PLUGIN_ROOT}/" + normalized[2:]
+    return path
+
+
+def cursor_mcp_config(codex_mcp: dict[str, Any]) -> dict[str, Any]:
+    servers_in = codex_mcp.get("mcpServers")
+    if not isinstance(servers_in, dict):
+        raise TypeError("Codex MCP config must contain mcpServers")
+    servers: dict[str, Any] = {}
+    for name, server in servers_in.items():
+        if not isinstance(server, dict):
+            raise TypeError(f"MCP server {name} must be an object")
+        entry = dict(server)
+        raw_args = entry.get("args")
+        if isinstance(raw_args, list):
+            entry["args"] = [
+                plugin_rooted(arg) if isinstance(arg, str) else arg for arg in raw_args
+            ]
+        entry["cwd"] = "${PLUGIN_ROOT}"
+        servers[name] = entry
+    return {"mcpServers": servers}
+
+
+def write_cursor_mcp(plugin_root: Path) -> Path | None:
+    source = plugin_root / ".mcp.json"
+    if not source.is_file():
+        return None
+    dest = plugin_root / "mcp.json"
+    dump_json(dest, cursor_mcp_config(load_json(source)))
+    return dest
+
+
 def cursor_plugin_manifest(codex: dict[str, Any], plugin_name: str) -> dict[str, Any]:
     interface = codex.get("interface")
     if not isinstance(interface, dict):
@@ -83,15 +121,6 @@ def cursor_mcp_path(codex_mcp_servers: str) -> str:
     if codex_mcp_servers in {"./.mcp.json", ".mcp.json"}:
         return "./mcp.json"
     return relative_asset(codex_mcp_servers)
-
-
-def mirror_codex_mcp(plugin_root: Path) -> Path | None:
-    source = plugin_root / ".mcp.json"
-    if not source.is_file():
-        return None
-    dest = plugin_root / "mcp.json"
-    dest.write_bytes(source.read_bytes())
-    return dest
 
 
 def cursor_marketplace_entry(
@@ -152,7 +181,7 @@ def sync(root: Path = ROOT) -> dict[str, Path]:
         cursor_path = plugin_root / ".cursor-plugin" / "plugin.json"
         dump_json(cursor_path, cursor_manifest)
         written[name] = cursor_path
-        mcp_path = mirror_codex_mcp(plugin_root)
+        mcp_path = write_cursor_mcp(plugin_root)
         if mcp_path is not None:
             written[f"{name}-mcp"] = mcp_path
         marketplace_entries.append(cursor_marketplace_entry(name, cursor_manifest))

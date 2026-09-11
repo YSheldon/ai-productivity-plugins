@@ -3,9 +3,9 @@
     "gitlab": {
       "command": "node",
       "args": [
-        "./scripts/run_mcp.js"
+        "${PLUGIN_ROOT}/scripts/run_mcp.js"
       ],
-      "cwd": "."
+      "cwd": "${PLUGIN_ROOT}"
     }
   }
 }

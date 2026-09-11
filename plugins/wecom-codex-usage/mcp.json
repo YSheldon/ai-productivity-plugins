@@ -6,8 +6,7 @@
         "/d",
         "/c",
         "${PLUGIN_ROOT}/scripts/launch_cursor_mcp.cmd"
-      ],
-      "cwd": "${PLUGIN_ROOT}"
+      ]
     }
   }
 }

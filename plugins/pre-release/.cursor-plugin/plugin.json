@@ -1,0 +1,23 @@
+{
+  "name": "pre-release",
+  "displayName": "Pre Release",
+  "version": "0.1.5",
+  "description": "Import a verified tested Manifest-S, collect PASS or FAIL, build Manifest-R, and send a release-gate request without Codex runtime dependence.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/pre-release",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "pre-release",
+    "release-gate",
+    "mail",
+    "scheduler",
+    "manifest-r"
+  ],
+  "category": "Developer Tools",
+  "logo": "assets/pre-release.svg",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

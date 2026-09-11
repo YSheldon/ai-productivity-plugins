@@ -1,0 +1,22 @@
+{
+  "name": "test-submission",
+  "displayName": "Test Submission",
+  "version": "0.1.5",
+  "description": "Collect one local-artifact or fixed-revision SVN product-material submission and send a fail-closed request through IMAP/SMTP.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/test-submission",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "submission",
+    "release-gate",
+    "mail",
+    "qa"
+  ],
+  "category": "Developer Tools",
+  "logo": "assets/test-submission.svg",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

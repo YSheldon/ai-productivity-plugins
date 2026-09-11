@@ -1,0 +1,250 @@
+{
+  "name": "ai-productivity-plugins",
+  "owner": {
+    "name": "Sheldon"
+  },
+  "metadata": {
+    "description": "Sheldon productivity plugins. Codex keeps using .agents/plugins/marketplace.json; Cursor reads this index.",
+    "pluginRoot": "plugins"
+  },
+  "plugins": [
+    {
+      "name": "imap-smtp-mail",
+      "source": "imap-smtp-mail",
+      "description": "Read, search, summarize, and send email through IMAP/SMTP providers.",
+      "version": "0.3.3",
+      "category": "Productivity",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/imap-smtp-mail",
+      "keywords": [
+        "email",
+        "imap",
+        "smtp",
+        "qq-mail",
+        "netease-mail",
+        "mail"
+      ],
+      "logo": "assets/mail.svg"
+    },
+    {
+      "name": "lark-cli",
+      "source": "lark-cli",
+      "description": "Bundle existing Lark/Feishu lark-cli skills for Codex.",
+      "version": "0.1.0",
+      "category": "Productivity",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/lark-cli",
+      "keywords": [
+        "lark",
+        "feishu",
+        "cli",
+        "docs",
+        "wiki"
+      ],
+      "logo": "assets/lark-cli.svg"
+    },
+    {
+      "name": "wecom-codex-usage",
+      "source": "wecom-codex-usage",
+      "description": "Send WeCom app messages and read local Codex usage signals.",
+      "version": "0.1.0",
+      "category": "Productivity",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/wecom-codex-usage",
+      "keywords": [
+        "wecom",
+        "wechat-work",
+        "codex",
+        "usage",
+        "notification"
+      ],
+      "logo": "assets/wecom.svg"
+    },
+    {
+      "name": "gitlab",
+      "source": "gitlab",
+      "description": "Operate GitLab workflows, analyze CI, enforce MR approval scope binding, and securely provision a dedicated Windows project Runner from Codex.",
+      "version": "0.4.0",
+      "category": "Developer Tools",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/gitlab",
+      "keywords": [
+        "gitlab",
+        "merge-request",
+        "code-review",
+        "issues",
+        "ci",
+        "pipelines",
+        "windows-runner"
+      ],
+      "logo": "assets/gitlab.svg"
+    },
+    {
+      "name": "release-approval",
+      "source": "release-approval",
+      "description": "Operate one role-bound release approval controller through MCP, Skill, standalone CLI, and unattended OS scheduling.",
+      "version": "0.2.7",
+      "category": "Developer Tools",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/release-approval",
+      "keywords": [
+        "release-approval",
+        "approval",
+        "mail",
+        "automation",
+        "audit"
+      ],
+      "logo": "assets/release-approval.svg"
+    },
+    {
+      "name": "release-approval-verifier",
+      "source": "release-approval-verifier",
+      "description": "Independent multi-role release verifier with MCP, Skill, standalone CLI, signed receipts, and unattended scheduling.",
+      "version": "0.2.7",
+      "category": "Developer Tools",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/release-approval-verifier",
+      "keywords": [
+        "release-approval",
+        "verifier",
+        "mail",
+        "audit",
+        "governance"
+      ],
+      "logo": "assets/release-approval-verifier.svg"
+    },
+    {
+      "name": "product-release-gate",
+      "source": "product-release-gate",
+      "description": "Create verifiable product-material gates and authorized phased production releases.",
+      "version": "0.5.2",
+      "category": "Developer Tools",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/product-release-gate",
+      "keywords": [
+        "release-gate",
+        "submission",
+        "artifact",
+        "signing",
+        "testing",
+        "release",
+        "deployment",
+        "rollback"
+      ],
+      "logo": "assets/product-release-gate.svg"
+    },
+    {
+      "name": "test-submission",
+      "source": "test-submission",
+      "description": "Collect one local-artifact or fixed-revision SVN product-material submission and send a fail-closed request through IMAP/SMTP.",
+      "version": "0.1.5",
+      "category": "Developer Tools",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/test-submission",
+      "keywords": [
+        "submission",
+        "release-gate",
+        "mail",
+        "qa"
+      ],
+      "logo": "assets/test-submission.svg"
+    },
+    {
+      "name": "submission-gate",
+      "source": "submission-gate",
+      "description": "Headlessly scan structured submission mail and verify a protected GitLab gate result with a canonical Manifest-S and rollback baseline.",
+      "version": "0.1.6",
+      "category": "Developer Tools",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/submission-gate",
+      "keywords": [
+        "submission-gate",
+        "mail",
+        "release-gate",
+        "automation"
+      ],
+      "logo": "assets/submission-gate.svg"
+    },
+    {
+      "name": "pre-release",
+      "source": "pre-release",
+      "description": "Import a verified tested Manifest-S, collect PASS or FAIL, build Manifest-R, and send a release-gate request without Codex runtime dependence.",
+      "version": "0.1.5",
+      "category": "Developer Tools",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/pre-release",
+      "keywords": [
+        "pre-release",
+        "release-gate",
+        "mail",
+        "scheduler",
+        "manifest-r"
+      ],
+      "logo": "assets/pre-release.svg"
+    },
+    {
+      "name": "release-gate",
+      "source": "release-gate",
+      "description": "Run the release gate mailbox scan, validate signed PRERELEASE_REQUEST handoffs, invoke the locked product-release-gate kernel, and send RELEASE_GATE_PASS or blocking notices without Codex runtime dependence.",
+      "version": "0.1.6",
+      "category": "Developer Tools",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/release-gate",
+      "keywords": [
+        "release-gate",
+        "mail",
+        "scheduler",
+        "product-release-gate",
+        "release-ready"
+      ],
+      "logo": "assets/release-gate.svg"
+    },
+    {
+      "name": "rd-flywheel",
+      "source": "rd-flywheel",
+      "description": "Deterministic capability-gap governance through MCP, Skill, standalone CLI, and OS scheduling.",
+      "version": "0.2.4",
+      "category": "Developer Tools",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/rd-flywheel",
+      "keywords": [
+        "rd-flywheel",
+        "engineering",
+        "capability-gap",
+        "production-evidence",
+        "mcp",
+        "cli",
+        "scheduler"
+      ],
+      "logo": "assets/rd-flywheel.svg"
+    },
+    {
+      "name": "daily-vuln-bulletin-email",
+      "source": "daily-vuln-bulletin-email",
+      "description": "Generate and deliver a verified daily vulnerability bulletin with live Feishu subscribers and audited domestic-mail MIME delivery.",
+      "version": "0.1.0",
+      "category": "Productivity",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/daily-vuln-bulletin-email",
+      "keywords": [
+        "vulnerability",
+        "cve",
+        "security-bulletin",
+        "feishu",
+        "smtp",
+        "imap",
+        "mime",
+        "privacy"
+      ],
+      "logo": "assets/daily-vuln-bulletin.svg"
+    },
+    {
+      "name": "remotex",
+      "source": "remotex",
+      "description": "Operate SSH, RDP, Windows guests, vSphere/ESXi, and VMware Workstation targets with bounded execution, verified transfer, composite VM identity, snapshots, and cooperative leases.",
+      "version": "0.4.1",
+      "category": "Developer Tools",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/remotex",
+      "keywords": [
+        "remote-management",
+        "ssh",
+        "powershell",
+        "winrm",
+        "rdp",
+        "esxi",
+        "vsphere",
+        "vmware-workstation",
+        "sftp",
+        "snapshot"
+      ],
+      "logo": "assets/remotex.svg"
+    }
+  ]
+}

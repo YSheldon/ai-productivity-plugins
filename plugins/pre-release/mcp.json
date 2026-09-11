@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "pre-release": {
+      "command": "py",
+      "args": [
+        "-3",
+        "./src/pre_release_mcp.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

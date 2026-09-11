@@ -1,0 +1,23 @@
+{
+  "name": "release-approval-verifier",
+  "displayName": "Release Approval Verifier",
+  "version": "0.2.7",
+  "description": "Independent multi-role release verifier with MCP, Skill, standalone CLI, signed receipts, and unattended scheduling.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/release-approval-verifier",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "release-approval",
+    "verifier",
+    "mail",
+    "audit",
+    "governance"
+  ],
+  "category": "Developer Tools",
+  "logo": "assets/release-approval-verifier.svg",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

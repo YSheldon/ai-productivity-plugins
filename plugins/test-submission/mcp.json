@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "test-submission": {
+      "command": "py",
+      "args": [
+        "-3",
+        "./src/test_submission_mcp.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

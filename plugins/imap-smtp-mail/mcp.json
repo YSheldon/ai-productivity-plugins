@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "imap-smtp-mail": {
+      "command": "node",
+      "args": [
+        "./scripts/run_mcp.js"
+      ],
+      "cwd": "."
+    }
+  }
+}

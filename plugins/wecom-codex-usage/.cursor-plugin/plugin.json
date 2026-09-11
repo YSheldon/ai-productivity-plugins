@@ -1,0 +1,23 @@
+{
+  "name": "wecom-codex-usage",
+  "displayName": "企业微信 / Codex 用量",
+  "version": "0.1.0",
+  "description": "Send WeCom app messages and read local Codex usage signals.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/wecom-codex-usage",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "wecom",
+    "wechat-work",
+    "codex",
+    "usage",
+    "notification"
+  ],
+  "category": "Productivity",
+  "logo": "assets/wecom.svg",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

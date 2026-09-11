@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "release-gate": {
+      "command": "py",
+      "args": [
+        "-3",
+        "./src/release_gate_mcp.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

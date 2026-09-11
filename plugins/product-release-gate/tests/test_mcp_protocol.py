@@ -106,6 +106,15 @@ class McpProtocolTests(unittest.TestCase):
         manifest = json.loads(
             (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
         )
+        self.assertEqual(
+            [
+                "./src/release_gate_cli.py",
+                "./src/release_gate_mcp.py",
+            ],
+            manifest["runtimeEntrypoints"],
+        )
+        for entrypoint in manifest["runtimeEntrypoints"]:
+            self.assertTrue((PLUGIN_ROOT / entrypoint).is_file())
         self.assertEqual(manifest["version"], responses[0]["result"]["serverInfo"]["version"])
 
         tools = responses[1]["result"]["tools"]

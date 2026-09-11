@@ -18,6 +18,10 @@
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
+  "runtimeEntrypoints": [
+    "./src/release_gate_cli.py",
+    "./src/release_gate_mcp.py"
+  ],
   "interface": {
     "displayName": "Product Release Gate",
     "shortDescription": "Gate and authorize phased product releases",

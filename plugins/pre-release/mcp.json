@@ -5,7 +5,7 @@
       "args": [
         "/d",
         "/c",
-        "${PLUGIN_ROOT}/scripts/launch_cursor_mcp.cmd"
+        "${CURSOR_PLUGIN_ROOT}/scripts/launch_cursor_mcp.cmd"
       ]
     }
   }

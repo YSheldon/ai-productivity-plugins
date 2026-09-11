@@ -6,11 +6,9 @@ Codex keeps using `.agents/plugins/marketplace.json` and each plugin's
 and each plugin's `.cursor-plugin/plugin.json`. Skills and local credential
 files stay shared. Codex MCP stays in `.mcp.json` with relative `./` paths.
 Cursor `mcp.json` launches through `C:\\Windows\\System32\\cmd.exe` and
-`scripts/launch_cursor_mcp.cmd`. The wrapper restores Node/Python locations
-and cds to the plugin root itself. Do not set `cwd` to `${PLUGIN_ROOT}`:
-Cursor leaves that token unexpanded, Node treats a missing cwd as
-`spawn <command> ENOENT`, and that is what broke `node`, `cmd.exe`, and even
-the System32 absolute path.
+`scripts/launch_cursor_mcp.cmd`. Cursor expands `${CURSOR_PLUGIN_ROOT}` in
+plugin MCP args; it does not expand `${PLUGIN_ROOT}`. Do not set `cwd`.
+The wrapper restores Node/Python locations and cds via `%~dp0`.
 """
 
 from __future__ import annotations
@@ -52,6 +50,7 @@ def relative_asset(path: str) -> str:
 
 CURSOR_MCP_LAUNCHER = "launch_cursor_mcp.cmd"
 CURSOR_MCP_COMMAND = r"C:\Windows\System32\cmd.exe"
+CURSOR_PLUGIN_ROOT = "${CURSOR_PLUGIN_ROOT}"
 
 
 def cursor_mcp_launcher_name(server_name: str, server_count: int) -> str:
@@ -110,7 +109,7 @@ def cursor_mcp_config(codex_mcp: dict[str, Any]) -> dict[str, Any]:
         launcher = cursor_mcp_launcher_name(name, server_count)
         servers[name] = {
             "command": CURSOR_MCP_COMMAND,
-            "args": ["/d", "/c", f"${{PLUGIN_ROOT}}/scripts/{launcher}"],
+            "args": ["/d", "/c", f"{CURSOR_PLUGIN_ROOT}/scripts/{launcher}"],
         }
     return {"mcpServers": servers}
 

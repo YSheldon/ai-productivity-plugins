@@ -81,7 +81,8 @@ def test_cursor_plugin_manifests_reuse_codex_skills_and_mcp() -> None:
             )
             assert cursor_mcp == expected_mcp
             serialized = json.dumps(cursor_mcp)
-            assert "${PLUGIN_ROOT}" in serialized
+            assert "${CURSOR_PLUGIN_ROOT}" in serialized
+            assert "${PLUGIN_ROOT}" not in serialized
             assert "./scripts/" not in serialized
             assert "./src/" not in serialized
             for server_name, server in cursor_mcp["mcpServers"].items():
@@ -94,7 +95,7 @@ def test_cursor_plugin_manifests_reuse_codex_skills_and_mcp() -> None:
                 assert server["args"] == [
                     "/d",
                     "/c",
-                    f"${{PLUGIN_ROOT}}/scripts/{launcher_name}",
+                    f"${{CURSOR_PLUGIN_ROOT}}/scripts/{launcher_name}",
                 ]
                 launcher = plugin_root / "scripts" / launcher_name
                 assert launcher.is_file()

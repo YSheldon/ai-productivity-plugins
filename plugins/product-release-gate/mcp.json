@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "product-release-gate": {
-      "command": "cmd.exe",
+      "command": "C:\\Windows\\System32\\cmd.exe",
       "args": [
         "/d",
         "/c",

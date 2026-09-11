@@ -5,8 +5,9 @@ Codex keeps using `.agents/plugins/marketplace.json` and each plugin's
 `.codex-plugin/plugin.json`. Cursor reads `.cursor-plugin/marketplace.json`
 and each plugin's `.cursor-plugin/plugin.json`. Skills and local credential
 files stay shared. Codex MCP stays in `.mcp.json` with relative `./` paths.
-Cursor `mcp.json` launches through `cmd.exe` and `scripts/launch_cursor_mcp.cmd`
-because Cursor plugin MCP spawn often has no `node`/`python3` on PATH, and its
+Cursor `mcp.json` launches through `C:\\Windows\\System32\\cmd.exe` and
+`scripts/launch_cursor_mcp.cmd` because Cursor plugin MCP spawn often has an
+empty PATH (so `node`, `python3`, and even `cmd.exe` fail with ENOENT), and its
 cwd is the Cursor install directory rather than the plugin root.
 """
 
@@ -48,6 +49,7 @@ def relative_asset(path: str) -> str:
 
 
 CURSOR_MCP_LAUNCHER = "launch_cursor_mcp.cmd"
+CURSOR_MCP_COMMAND = r"C:\Windows\System32\cmd.exe"
 
 
 def cursor_mcp_launcher_name(server_name: str, server_count: int) -> str:
@@ -105,7 +107,7 @@ def cursor_mcp_config(codex_mcp: dict[str, Any]) -> dict[str, Any]:
             raise TypeError(f"MCP server {name} must be an object")
         launcher = cursor_mcp_launcher_name(name, server_count)
         servers[name] = {
-            "command": "cmd.exe",
+            "command": CURSOR_MCP_COMMAND,
             "args": ["/d", "/c", f"${{PLUGIN_ROOT}}/scripts/{launcher}"],
             "cwd": "${PLUGIN_ROOT}",
         }

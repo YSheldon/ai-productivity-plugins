@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "gitlab": {
-      "command": "cmd.exe",
+      "command": "C:\\Windows\\System32\\cmd.exe",
       "args": [
         "/d",
         "/c",

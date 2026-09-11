@@ -86,7 +86,7 @@ def test_cursor_plugin_manifests_reuse_codex_skills_and_mcp() -> None:
             assert "./src/" not in serialized
             for server_name, server in cursor_mcp["mcpServers"].items():
                 assert isinstance(server, dict)
-                assert server["command"] == "cmd.exe"
+                assert server["command"] == cursor_sync.CURSOR_MCP_COMMAND
                 assert server["cwd"] == "${PLUGIN_ROOT}"
                 launcher_name = cursor_sync.cursor_mcp_launcher_name(
                     server_name, len(cursor_mcp["mcpServers"])

@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "wecom-codex-usage": {
-      "command": "cmd.exe",
+      "command": "C:\\Windows\\System32\\cmd.exe",
       "args": [
         "/d",
         "/c",

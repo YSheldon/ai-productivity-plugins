@@ -1,10 +1,11 @@
 {
   "mcpServers": {
     "test-submission": {
-      "command": "py",
+      "command": "cmd.exe",
       "args": [
-        "-3",
-        "${PLUGIN_ROOT}/src/test_submission_mcp.py"
+        "/d",
+        "/c",
+        "${PLUGIN_ROOT}/scripts/launch_cursor_mcp.cmd"
       ],
       "cwd": "${PLUGIN_ROOT}"
     }

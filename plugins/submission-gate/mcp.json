@@ -1,10 +1,11 @@
 {
   "mcpServers": {
     "submission-gate": {
-      "command": "py",
+      "command": "cmd.exe",
       "args": [
-        "-3",
-        "${PLUGIN_ROOT}/src/submission_gate_mcp.py"
+        "/d",
+        "/c",
+        "${PLUGIN_ROOT}/scripts/launch_cursor_mcp.cmd"
       ],
       "cwd": "${PLUGIN_ROOT}"
     }

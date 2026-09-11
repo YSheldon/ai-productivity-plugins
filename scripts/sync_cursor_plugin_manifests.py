@@ -5,9 +5,9 @@ Codex keeps using `.agents/plugins/marketplace.json` and each plugin's
 `.codex-plugin/plugin.json`. Cursor reads `.cursor-plugin/marketplace.json`
 and each plugin's `.cursor-plugin/plugin.json`. Skills and local credential
 files stay shared. Codex MCP stays in `.mcp.json` with relative `./` paths.
-Cursor `mcp.json` rewrites those paths to `${PLUGIN_ROOT}/...` because Cursor
-spawns plugin MCP with cwd set to the Cursor install directory, not the
-plugin root.
+Cursor `mcp.json` launches through `cmd.exe` and `scripts/launch_cursor_mcp.cmd`
+because Cursor plugin MCP spawn often has no `node`/`python3` on PATH, and its
+cwd is the Cursor install directory rather than the plugin root.
 """
 
 from __future__ import annotations
@@ -47,31 +47,68 @@ def relative_asset(path: str) -> str:
     return path[2:] if path.startswith("./") else path
 
 
-def plugin_rooted(path: str) -> str:
-    normalized = path.replace("\\", "/")
-    if normalized in {".", "./"}:
-        return "${PLUGIN_ROOT}"
-    if normalized.startswith("./"):
-        return "${PLUGIN_ROOT}/" + normalized[2:]
-    return path
+CURSOR_MCP_LAUNCHER = "launch_cursor_mcp.cmd"
+
+
+def cursor_mcp_launcher_name(server_name: str, server_count: int) -> str:
+    if server_count == 1:
+        return CURSOR_MCP_LAUNCHER
+    return f"launch_cursor_mcp_{server_name}.cmd"
+
+
+def windows_launch_tokens(command: str) -> list[str]:
+    if command in {"python3", "python"}:
+        return ["py", "-3"]
+    return [command]
+
+
+def cmd_escape_arg(arg: str) -> str:
+    if arg.startswith("./") or arg.startswith(".\\"):
+        rel = arg[2:].replace("/", "\\")
+        return f'"%ROOT%\\{rel}"'
+    if not arg or any(ch in arg for ch in ' \t&|^<>()'):
+        return '"' + arg.replace('"', '""') + '"'
+    return arg
+
+
+def render_cursor_mcp_launcher(command: str, args: list[Any]) -> str:
+    tokens = [*windows_launch_tokens(command), *(cmd_escape_arg(str(arg)) for arg in args)]
+    launch = " ".join(tokens)
+    return (
+        "@echo off\n"
+        "setlocal EnableExtensions\n"
+        'set "ROOT=%~dp0.."\n'
+        'for %%I in ("%ROOT%") do set "ROOT=%%~fI"\n'
+        'cd /d "%ROOT%" || (\n'
+        "  echo Failed to enter plugin root 1>&2\n"
+        "  exit /b 1\n"
+        ")\n"
+        'set "PATH=%SystemRoot%\\System32;%SystemRoot%;'
+        "%SystemRoot%\\System32\\Wbem;"
+        "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0;"
+        "%ProgramFiles%\\nodejs;"
+        "%ProgramFiles(x86)%\\nodejs;"
+        "%LocalAppData%\\Programs\\nodejs;"
+        '%LocalAppData%\\Programs\\Python\\Launcher;%PATH%"\n'
+        f"{launch}\n"
+    )
 
 
 def cursor_mcp_config(codex_mcp: dict[str, Any]) -> dict[str, Any]:
     servers_in = codex_mcp.get("mcpServers")
     if not isinstance(servers_in, dict):
         raise TypeError("Codex MCP config must contain mcpServers")
+    server_count = len(servers_in)
     servers: dict[str, Any] = {}
     for name, server in servers_in.items():
         if not isinstance(server, dict):
             raise TypeError(f"MCP server {name} must be an object")
-        entry = dict(server)
-        raw_args = entry.get("args")
-        if isinstance(raw_args, list):
-            entry["args"] = [
-                plugin_rooted(arg) if isinstance(arg, str) else arg for arg in raw_args
-            ]
-        entry["cwd"] = "${PLUGIN_ROOT}"
-        servers[name] = entry
+        launcher = cursor_mcp_launcher_name(name, server_count)
+        servers[name] = {
+            "command": "cmd.exe",
+            "args": ["/d", "/c", f"${{PLUGIN_ROOT}}/scripts/{launcher}"],
+            "cwd": "${PLUGIN_ROOT}",
+        }
     return {"mcpServers": servers}
 
 
@@ -79,8 +116,30 @@ def write_cursor_mcp(plugin_root: Path) -> Path | None:
     source = plugin_root / ".mcp.json"
     if not source.is_file():
         return None
+    codex_mcp = load_json(source)
     dest = plugin_root / "mcp.json"
-    dump_json(dest, cursor_mcp_config(load_json(source)))
+    dump_json(dest, cursor_mcp_config(codex_mcp))
+    servers_in = codex_mcp.get("mcpServers")
+    if not isinstance(servers_in, dict):
+        raise TypeError("Codex MCP config must contain mcpServers")
+    scripts = plugin_root / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    server_count = len(servers_in)
+    for name, server in servers_in.items():
+        if not isinstance(server, dict):
+            raise TypeError(f"MCP server {name} must be an object")
+        command = server.get("command")
+        if not isinstance(command, str) or not command:
+            raise TypeError(f"MCP server {name} must define a command")
+        raw_args = server.get("args") or []
+        if not isinstance(raw_args, list):
+            raise TypeError(f"MCP server {name} args must be a list")
+        launcher = scripts / cursor_mcp_launcher_name(name, server_count)
+        launcher.write_text(
+            render_cursor_mcp_launcher(command, raw_args),
+            encoding="utf-8",
+            newline="\n",
+        )
     return dest
 
 

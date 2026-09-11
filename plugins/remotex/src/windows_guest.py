@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Iterator
 
+import authentication_evidence
+import credential_store
 import execution
 import remotex_core as core
 import vm_identity
@@ -283,6 +285,24 @@ def _verify_bound_vmx(bundle: core.ConfigBundle, identity: dict[str, Any]) -> Pa
     return vm_identity.verify_bound_vmx(identity, bundle)
 
 
+@contextmanager
+def _owned_profile(cfg: dict[str, Any], requester: str) -> Iterator[dict[str, Any]]:
+    identity = cfg["identity"]
+    expected_resource = identity.get("queueResource")
+    expected_config_sha256 = cfg.get("configurationSha256")
+    kwargs: dict[str, Any] = {}
+    if expected_resource:
+        kwargs["expected_resource"] = expected_resource
+    if expected_config_sha256:
+        kwargs["expected_config_sha256"] = expected_config_sha256
+    with vm_queue.profile_owner_operation(
+        cfg["profile"],
+        requester,
+        **kwargs,
+    ) as ownership:
+        yield ownership
+
+
 def connection_config(profile: Any = None) -> dict[str, Any]:
     name, raw, bundle = core.select_profile("windows-guest", profile)
     transport = str(raw.get("transport") or "winrm").strip().lower()
@@ -291,7 +311,13 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
     authentication = str(raw.get("authentication") or "kerberos").strip().lower()
     if authentication not in {"kerberos", "negotiate"}:
         raise core.ToolError("Windows guest authentication must be kerberos or negotiate")
-    credential = raw.get("credential")
+    resolved_credential = credential_store.resolve_profile_reference(
+        bundle,
+        name,
+        raw,
+        "windows-guest",
+    )
+    credential = resolved_credential.reference_dict()
     credential_state = _credential_status(credential)
     if not credential_state.get("ready"):
         raise core.ToolError(str(credential_state.get("reason") or "guest credential reference is unavailable"))
@@ -301,21 +327,25 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
         require_identity=True,
         require_guest_profile=True,
     )
-    bound_vmx_path = _verify_bound_vmx(bundle, identity)
-    return {
+    result = {
         "profile": name,
         "configSource": bundle.source,
+        "configurationSha256": core.config_fingerprint(bundle.data),
         "host": core.validate_host(raw.get("host")),
         "port": core.validate_port(raw.get("port"), DEFAULT_PORT),
         "transport": transport,
         "authentication": authentication,
         "credential": credential,
         "credentialState": credential_state,
+        "credentialAlias": resolved_credential.alias,
+        "configurationVersion": resolved_credential.configuration_version,
         "stagingRoot": _staging_root(raw.get("staging_root")),
         "powershellPath": raw.get("powershell_path"),
         "identity": identity,
-        "boundVmxPath": bound_vmx_path,
     }
+    if identity.get("identityKind") == "vmx":
+        result["boundVmxPath"] = _verify_bound_vmx(bundle, identity)
+    return result
 
 
 def _powershell_path(cfg: dict[str, Any]) -> str:
@@ -397,6 +427,8 @@ def _identity_from_outcome(cfg: dict[str, Any], outcome: dict[str, Any]) -> dict
         "machineId": observed,
         "bootIdentity": core._required_text(pieces[2], "guest boot identity"),
         "vmIdentity": cfg["identity"],
+        "identity": cfg["identity"],
+        "identityKind": cfg["identity"].get("identityKind"),
     }
 
 
@@ -423,7 +455,21 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
         errors.append("Windows guest transport must be winrm")
     if authentication not in {"kerberos", "negotiate"}:
         errors.append("Windows guest authentication must be kerberos or negotiate")
-    credential_state = _credential_status(raw.get("credential"))
+    try:
+        bundle = core.load_config()
+        resolved_credential = credential_store.resolve_profile_reference(
+            bundle,
+            name,
+            raw,
+            "windows-guest",
+        )
+        credential_state = _credential_status(
+            resolved_credential.reference_dict()
+        )
+        result["credential_alias"] = resolved_credential.alias
+        result["configuration_version"] = resolved_credential.configuration_version
+    except core.ToolError as exc:
+        credential_state = {"source": None, "ready": False, "reason": str(exc)}
     result["credential_source"] = credential_state.get("source")
     result["credential_reference_ready"] = credential_state.get("ready")
     if not credential_state.get("ready"):
@@ -438,7 +484,8 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
             errors.append(str(identity.get("error")))
         else:
             bundle = core.load_config()
-            result["bound_vmx_path"] = str(_verify_bound_vmx(bundle, identity))
+            if identity.get("identityKind") == "vmx":
+                result["bound_vmx_path"] = str(_verify_bound_vmx(bundle, identity))
     except core.ToolError as exc:
         errors.append(str(exc))
     if not result["client_available"]:
@@ -447,9 +494,19 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
     result["ready"] = ready
     result["errors"] = errors
     unavailable = "client-unavailable" if not result["client_available"] else "configuration-invalid"
+    physical = bool(
+        isinstance(result.get("vmIdentity"), dict)
+        and result["vmIdentity"].get("identityKind") == "physical-host"
+    )
     result["capabilities"] = {
-        "power": _capability(False, "use-bound-vmware-profile"),
-        "snapshot": _capability(False, "use-bound-vmware-profile"),
+        "power": _capability(
+            False,
+            "physical-host-no-vm-power" if physical else "use-bound-vmware-profile",
+        ),
+        "snapshot": _capability(
+            False,
+            "physical-host-no-vm-snapshot" if physical else "use-bound-vmware-profile",
+        ),
         "guest_exec": _capability(ready, unavailable),
         "guest_copy": _capability(ready, unavailable),
         "reboot_wait": _capability(ready, unavailable),
@@ -474,18 +531,33 @@ def test_connection(args: dict[str, Any]) -> dict[str, Any]:
                 "error": str(exc),
             }
         )
-    return core.tool_result(
-        {
-            "ok": True,
-            "profile": cfg["profile"],
-            "transport": "winrm",
-            "credentialSource": cfg["credentialState"]["source"],
-            "authenticatedReadback": True,
-            "machineId": identity["machineId"],
-            "bootIdentity": identity["bootIdentity"],
-            "vmIdentity": identity["vmIdentity"],
-        }
-    )
+    result = {
+        "ok": True,
+        "profile": cfg["profile"],
+        "transport": "winrm",
+        "credentialSource": cfg["credentialState"]["source"],
+        "authenticatedReadback": True,
+        "machineId": identity["machineId"],
+        "bootIdentity": identity["bootIdentity"],
+        "vmIdentity": identity["vmIdentity"],
+        "identityKind": identity.get(
+            "identityKind",
+            (identity.get("vmIdentity") or {}).get("identityKind"),
+        ),
+    }
+    try:
+        authentication_evidence.record_verified(
+            cfg["profile"],
+            cfg["credentialState"]["source"],
+            f"{cfg['host']}:{cfg['port']}",
+        )
+        result["authenticationEvidenceRecorded"] = True
+    except core.ToolError:
+        result["authenticationEvidenceRecorded"] = False
+        result["authenticationEvidenceFailureCode"] = (
+            "local-authentication-evidence-unavailable"
+        )
+    return core.tool_result(result)
 
 
 def _ps_decode(value: str) -> str:
@@ -739,7 +811,7 @@ def preflight(args: dict[str, Any]) -> dict[str, Any]:
     run_id = _run_id(args.get("run_id"))
     policy = _policy(args.get("policy"))
     timeout = core.validate_timeout(args.get("timeout_seconds"), 120)
-    with vm_queue.profile_owner_operation(cfg["profile"], requester) as ownership:
+    with _owned_profile(cfg, requester) as ownership:
         _probe_identity(cfg, min(timeout, 30))
         outcome = _invoke(
             cfg,
@@ -861,7 +933,7 @@ def run_script(args: dict[str, Any]) -> dict[str, Any]:
     script = _script(args.get("script"))
     allowlist = _safe_allowlist(args.get("output_allowlist"))
     timeout = core.validate_timeout(args.get("timeout_seconds"), 120)
-    with vm_queue.profile_owner_operation(cfg["profile"], requester) as ownership:
+    with _owned_profile(cfg, requester) as ownership:
         identity = _probe_identity(cfg, min(timeout, 30))
         outcome = _invoke(cfg, script, timeout=timeout)
     payload = {
@@ -981,7 +1053,7 @@ def copy_to(args: dict[str, Any]) -> dict[str, Any]:
     timeout = core.validate_timeout(args.get("timeout_seconds"), 180)
     content = local.read_bytes()
     local_hash = hashlib.sha256(content).hexdigest()
-    with vm_queue.profile_owner_operation(cfg["profile"], requester) as ownership:
+    with _owned_profile(cfg, requester) as ownership:
         identity = _probe_identity(cfg, min(timeout, 30))
         outcome = _invoke(
             cfg,
@@ -1028,7 +1100,7 @@ def copy_from(args: dict[str, Any]) -> dict[str, Any]:
         raise core.ToolError("local_path already exists; set overwrite=replace to replace it")
     relative = _relative_path(args.get("relative_path"))
     timeout = core.validate_timeout(args.get("timeout_seconds"), 180)
-    with vm_queue.profile_owner_operation(cfg["profile"], requester) as ownership:
+    with _owned_profile(cfg, requester) as ownership:
         identity = _probe_identity(cfg, min(timeout, 30))
         outcome = _invoke(
             cfg,
@@ -1091,7 +1163,7 @@ def reboot(args: dict[str, Any]) -> dict[str, Any]:
     if args.get("confirm") is not True:
         raise core.ToolError("confirm=true is required to reboot a Windows guest")
     timeout = core.validate_timeout(args.get("timeout_seconds"), 300)
-    with vm_queue.profile_owner_operation(cfg["profile"], requester) as ownership:
+    with _owned_profile(cfg, requester) as ownership:
         before = _probe_identity(cfg, min(timeout, 30))
         accepted_outcome = _invoke(cfg, REBOOT_SCRIPT, timeout=min(timeout, 30))
         accepted = "REMOTEX_REBOOT_ACCEPTED|1" in str(accepted_outcome.get("stdout") or "")

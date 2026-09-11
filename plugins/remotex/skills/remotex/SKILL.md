@@ -1,6 +1,6 @@
 ---
 name: remotex
-description: Use configured RemoteX profiles to inspect or operate SSH hosts, Windows RDP targets, authenticated Windows guests, vSphere or ESXi environments, and local VMware Workstation virtual machines without passing credentials in chat.
+description: Use configured RemoteX profiles and credential_ref aliases to diagnose or securely configure credentials, inspect or operate SSH and RDP hosts, manage authenticated Windows guests, vSphere or ESXi, and local VMware Workstation VMs without passing credential values in chat.
 ---
 
 # RemoteX
@@ -12,6 +12,57 @@ Use this skill for remote-system and virtual-machine work that should reuse name
 Call remotex_status with the intended profile. For SSH, selectedProfileReady proves only local configuration, client availability, and host-key readiness; it does not prove that the server has authorized the selected public key. Run remotex_ssh_test to verify server-side authentication, then report overallStatus separately. A missing client, profile, credential reference, host-key registration, identity binding, or queue file is a configuration gap, not proof of invalid credentials.
 
 Never ask the user to paste a password, token, authorization code, private key, or credential-manager export into chat. RemoteX accepts credential references from SSH Agent, identity-file paths, Windows Credential Manager, Windows integrated authentication, or named environment variables.
+
+## Credential Lifecycle
+
+Use `remotex_credential_doctor` for collection-wide or selected profile checks.
+Treat `referencePresent`, `localProtectionReady`, and
+`authenticationVerified` as independent evidence. A present Credential Manager
+entry is not proof that the remote system accepts it.
+
+When the intended Profile does not exist, do not stop at the old credential
+setup flow and do not edit JSON ad hoc:
+
+1. Collect only non-secret metadata required by the selected kind: Profile
+   name, endpoint, SSH user when applicable, credential Provider and alias,
+   and `queue_resource`. A VM Windows guest requires `vm_identity`,
+   `guest_machine_id`, and `staging_root`; a physical Windows host requires
+   `host_identity`, `guest_machine_id`, and `staging_root` instead.
+2. Call `remotex_profile_setup` with `confirm=false` and show its sanitized
+   preview. Never add `target`, credential username, password, token, secret,
+   or private-key material.
+3. Report whether v1 migration, a protected backup, and a local credential
+   prompt will be required. Obtain explicit confirmation.
+4. Repeat the identical request with `confirm=true`. Enter Windows credential
+   values only in the visible local `Get-Credential` window.
+5. Run the returned protocol-specific host-key, reachability, or authentication
+   test and report it separately from configuration and reference presence.
+
+New profiles must use a local `queue_resource`. The wizard derives bounded
+Credential Manager targets, rejects collisions and cross-kind fields, and
+rolls back a newly written Profile and alias when the prompt is cancelled or
+fails. Identical requests are idempotent. SSH remains public-key only and never
+opens a password prompt.
+
+When a configured Windows Credential Manager reference is missing:
+
+1. Report its alias, source, consumer count, and sanitized next step.
+2. Ask for confirmation to open the local secure prompt.
+3. Call `remotex_credential_setup` with the profile or `credential_ref` and
+   `confirm=true`.
+4. Tell the user to enter the username and password only in the visible local
+   `Get-Credential` window.
+5. Run the protocol-specific authentication test after presence readback.
+
+Calling setup for an existing entry performs rotation through the same local
+prompt. Before deletion, run the doctor, report every consuming profile, obtain
+explicit confirmation, then call `remotex_credential_delete`. Never construct
+an arbitrary target or add a credential-value field to a tool call.
+
+Version 1 inline references remain readable. Use the migration script in
+`docs/credential-lifecycle.md` for a preview and explicit protected v2 write.
+Long-lived passwords should not use environment references; those are
+ephemeral-only and must remain process scoped.
 
 ## Shared Queue
 
@@ -28,13 +79,19 @@ Before any SSH side effect, remotex_rdp_open, Windows guest mutation, VMware Wor
 
 Expiry and stale recovery release ownership only to the unowned state. Never transfer ownership silently. remotex_vm_queue_recover_stale needs confirm=true and must report the recovered owner and first waiter.
 
-Profiles for one VM must share one queue_resource. This queue is cooperative and local to this machine; it does not detect direct access outside RemoteX.
+Profiles for one VM or physical host must share one queue_resource. This queue
+is cooperative and local to this machine; it does not detect direct access
+outside RemoteX.
 
 ## Composite VM Identity
 
-VMware Workstation and Windows guest mutations require one vm_identity group with exactly one VMware Workstation profile, one RDP profile, and one Windows guest profile. The profiles must share the same queue_resource.
+VMware Workstation mutations require one `vm_identity` group with exactly one
+VMware Workstation profile, one RDP profile, and one Windows guest profile. A
+physical Windows guest uses `host_identity`, `guest_machine_id`, and one exact
+queue resource instead; it may have one matching RDP profile and must not bind
+a VMware profile.
 
-Before VMware changes, RemoteX compares vmware_uuid with the selected VMX UUID. Before Windows guest changes, it compares an authenticated guest machine identifier with guest_machine_id. RDP and WinRM endpoints are part of the binding. Any mismatch is a hard stop before the operation.
+Before VMware changes, RemoteX compares vmware_uuid with the selected VMX UUID. Before Windows guest changes, it compares an authenticated guest machine identifier with guest_machine_id. RDP and WinRM endpoints are part of the binding. Any mismatch is a hard stop before the operation. Physical hosts skip VMX validation but retain authenticated machine and queue checks.
 
 ## Windows Guest And Preflight
 
@@ -62,6 +119,11 @@ For host_key_policy=managed, call remotex_ssh_host_key_status before the first c
 remotex_ssh_test is public-key only. When it returns configured-public-key-rejected, use authentication.publicKey.fingerprint when available to authorize the configured key through an approved out-of-band channel, then rerun the test. Do not request or use a password fallback.
 
 Use remotex_ssh_run_script for PowerShell, pwsh, cmd, sh, or bash. Script text and referenced environment values travel through stdin. For transfer, preserve verify=sha256 unless there is a documented reason to use another mode.
+
+Resumable SSH tasks pass input and redaction values through a one-shot local
+pipe. They must never create `stdin.bin` or `secrets.json`. If the doctor or task
+status reports legacy sensitive artifacts, clean only an inactive validated
+task with `remotex_ssh_task_cleanup_sensitive_artifacts` and `confirm=true`.
 
 Use remotex_rdp_test to separate TCP reachability from saved-credential readiness. remotex_rdp_open starts the Windows RDP client only when the matching queue owner and saved TERMSRV credential are present.
 

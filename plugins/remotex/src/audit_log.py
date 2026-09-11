@@ -174,27 +174,53 @@ def _reference_summary(value: Any) -> dict[str, Any]:
 
 
 def summarize_arguments(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    summary: dict[str, Any] = {
-        key: arguments[key]
-        for key in (
-            "profile",
-            "requester",
-            "action",
-            "shell",
-            "verify",
-            "overwrite",
-            "recursive",
-            "virtual_machine",
-            "resource",
-            "task_id",
-            "snapshot_name",
-            "idempotency_key",
-            "preflight_receipt_sha256",
-            "run_id",
-            "confirm",
-        )
-        if key in arguments
-    }
+    summary: dict[str, Any] = {}
+    for key in (
+        "profile",
+        "requester",
+        "action",
+        "shell",
+        "verify",
+        "overwrite",
+        "recursive",
+        "virtual_machine",
+        "resource",
+        "task_id",
+        "snapshot_name",
+        "idempotency_key",
+        "preflight_receipt_sha256",
+        "run_id",
+        "confirm",
+    ):
+        if key not in arguments:
+            continue
+        value = arguments[key]
+        summary[key] = core.redact_text(value) if isinstance(value, str) else value
+    if tool == "remotex_profile_setup":
+        kind = core._text(arguments.get("kind")).strip().casefold()
+        if kind in {"ssh", "rdp", "windows-guest", "vsphere", "esxi"}:
+            summary["kind"] = kind
+        source = core._text(arguments.get("credential_source")).strip().casefold()
+        if source in {
+            "identity-file",
+            "ssh-agent",
+            "windows-credential-manager",
+            "windows-integrated",
+        }:
+            summary["credentialSource"] = source
+        for source_key, result_key in (
+            ("credential_ref", "credentialRefSha256"),
+            ("queue_resource", "queueResourceSha256"),
+        ):
+            if source_key in arguments:
+                value = core._text(arguments.get(source_key))
+                summary[result_key] = hashlib.sha256(value.encode("utf-8")).hexdigest()
+        endpoint = arguments.get("url") or arguments.get("host")
+        if endpoint not in (None, ""):
+            value = core._text(endpoint)
+            summary["endpointSha256"] = hashlib.sha256(
+                value.encode("utf-8")
+            ).hexdigest()
     for key in ("command", "script"):
         if key in arguments:
             text = core._text(arguments.get(key))

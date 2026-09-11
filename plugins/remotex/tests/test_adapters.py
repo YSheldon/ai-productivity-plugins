@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import os
 import sys
 import tempfile
@@ -29,6 +29,112 @@ class AdapterTests(unittest.TestCase):
             encoding="utf-8",
         )
         return path
+
+    def _version_two_config(
+        self,
+        directory: str,
+        credentials: dict,
+        profiles: dict,
+        defaults: dict,
+    ) -> Path:
+        path = Path(directory) / "config-v2.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "credentials": credentials,
+                    "defaults": defaults,
+                    "profiles": profiles,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_version_two_ssh_alias_reaches_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            identity = Path(directory) / "id_ed25519"
+            identity.write_text("test fixture", encoding="utf-8")
+            path = self._version_two_config(
+                directory,
+                {
+                    "linux-key": {
+                        "source": "identity-file",
+                        "identity_file": str(identity),
+                    }
+                },
+                {
+                    "linux": {
+                        "kind": "ssh",
+                        "host": "linux.example",
+                        "user": "root",
+                        "credential_ref": "linux-key",
+                    }
+                },
+                {"ssh": "linux"},
+            )
+            with mock.patch.dict(os.environ, {"REMOTEX_CONFIG": str(path)}, clear=True):
+                cfg = ssh_adapter.connection_config()
+        self.assertEqual(cfg["credential_source"], "identity-file")
+        self.assertEqual(cfg["credential_alias"], "linux-key")
+        self.assertEqual(cfg["configuration_version"], 2)
+        self.assertEqual(cfg["identity_file"], identity)
+
+    def test_version_two_rdp_alias_reaches_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._version_two_config(
+                directory,
+                {
+                    "rdp-admin": {
+                        "source": "windows-credential-manager",
+                        "target": "TERMSRV/windows.example",
+                    }
+                },
+                {
+                    "windows": {
+                        "kind": "rdp",
+                        "host": "windows.example",
+                        "credential_ref": "rdp-admin",
+                    }
+                },
+                {"rdp": "windows"},
+            )
+            with mock.patch.dict(os.environ, {"REMOTEX_CONFIG": str(path)}, clear=True):
+                cfg = rdp_adapter.connection_config()
+        self.assertEqual(cfg["credential_target"], "TERMSRV/windows.example")
+        self.assertEqual(cfg["credential_alias"], "rdp-admin")
+        self.assertEqual(cfg["configuration_version"], 2)
+
+    def test_version_two_vsphere_alias_reaches_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._version_two_config(
+                directory,
+                {
+                    "esxi-admin": {
+                        "source": "windows-credential-manager",
+                        "target": "RemoteX/esxi-admin",
+                    }
+                },
+                {
+                    "esxi": {
+                        "kind": "vsphere",
+                        "url": "https://esxi.example/sdk",
+                        "credential_ref": "esxi-admin",
+                    }
+                },
+                {"vsphere": "esxi"},
+            )
+            with mock.patch.dict(os.environ, {"REMOTEX_CONFIG": str(path)}, clear=True):
+                cfg = vsphere_adapter.connection_config()
+        self.assertEqual(
+            cfg["credential"],
+            {
+                "source": "windows-credential-manager",
+                "target": "RemoteX/esxi-admin",
+            },
+        )
+        self.assertEqual(cfg["credential_alias"], "esxi-admin")
+        self.assertEqual(cfg["configuration_version"], 2)
 
     def test_ssh_arguments_disable_interactive_passwords(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -236,6 +342,52 @@ class AdapterTests(unittest.TestCase):
                         with self.assertRaisesRegex(core.ToolError, "cannot preempt"):
                             rdp_adapter.open_connection({"requester": "bob"})
         process.assert_not_called()
+
+    def test_rdp_open_binds_snapshot_resource_and_config_fingerprint(self) -> None:
+        cfg = {
+            "profile": "physical-rdp",
+            "host": "hlk.example",
+            "port": 3389,
+            "credential_target": "TERMSRV/hlk.example",
+            "credential_alias": "hlk-rdp",
+            "admin": False,
+            "fullscreen": False,
+            "width": None,
+            "height": None,
+            "rdp_file": None,
+            "mstsc_path": None,
+            "vmIdentity": {
+                "identityKind": "physical-host",
+                "queueResource": "hlk:physical",
+            },
+            "queueResource": "hlk:physical",
+            "configurationSha256": "a" * 64,
+        }
+        observed: dict[str, object] = {}
+
+        @contextmanager
+        def owner(*args, **kwargs):
+            observed["args"] = args
+            observed["kwargs"] = kwargs
+            yield {"resource": "hlk:physical", "owner": {"requester": "alice"}}
+
+        process = mock.Mock(pid=123)
+        with mock.patch.object(rdp_adapter, "connection_config", return_value=cfg):
+            with mock.patch.object(rdp_adapter, "_credential_present", return_value=True):
+                with mock.patch.object(rdp_adapter, "rdp_arguments", return_value=["mstsc"]):
+                    with mock.patch.object(rdp_adapter, "vm_queue") as queue:
+                        queue.profile_owner_operation.side_effect = owner
+                        with mock.patch.object(
+                            rdp_adapter.subprocess,
+                            "Popen",
+                            return_value=process,
+                        ):
+                            result = rdp_adapter.open_connection(
+                                {"profile": "physical-rdp", "requester": "alice"}
+                            )
+        self.assertEqual(observed["kwargs"]["expected_resource"], "hlk:physical")
+        self.assertEqual(observed["kwargs"]["expected_config_sha256"], "a" * 64)
+        self.assertTrue(json.loads(result["content"][0]["text"])["ok"])
 
 
 if __name__ == "__main__":

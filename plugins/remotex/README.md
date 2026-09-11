@@ -1,5 +1,14 @@
 # RemoteX
 
+Version `0.5.2` adds physical Windows host admission for HLK and other bare-metal
+hosts. It uses authenticated host identity plus a cooperative queue without
+requiring VMX or VMware profiles. Version `0.5.1` added a confirmed profile setup wizard that previews and creates
+credential-backed SSH, RDP, Windows guest, and vSphere profiles. It derives
+credential targets, requires a non-preemptive local queue, migrates v1 metadata
+to v2 atomically, and opens the visible Windows secure prompt when required.
+Version `0.5.0` added reusable `credential_ref` aliases, lifecycle diagnostics,
+confirmed deletion, and secret-free asynchronous task IPC.
+
 RemoteX provides named profiles for SSH, Windows Remote Desktop, authenticated Windows guest management, vSphere or ESXi, and VMware Workstation. It uses established local clients:
 
 - ssh and sftp for SSH profiles
@@ -14,6 +23,14 @@ RemoteX does not accept passwords, tokens, private-key bodies, or other secret v
 
 Copy config/config.example.json to ~/.config/remotex/config.json, or set REMOTEX_CONFIG to another protected JSON file. Run remotex_status with the intended profile before connecting. For SSH profiles, selected-profile readiness proves local configuration and host-key policy only; run remotex_ssh_test to verify that the server accepts the configured public key. Aggregate readiness reports all configured profiles separately.
 
+When a profile does not exist, call `remotex_profile_setup` with `confirm=false`
+to validate a sanitized preview. After reviewing the canonical kind, alias,
+queue resource, migration state, endpoint digest, and prompt requirement, call
+the same tool with `confirm=true`. The confirmed path writes a protected backup,
+atomically stores and reads back v2 configuration, and opens `Get-Credential`
+only for a derived Windows Credential Manager reference. SSH setup remains
+public-key only. Cancellation or prompt failure restores the original config.
+
 RemoteX reads the old SSH_CONFIG file or ~/.config/codex-ssh/config.json when the RemoteX config does not exist. Existing SSH_HOST and SSH_USER environment configuration is also recognized. This compatibility path is read-only.
 
 ## Credentials
@@ -25,15 +42,37 @@ RemoteX accepts only credential references:
 - Windows Credential Manager Generic Credentials or native Windows integrated authentication for Windows guest WinRM
 - Windows Credential Manager or named environment references for vSphere or ESXi
 
+Version 2 configuration stores reusable references under top-level
+`credentials`; profiles select them with `credential_ref`. Version 1 inline
+references remain readable. Preview a deterministic migration with
+`scripts/migrate_remotex_config.py --config PATH --check`; writing requires
+`--write --confirm`, a protected adjacent backup, atomic replacement, and
+semantic readback.
+
+Run `remotex_credential_doctor` to batch-check all references. It deduplicates a
+missing alias shared by multiple profiles and reports configuration, reference
+presence, local protection, and authentication evidence independently. It never
+returns usernames or credential values.
+
+For a missing Windows Credential Manager reference, call
+`remotex_credential_setup` with a configured profile or `credential_ref` and
+`confirm=true`. RemoteX opens a visible local `Get-Credential` prompt; the user
+enters the value there, outside chat and the MCP request. Running setup again
+rotates the entry. `remotex_credential_delete` removes only a configured
+reference after `confirm=true` and absence readback. See
+`docs/credential-lifecycle.md`.
+
 Do not put a password in a profile, tool argument, script, shell command, VMX path, audit record, or standard output. RemoteX never uses VMware vmrun -gp or -gu guest-password arguments.
 
-For RDP, create the matching TERMSRV/host entry with the Windows Credential Manager UI. remotex_rdp_open fails closed when it is absent, then starts mstsc without receiving or forwarding a password.
+For RDP, configure a matching `TERMSRV/host` reference and use the secure setup
+tool or Windows Credential Manager UI. `remotex_rdp_open` fails closed when it
+is absent, then starts mstsc without receiving or forwarding a password.
 
 For a Windows guest profile, use a Generic Credential such as RemoteX/windows-guest-lab, or windows-integrated when the current Windows identity is authorized. RemoteX passes credential material only through a local PowerShell stdin envelope and redacts it from process output, errors, receipts, and audit records.
 
 ## Composite VM Identity
 
-Any mutating VMware Workstation or Windows guest operation requires a vm_identity group. The group must contain exactly one of each:
+VMware Workstation operations require a `vm_identity` group. The group must contain exactly one of each:
 
 - VMware Workstation profile with vmx_path and vmware_uuid
 - RDP profile
@@ -41,7 +80,18 @@ Any mutating VMware Workstation or Windows guest operation requires a vm_identit
 
 Every member must use the same exact queue_resource. RemoteX reads the VMX UUID before a VMware mutation, records the RDP and guest endpoint bindings, and probes the authenticated Windows guest machine identifier before guest mutations. A VMX UUID, guest machine identifier, endpoint configuration, or queue mismatch fails closed before the operation starts.
 
-Use sanitized stable identifiers only: vm_identity and guest_machine_id accept ASCII letters, digits, dots, underscores, and hyphens; vmware_uuid must be a 128-bit VMware UUID.
+Physical Windows hosts use `host_identity` instead of `vm_identity`. A physical
+host group requires `guest_machine_id` and one exact `queue_resource`; it may
+also include one matching RDP profile, but it must not include a VMware profile
+or VMX path. RemoteX verifies the authenticated WinRM machine identifier before
+guest operations. Physical hosts support guest test, preflight, bounded script,
+verified copy, and reboot-wait; VMware power and snapshot capabilities remain
+disabled with explicit `physical-host-no-vm-*` failure codes.
+
+Use sanitized stable identifiers only: `vm_identity` and `host_identity` accept
+ASCII letters, digits, dots, underscores, colons, and hyphens;
+`guest_machine_id` accepts ASCII letters, digits, dots, underscores, and
+hyphens; vmware_uuid must be a 128-bit VMware UUID.
 
 remotex_status exposes a per-profile capability matrix for power, snapshot, guest_exec, guest_copy, and reboot_wait, with a failure code when a required client, credential reference, or identity binding is unavailable.
 
@@ -65,7 +115,7 @@ The queue coordinates RemoteX processes on one machine. It is not an authorizati
 
 ## Windows Guest Operations
 
-Windows guest profiles use WinRM only, with Kerberos or Negotiate authentication. Before any guest operation, RemoteX probes an authenticated machine and boot identity. Guest scripts are sent through a fixed local PowerShell wrapper, bounded by timeout, memory, process-count, and output limits.
+Windows guest profiles use WinRM only, with Kerberos or Negotiate authentication. Before any guest operation, RemoteX probes an authenticated machine and boot identity. VM guests additionally require VMX-bound identity; physical hosts use host_identity and do not require VMX. Guest scripts are sent through a fixed local PowerShell wrapper, bounded by timeout, memory, process-count, and output limits.
 
 Use remotex_windows_guest_preflight before snapshot or test-sensitive work. It runs a PowerShell 2.0-compatible read-only probe with a caller-supplied policy. The bounded receipt includes operating system and architecture, PowerShell and .NET versions, required KB and cmdlet checks, pending reboot state, free system-drive space, guest UTC and boot identity, and declared process, service, driver, and ETW inactivity checks.
 
@@ -90,6 +140,12 @@ For host_key_policy=managed, call remotex_ssh_host_key_status before the first S
 
 Use remotex_ssh_run_script for PowerShell, pwsh, cmd, sh, or bash. The fixed launcher is the only remote command placed in the SSH argument vector. Script text and resolved environment values travel through SSH stdin. remotex_ssh_copy_to and remotex_ssh_copy_from use SFTP first and return requested and actual paths, byte counts, hashes, and integrity state.
 
+Synchronous and resumable scripts keep injected values out of process
+arguments. Resumable task input is delivered to the worker through one bounded
+anonymous pipe and acknowledged before start returns. Version `0.5.0` never
+creates `stdin.bin` or `secrets.json`; an explicit cleanup tool is available for
+inactive legacy task directories.
+
 remotex_ssh_test returns server-side authentication evidence. If authentication.failureCode is configured-public-key-rejected, the local profile is valid but the target has rejected that identity. Authorize authentication.publicKey.fingerprint through an approved out-of-band channel, then rerun the test. The response also identifies the server-advertised authentication methods and confirms that password fallback was not attempted.
 
 Use remotex_rdp_test to distinguish TCP reachability from saved-credential readiness. Use remotex_vsphere_about for a read-only endpoint check and remotex_vsphere_list_vms for inventory. remotex_vsphere_power requires an explicit profile, inventory path, action, and queue owner. Keep TLS verification enabled and prefer a configured CA.
@@ -105,6 +161,8 @@ Report reachability, credential readiness, composite identity status, queue owne
 ## Tool Summary
 
 - remotex_status
+- Profile setup: confirmed preview, v1-to-v2 write, credential prompt, rollback
+- Credentials: doctor, secure setup/rotation, confirmed deletion
 - SSH: test, command or script execution, transfer, resumable tasks, agent and host-key governance
 - RDP: remotex_rdp_test and remotex_rdp_open
 - Windows guest: test, preflight, bounded script, verified copy, authenticated reboot wait

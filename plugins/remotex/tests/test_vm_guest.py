@@ -100,6 +100,47 @@ class RemoteXVmGuestTests(unittest.TestCase):
         vm_queue.claim(resource, requester, True)
         queue_leases._set_lease(resource, requester, 3600, "test-lease")
 
+    def test_version_two_guest_alias_reaches_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            environment, _ = self._environment(directory)
+            config_path = Path(environment["REMOTEX_CONFIG"])
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["version"] = 2
+            config["credentials"] = {
+                "rdp-admin": {
+                    "source": "windows-credential-manager",
+                    "target": "TERMSRV/windows.example",
+                },
+                "guest-admin": {
+                    "source": "windows-credential-manager",
+                    "target": "RemoteX/guest",
+                },
+            }
+            config["profiles"]["rdp"].pop("credential")
+            config["profiles"]["rdp"]["credential_ref"] = "rdp-admin"
+            config["profiles"]["guest"].pop("credential")
+            config["profiles"]["guest"]["credential_ref"] = "guest-admin"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with mock.patch.dict(os.environ, environment, clear=True):
+                with mock.patch.object(
+                    core,
+                    "credential_status",
+                    return_value={
+                        "source": "windows-credential-manager",
+                        "ready": True,
+                    },
+                ):
+                    cfg = windows_guest.connection_config("guest")
+        self.assertEqual(cfg["credentialAlias"], "guest-admin")
+        self.assertEqual(cfg["configurationVersion"], 2)
+        self.assertEqual(
+            cfg["credential"],
+            {
+                "source": "windows-credential-manager",
+                "target": "RemoteX/guest",
+            },
+        )
+
     def test_composite_identity_binds_rdp_guest_vmx_and_one_queue(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             environment, vmx = self._environment(directory)

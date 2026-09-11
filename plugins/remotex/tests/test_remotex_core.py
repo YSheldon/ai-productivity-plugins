@@ -39,6 +39,23 @@ class RemoteXCoreTests(unittest.TestCase):
         self.assertEqual(payload["vm_queue"]["scope"], "local-cooperative")
         self.assertIn("Create", payload["next_step"])
         self.assertNotIn("no credentials", text.lower())
+        self.assertEqual(payload["config"]["version"], 1)
+        self.assertFalse(payload["config"]["migrationRecommended"])
+
+    def test_existing_version_one_status_recommends_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write(
+                directory,
+                {"version": 1, "defaults": {}, "profiles": {}},
+            )
+            environment = {
+                "REMOTEX_CONFIG": str(path),
+                "REMOTEX_VM_QUEUE_FILE": str(Path(directory) / "queue.json"),
+            }
+            with mock.patch.dict(os.environ, environment, clear=True):
+                result = json.loads(remotex_mcp.status({})["content"][0]["text"])
+        self.assertEqual(result["config"]["version"], 1)
+        self.assertTrue(result["config"]["migrationRecommended"])
 
     def test_literal_password_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

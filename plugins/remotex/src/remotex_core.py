@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
 import re
@@ -212,6 +213,16 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def config_fingerprint(data: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        data,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def _reject_literal_secrets(value: Any, path: str = "config") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -230,8 +241,8 @@ def _reject_literal_secrets(value: Any, path: str = "config") -> None:
 def _validate_config(data: dict[str, Any]) -> dict[str, Any]:
     _reject_literal_secrets(data)
     version = data.get("version", 1)
-    if version != 1:
-        raise ToolError("RemoteX config version must be 1")
+    if type(version) is not int or version not in {1, 2}:
+        raise ToolError("RemoteX config version must be 1 or 2")
     profiles = data.get("profiles", {})
     defaults = data.get("defaults", {})
     if not isinstance(profiles, dict):
@@ -244,7 +255,13 @@ def _validate_config(data: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(profile, dict):
             raise ToolError(f"RemoteX profile '{name}' must be an object")
         normalize_kind(profile.get("kind"))
-    return {"version": 1, "defaults": defaults, "profiles": profiles}
+    import credential_store
+
+    credentials = credential_store.validate_config_credentials(data)
+    result = {"version": version, "defaults": defaults, "profiles": profiles}
+    if version == 2:
+        result["credentials"] = credentials
+    return result
 
 
 def _legacy_ssh_config_path() -> Path:

@@ -6,9 +6,11 @@ Codex keeps using `.agents/plugins/marketplace.json` and each plugin's
 and each plugin's `.cursor-plugin/plugin.json`. Skills and local credential
 files stay shared. Codex MCP stays in `.mcp.json` with relative `./` paths.
 Cursor `mcp.json` launches through `C:\\Windows\\System32\\cmd.exe` and
-`scripts/launch_cursor_mcp.cmd` because Cursor plugin MCP spawn often has an
-empty PATH (so `node`, `python3`, and even `cmd.exe` fail with ENOENT), and its
-cwd is the Cursor install directory rather than the plugin root.
+`scripts/launch_cursor_mcp.cmd`. The wrapper restores Node/Python locations
+and cds to the plugin root itself. Do not set `cwd` to `${PLUGIN_ROOT}`:
+Cursor leaves that token unexpanded, Node treats a missing cwd as
+`spawn <command> ENOENT`, and that is what broke `node`, `cmd.exe`, and even
+the System32 absolute path.
 """
 
 from __future__ import annotations
@@ -109,7 +111,6 @@ def cursor_mcp_config(codex_mcp: dict[str, Any]) -> dict[str, Any]:
         servers[name] = {
             "command": CURSOR_MCP_COMMAND,
             "args": ["/d", "/c", f"${{PLUGIN_ROOT}}/scripts/{launcher}"],
-            "cwd": "${PLUGIN_ROOT}",
         }
     return {"mcpServers": servers}
 

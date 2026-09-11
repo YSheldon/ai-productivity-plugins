@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "gitlab": {
+      "command": "node",
+      "args": [
+        "./scripts/run_mcp.js"
+      ],
+      "cwd": "."
+    }
+  }
+}

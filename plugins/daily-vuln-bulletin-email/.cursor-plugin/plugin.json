@@ -1,0 +1,25 @@
+{
+  "name": "daily-vuln-bulletin-email",
+  "displayName": "每日漏洞播报",
+  "version": "0.1.0",
+  "description": "Generate and deliver a verified daily vulnerability bulletin with live Feishu subscribers and audited domestic-mail MIME delivery.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/daily-vuln-bulletin-email",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "vulnerability",
+    "cve",
+    "security-bulletin",
+    "feishu",
+    "smtp",
+    "imap",
+    "mime",
+    "privacy"
+  ],
+  "category": "Productivity",
+  "logo": "assets/daily-vuln-bulletin.svg",
+  "skills": "./skills/"
+}

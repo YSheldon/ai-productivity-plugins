@@ -1,0 +1,22 @@
+{
+  "name": "submission-gate",
+  "displayName": "Submission Gate",
+  "version": "0.1.6",
+  "description": "Headlessly scan structured submission mail and verify a protected GitLab gate result with a canonical Manifest-S and rollback baseline.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/submission-gate",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "submission-gate",
+    "mail",
+    "release-gate",
+    "automation"
+  ],
+  "category": "Developer Tools",
+  "logo": "assets/submission-gate.svg",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

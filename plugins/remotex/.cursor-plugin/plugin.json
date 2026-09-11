@@ -1,0 +1,28 @@
+{
+  "name": "remotex",
+  "displayName": "RemoteX",
+  "version": "0.5.2",
+  "description": "Operate remote systems with confirmed profile setup, physical Windows host admission, reusable credential aliases, secure local credential lifecycle tools, bounded execution, verified transfer, VM identity, snapshots, and cooperative leases.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/remotex",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "remote-management",
+    "ssh",
+    "powershell",
+    "winrm",
+    "rdp",
+    "esxi",
+    "vsphere",
+    "vmware-workstation",
+    "sftp",
+    "snapshot"
+  ],
+  "category": "Developer Tools",
+  "logo": "assets/remotex.svg",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

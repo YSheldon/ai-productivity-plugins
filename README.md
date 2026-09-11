@@ -1,9 +1,16 @@
 # AI Productivity Plugins
 
-This repository is a plugin marketplace maintained by Sheldon. Codex and Grok share the plugin directories and keep separate indexes:
+This repository is a plugin marketplace maintained by Sheldon. Codex, Cursor, and Grok share the plugin directories and keep separate indexes:
 
-- Codex: `.agents/plugins/marketplace.json`
+- Codex: `.agents/plugins/marketplace.json` plus each plugin's `.codex-plugin/plugin.json`
+- Cursor: `.cursor-plugin/marketplace.json` plus each plugin's `.cursor-plugin/plugin.json`
 - Grok: `.grok-plugin/marketplace.json` (currently `gitlab`, `remotex`, and `imap-smtp-mail`)
+
+Skills, scripts, and local credential files are shared. Codex MCP stays in `.mcp.json`; the generator mirrors it to Cursor's `mcp.json`. Regenerating Cursor manifests from the Codex index:
+
+```powershell
+py -3 scripts/sync_cursor_plugin_manifests.py
+```
 
 ## Included Plugins
 
@@ -137,6 +144,37 @@ Open the WeCom configuration wizard
 
 The wizard stores `corp_id`, app `corp_secret`, and `agent_id` in `~/.wecom-codex-usage/config.json`. The plugin can then test the connection, send WeCom app messages, and build a local Codex usage summary from `~/.codex/config.toml` plus recent `~/.codex/log/codex-tui.log` token usage lines. It does not claim to read a stable hosted profile-usage API.
 
+## Use In Cursor
+
+Cursor does not load Codex plugin marketplaces. It reads `.cursor-plugin/marketplace.json` and installs each plugin that has `.cursor-plugin/plugin.json`. The `ssh` plugin stays Codex-only (`NOT_AVAILABLE`) and is omitted from the Cursor index.
+
+### Team marketplace
+
+On Teams or Enterprise, import this GitHub repository from Dashboard → Plugins → Import from Repo:
+
+```text
+https://github.com/YSheldon/ai-productivity-plugins
+```
+
+Cursor parses `.cursor-plugin/marketplace.json`, then teammates install plugins from Customize. Enable Auto Refresh if the Cursor GitHub App is installed on the repository.
+
+CLI equivalent:
+
+```powershell
+agent plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins
+```
+
+### Local install
+
+Copy one plugin directory into Cursor's local plugin folder, then reload the window. Current Cursor builds reject symlinks that point outside `~/.cursor/plugins/local`.
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.cursor\plugins\local" | Out-Null
+Copy-Item -Recurse .\plugins\remotex "$env:USERPROFILE\.cursor\plugins\local\remotex"
+```
+
+After reload, confirm the plugin under Customize. RemoteX, GitLab, and mail keep using the same local credential files as Codex. Shared VM work still goes through the RemoteX queue; do not bypass it with a second direct SSH or RDP session.
+
 ## How Codex & GPT-5.6 were used
 
 Codex and GPT-5.6 were used as engineering assistants to inspect existing plugin contracts, implement narrowly scoped changes, generate and run tests, review security boundaries, and maintain the English documentation. The generated work was not accepted on model output alone: repository validators, unit tests, MCP protocol smoke tests, diff review, and secret-pattern scans remain required before publication. Runtime credentials and private infrastructure values were neither requested for documentation nor committed to this repository.
@@ -144,6 +182,18 @@ Codex and GPT-5.6 were used as engineering assistants to inspect existing plugin
 ## Install From GitHub
 
 Register the repository marketplace, then install each workflow plugin independently.
+
+Cursor (Teams / Enterprise Import from Repo, or CLI):
+
+```powershell
+agent plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins
+```
+
+Local Cursor copy for one plugin:
+
+```powershell
+Copy-Item -Recurse .\plugins\remotex "$env:USERPROFILE\.cursor\plugins\local\remotex"
+```
 
 Grok:
 

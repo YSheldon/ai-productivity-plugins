@@ -1,0 +1,25 @@
+{
+  "name": "rd-flywheel",
+  "displayName": "研发飞轮",
+  "version": "0.2.4",
+  "description": "Deterministic capability-gap governance through MCP, Skill, standalone CLI, and OS scheduling.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/rd-flywheel",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "rd-flywheel",
+    "engineering",
+    "capability-gap",
+    "production-evidence",
+    "mcp",
+    "cli",
+    "scheduler"
+  ],
+  "category": "Developer Tools",
+  "logo": "assets/rd-flywheel.svg",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

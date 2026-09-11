@@ -4,9 +4,9 @@
       "command": "py",
       "args": [
         "-3",
-        "./src/release_approval_verifier_mcp.py"
+        "${PLUGIN_ROOT}/src/release_approval_verifier_mcp.py"
       ],
-      "cwd": "."
+      "cwd": "${PLUGIN_ROOT}"
     }
   }
 }

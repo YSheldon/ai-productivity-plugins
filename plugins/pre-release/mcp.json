@@ -4,9 +4,9 @@
       "command": "py",
       "args": [
         "-3",
-        "./src/pre_release_mcp.py"
+        "${PLUGIN_ROOT}/src/pre_release_mcp.py"
       ],
-      "cwd": "."
+      "cwd": "${PLUGIN_ROOT}"
     }
   }
 }

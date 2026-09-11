@@ -3,9 +3,9 @@
     "wecom-codex-usage": {
       "command": "python3",
       "args": [
-        "./src/wecom_codex_usage_mcp.py"
+        "${PLUGIN_ROOT}/src/wecom_codex_usage_mcp.py"
       ],
-      "cwd": "."
+      "cwd": "${PLUGIN_ROOT}"
     }
   }
 }

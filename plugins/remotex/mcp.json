@@ -3,9 +3,9 @@
     "remotex": {
       "command": "node",
       "args": [
-        "./scripts/launch_remotex.mjs"
+        "${PLUGIN_ROOT}/scripts/launch_remotex.mjs"
       ],
-      "cwd": "."
+      "cwd": "${PLUGIN_ROOT}"
     }
   }
 }

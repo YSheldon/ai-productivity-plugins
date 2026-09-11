@@ -84,6 +84,32 @@ def test_cursor_plugin_manifests_reuse_codex_skills_and_mcp() -> None:
             assert "${PLUGIN_ROOT}" in serialized
             assert "./scripts/" not in serialized
             assert "./src/" not in serialized
+            for server_name, server in cursor_mcp["mcpServers"].items():
+                assert isinstance(server, dict)
+                assert server["command"] == "cmd.exe"
+                assert server["cwd"] == "${PLUGIN_ROOT}"
+                launcher_name = cursor_sync.cursor_mcp_launcher_name(
+                    server_name, len(cursor_mcp["mcpServers"])
+                )
+                assert server["args"] == [
+                    "/d",
+                    "/c",
+                    f"${{PLUGIN_ROOT}}/scripts/{launcher_name}",
+                ]
+                launcher = plugin_root / "scripts" / launcher_name
+                assert launcher.is_file()
+                launcher_text = launcher.read_text(encoding="utf-8")
+                assert r"%ProgramFiles%\nodejs" in launcher_text
+                assert r"%LocalAppData%\Programs\Python\Launcher" in launcher_text
+                assert "%ROOT%" in launcher_text
+                original = cursor_sync.load_json(plugin_root / ".mcp.json")
+                original_server = original["mcpServers"][server_name]
+                assert isinstance(original_server, dict)
+                original_command = original_server["command"]
+                if original_command in {"python3", "python"}:
+                    assert "py -3" in launcher_text
+                else:
+                    assert f"{original_command} " in launcher_text
         else:
             assert not (plugin_root / ".mcp.json").exists()
             assert not (plugin_root / "mcp.json").exists()
@@ -110,6 +136,17 @@ def test_codex_and_grok_indexes_are_unchanged_by_cursor_packaging() -> None:
         assert cursor_mcp == cursor_sync.cursor_mcp_config(
             cursor_sync.load_json(ROOT / "plugins" / name / ".mcp.json")
         )
+
+
+def test_cursor_mcp_launcher_maps_python3_to_py() -> None:
+    text = cursor_sync.render_cursor_mcp_launcher(
+        "python3", ["./src/wecom_codex_usage_mcp.py"]
+    )
+    assert text.startswith("@echo off")
+    assert r"%ProgramFiles%\nodejs" in text
+    assert "py -3" in text
+    assert r'"%ROOT%\src\wecom_codex_usage_mcp.py"' in text
+    assert "python3" not in text
 
 
 def test_readme_documents_cursor_install_without_replacing_codex() -> None:

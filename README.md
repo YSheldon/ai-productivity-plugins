@@ -6,7 +6,7 @@ This repository is a plugin marketplace maintained by Sheldon. Codex, Cursor, an
 - Cursor: `.cursor-plugin/marketplace.json` plus each plugin's `.cursor-plugin/plugin.json`
 - Grok: `.grok-plugin/marketplace.json` (currently `gitlab`, `remotex`, and `imap-smtp-mail`)
 
-Skills, scripts, and local credential files are shared. Codex MCP stays in `.mcp.json` with relative `./` paths. Cursor `mcp.json` starts `C:\Windows\System32\cmd.exe` plus `scripts/launch_cursor_mcp.cmd`. The wrapper restores Node and the Python launcher, then cds to the plugin root; do not set `cwd` to `${PLUGIN_ROOT}` because Cursor leaves that token unexpanded and Node reports it as spawn ENOENT. Regenerating Cursor manifests from the Codex index:
+Skills, scripts, and local credential files are shared. Codex MCP stays in `.mcp.json` with relative `./` paths. Cursor `mcp.json` starts `C:\Windows\System32\cmd.exe` plus `scripts/launch_cursor_mcp.cmd`, using `${CURSOR_PLUGIN_ROOT}` (not `${PLUGIN_ROOT}`) so Cursor can expand the plugin directory. The wrapper restores Node and the Python launcher, then cds via `%~dp0`. Regenerating Cursor manifests from the Codex index:
 
 ```powershell
 py -3 scripts/sync_cursor_plugin_manifests.py

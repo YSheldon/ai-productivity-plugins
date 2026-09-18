@@ -13,3 +13,6 @@ Fleet / product bot memories stay on their own remotes.
 - Nest remote is public: keep self backups operational but scrub private bot rosters, internal paths that leak customer work, and chat dumps that belong on private remotes.
 - Fleet dumps (MEMORY, redacted chats) go only to private remotes listed above.
 - Manual: 「存档」→ fleet remote(s); 「备份自己」→ nest; 「导入」defaults to named remote or asks.
+
+## Last verified
+- 2026-09-18 PT: GH_TOKEN Contents R/W confirmed for both remotes via API + git ls-remote.

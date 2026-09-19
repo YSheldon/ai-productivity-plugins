@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,11 @@ import ssh_vnext
 
 
 SCHEMA = "RemoteXHostKeys/v1"
+COMPATIBILITY_KEY_TYPES = "rsa,ecdsa,ed25519"
+_ALGORITHM_SCAN_ERROR = re.compile(
+    r"(?:no matching .*host key|host key algorithm|(?:unknown|unsupported) key type)",
+    re.IGNORECASE,
+)
 
 
 def registry_path() -> Path:
@@ -82,29 +88,24 @@ def _fingerprint(key_blob: str) -> str:
     return f"SHA256:{digest}"
 
 
-def _scan(cfg: dict[str, Any], timeout: int) -> tuple[list[dict[str, str]], list[str]]:
+def _scan_argv(executable: str, cfg: dict[str, Any], timeout: int, key_types: str | None) -> list[str]:
     argv = [
-        core.find_executable("ssh-keyscan"),
+        executable,
         "-T",
         str(timeout),
         "-p",
         str(cfg["port"]),
-        cfg["host"],
     ]
-    outcome = execution.run_process(
-        argv,
-        timeout=timeout + 2,
-        max_stdout_bytes=1024 * 1024,
-        max_stderr_bytes=1024 * 1024,
-        output_encoding="utf-8",
-    )
-    if outcome["returncode"] != 0 or not outcome["stdout"].strip():
-        raise core.ToolError(
-            f"Unable to scan SSH host keys: {outcome['stderr'] or outcome['stdout']}"
-        )
+    if key_types:
+        argv.extend(["-t", key_types])
+    argv.append(cfg["host"])
+    return argv
+
+
+def _parse_scan_output(stdout: str) -> tuple[list[dict[str, str]], list[str]]:
     keys: list[dict[str, str]] = []
     lines: list[str] = []
-    for raw_line in outcome["stdout"].splitlines():
+    for raw_line in stdout.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -119,10 +120,50 @@ def _scan(cfg: dict[str, Any], timeout: int) -> tuple[list[dict[str, str]], list
             }
         )
         lines.append(line)
-    if not keys:
-        raise core.ToolError("ssh-keyscan returned no host keys")
     keys.sort(key=lambda item: (item["algorithm"], item["fingerprint"]))
     return keys, lines
+
+
+def _scan(cfg: dict[str, Any], timeout: int) -> tuple[list[dict[str, str]], list[str]]:
+    executable = core.find_executable("ssh-keyscan")
+
+    def run(key_types: str | None) -> dict[str, Any]:
+        return execution.run_process(
+            _scan_argv(executable, cfg, timeout, key_types),
+            timeout=timeout + 2,
+            max_stdout_bytes=1024 * 1024,
+            max_stderr_bytes=1024 * 1024,
+            output_encoding="utf-8",
+        )
+
+    outcome = run(None)
+    stdout = str(outcome.get("stdout") or "")
+    keys, lines = _parse_scan_output(stdout)
+
+    # ssh-keyscan may return usable lines while reporting that another advertised
+    # server key type had no compatible local implementation. Keep complete keys;
+    # only retry with modern, non-DSA types when the first scan returned no key.
+    if keys and not outcome.get("timed_out"):
+        return keys, lines
+
+    diagnostic = str(outcome.get("stderr") or stdout)
+    if not keys and _ALGORITHM_SCAN_ERROR.search(diagnostic):
+        compatibility = run(COMPATIBILITY_KEY_TYPES)
+        compatibility_stdout = str(compatibility.get("stdout") or "")
+        compatibility_keys, compatibility_lines = _parse_scan_output(
+            compatibility_stdout
+        )
+        if compatibility_keys and not compatibility.get("timed_out"):
+            return compatibility_keys, compatibility_lines
+        diagnostic = str(
+            compatibility.get("stderr")
+            or compatibility_stdout
+            or diagnostic
+        )
+
+    if outcome.get("timed_out"):
+        diagnostic = diagnostic or "scan timed out"
+    raise core.ToolError(f"Unable to scan SSH host keys: {diagnostic}")
 
 
 def enforce(cfg: dict[str, Any], timeout: int) -> dict[str, Any]:

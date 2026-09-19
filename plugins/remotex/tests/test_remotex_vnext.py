@@ -869,6 +869,71 @@ class HostKeyAndTaskTests(unittest.TestCase):
         ).decode("ascii").rstrip("=")
         self.assertEqual(fingerprint, f"SHA256:{expected}")
 
+    def test_host_key_scan_keeps_complete_keys_from_partial_algorithm_failure(self) -> None:
+        blob = base64.b64encode(b"partial-algorithm-key").decode("ascii")
+        outcome = {
+            "returncode": 1,
+            "timed_out": False,
+            "stdout": f"lab.example ssh-ed25519 {blob}\n",
+            "stderr": "no matching host key type found for one advertised key\n",
+        }
+        cfg = {"host": "lab.example", "port": 22}
+        with mock.patch.object(
+            host_keys.execution, "run_process", return_value=outcome
+        ) as runner:
+            keys, lines = host_keys._scan(cfg, 5)
+
+        self.assertEqual([item["algorithm"] for item in keys], ["ssh-ed25519"])
+        self.assertEqual(lines, [f"lab.example ssh-ed25519 {blob}"])
+        self.assertEqual(runner.call_count, 1)
+
+    def test_host_key_scan_retries_modern_types_for_algorithm_failure_without_keys(
+        self,
+    ) -> None:
+        blob = base64.b64encode(b"compatibility-key").decode("ascii")
+        outcomes = [
+            {
+                "returncode": 1,
+                "timed_out": False,
+                "stdout": "",
+                "stderr": "no matching host key algorithm; server offered ssh-rsa\n",
+            },
+            {
+                "returncode": 0,
+                "timed_out": False,
+                "stdout": f"lab.example ssh-rsa {blob}\n",
+                "stderr": "",
+            },
+        ]
+        cfg = {"host": "lab.example", "port": 22}
+        with mock.patch.object(
+            host_keys.execution, "run_process", side_effect=outcomes
+        ) as runner:
+            keys, _ = host_keys._scan(cfg, 5)
+
+        self.assertEqual([item["algorithm"] for item in keys], ["ssh-rsa"])
+        self.assertEqual(runner.call_count, 2)
+        retry_argv = runner.call_args_list[1].args[0]
+        self.assertIn("-t", retry_argv)
+        self.assertIn("rsa,ecdsa,ed25519", retry_argv)
+        self.assertNotIn("dsa", retry_argv)
+
+    def test_host_key_scan_does_not_retry_non_algorithm_failures(self) -> None:
+        outcome = {
+            "returncode": 1,
+            "timed_out": False,
+            "stdout": "",
+            "stderr": "connect failed: connection refused\n",
+        }
+        cfg = {"host": "lab.example", "port": 22}
+        with mock.patch.object(
+            host_keys.execution, "run_process", return_value=outcome
+        ) as runner:
+            with self.assertRaisesRegex(core.ToolError, "connection refused"):
+                host_keys._scan(cfg, 5)
+
+        self.assertEqual(runner.call_count, 1)
+
     def test_managed_host_key_policy_blocks_unregistered_and_changed_keys(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             registry = Path(directory) / "host-keys.json"

@@ -1,5 +1,12 @@
 # RemoteX
 
+Version `0.5.3` hardens managed SSH host-key discovery on OpenSSH builds that
+report a partial host-key algorithm mismatch. Complete key lines are retained
+when the scanner exits non-zero, and an algorithm-only failure receives one
+fallback probe limited to `rsa,ecdsa,ed25519`. This affects fingerprint
+discovery only; RemoteX never enables deprecated DSA or weakens the SSH login
+host-key policy.
+
 Version `0.5.2` adds physical Windows host admission for HLK and other bare-metal
 hosts. It uses authenticated host identity plus a cooperative queue without
 requiring VMX or VMware profiles. Version `0.5.1` added a confirmed profile setup wizard that previews and creates
@@ -137,6 +144,13 @@ RemoteX rejects path-like, ambiguous, duplicate, or untracked snapshot names. Re
 ## SSH, RDP, And vSphere
 
 For host_key_policy=managed, call remotex_ssh_host_key_status before the first SSH connection. Verify the fingerprint out of band, then call remotex_ssh_host_key_approve with the exact value and confirm=true. A changed key additionally requires rotation=true; do not weaken strict host-key checking.
+
+The host-key scan tolerates a scanner warning when stdout contains complete
+public-key lines. If no key is returned and the diagnostic is an algorithm
+negotiation failure, it retries once with the modern `rsa,ecdsa,ed25519`
+types. A legacy-only endpoint still fails closed and must be upgraded or
+provided with a compatible local OpenSSH scanner; this does not change the
+algorithms allowed for an SSH connection.
 
 Use remotex_ssh_run_script for PowerShell, pwsh, cmd, sh, or bash. The fixed launcher is the only remote command placed in the SSH argument vector. Script text and resolved environment values travel through SSH stdin. remotex_ssh_copy_to and remotex_ssh_copy_from use SFTP first and return requested and actual paths, byte counts, hashes, and integrity state.
 

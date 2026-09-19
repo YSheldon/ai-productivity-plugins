@@ -115,6 +115,10 @@ Retry only with the same key and name. A same-key different-name request is a co
 ## SSH, RDP, And vSphere
 
 For host_key_policy=managed, call remotex_ssh_host_key_status before the first connection. Show fingerprints and require out-of-band verification before remotex_ssh_host_key_approve. Do not weaken strict host-key checking.
+The local scan preserves complete key lines even when `ssh-keyscan` reports a
+partial algorithm mismatch. If no key is returned for an algorithm-only error,
+it makes one modern `rsa,ecdsa,ed25519` discovery retry; it never enables DSA
+or changes the algorithms used by the subsequent SSH connection.
 
 remotex_ssh_test is public-key only. When it returns configured-public-key-rejected, use authentication.publicKey.fingerprint when available to authorize the configured key through an approved out-of-band channel, then rerun the test. Do not request or use a password fallback.
 

@@ -655,9 +655,9 @@ def _as_int(value: str, field: str) -> int:
 def _architecture(value: Any) -> str:
     raw = core._required_text(value, "guest architecture").casefold()
     normalized = raw.replace(" ", "").replace("-", "")
-    if normalized in {"x64", "amd64", "64bit"}:
+    if normalized in {"x64", "amd64", "64bit", "64\u4f4d"}:
         return "x64"
-    if normalized in {"x86", "i386", "i686", "32bit"}:
+    if normalized in {"x86", "i386", "i686", "32bit", "32\u4f4d"}:
         return "x86"
     raise core.ToolError(
         "target-readback-failed: guest architecture is not a recognized x86 or x64 value"

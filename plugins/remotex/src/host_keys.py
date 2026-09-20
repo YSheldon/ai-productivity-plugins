@@ -124,6 +124,13 @@ def _parse_scan_output(stdout: str) -> tuple[list[dict[str, str]], list[str]]:
     return keys, lines
 
 
+def _git_keyscan() -> str | None:
+    if os.name != "nt":
+        return None
+    candidate = Path("C:/Program Files/Git/usr/bin/ssh-keyscan.exe")
+    return str(candidate) if candidate.is_file() else None
+
+
 def _scan(cfg: dict[str, Any], timeout: int) -> tuple[list[dict[str, str]], list[str]]:
     executable = core.find_executable("ssh-keyscan")
 
@@ -147,6 +154,17 @@ def _scan(cfg: dict[str, Any], timeout: int) -> tuple[list[dict[str, str]], list
         return keys, lines
 
     diagnostic = str(outcome.get("stderr") or stdout)
+    # Host key types (-t) cannot repair a broken local KEX implementation.
+    if not keys and not outcome.get("timed_out") and "unsupported KEX method" in diagnostic:
+        fallback = _git_keyscan()
+        if fallback and os.path.normcase(fallback) != os.path.normcase(executable):
+            executable = fallback
+            compatibility = run(COMPATIBILITY_KEY_TYPES)
+            compatibility_stdout = str(compatibility.get("stdout") or "")
+            compatibility_keys, compatibility_lines = _parse_scan_output(compatibility_stdout)
+            if compatibility_keys and not compatibility.get("timed_out"):
+                return compatibility_keys, compatibility_lines
+            raise core.ToolError("Unable to scan SSH host keys with compatible local scanner")
     if not keys and _ALGORITHM_SCAN_ERROR.search(diagnostic):
         compatibility = run(COMPATIBILITY_KEY_TYPES)
         compatibility_stdout = str(compatibility.get("stdout") or "")

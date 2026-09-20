@@ -16,8 +16,10 @@ import remotex_core as core
 
 
 STATE_VERSION = 1
+SCOPED_STATE_VERSION = 2
 LOCK_TIMEOUT_SECONDS = 5.0
 MAX_RESOURCE_LENGTH = 512
+SERVICE_SEPARATOR = "::service::"
 REQUESTER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,127}$")
 SUPPORTED_KINDS = {"rdp", "vsphere", "vmware-workstation", "windows-guest"}
 _PROCESS_LOCKS: set[str] = set()
@@ -63,7 +65,27 @@ def _validate_resource(value: Any) -> str:
     resource = core._required_text(value, "queue resource")
     if len(resource) > MAX_RESOURCE_LENGTH:
         raise core.ToolError(f"queue resource exceeds {MAX_RESOURCE_LENGTH} characters")
+    if SERVICE_SEPARATOR in resource:
+        parts = resource.split(SERVICE_SEPARATOR)
+        if len(parts) != 2 or not parts[0] or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", parts[1]):
+            raise core.ToolError("Invalid service queue resource; use HOST::service::NAME")
     return resource
+
+
+def _scope_blockers(state: dict[str, Any], resource: str, *, waiting: bool = True) -> list[str]:
+    parent = resource.split(SERVICE_SEPARATOR)[0]
+    service = SERVICE_SEPARATOR in resource
+    blockers = []
+    for other, entry in state["resources"].items():
+        if other == resource:
+            continue
+        if service:
+            conflict = other == parent and (entry.get("owner") or (waiting and entry.get("waiters")))
+        else:
+            conflict = other.startswith(resource + SERVICE_SEPARATOR) and entry.get("owner")
+        if conflict:
+            blockers.append(other)
+    return sorted(blockers)
 
 
 def _timestamp() -> str:
@@ -96,7 +118,7 @@ def _load_state(path: Path) -> dict[str, Any]:
         raise core.ToolError(
             f"VM queue state at {path} is unreadable; refusing VM operations: {exc}"
         ) from exc
-    if not isinstance(payload, dict) or payload.get("version") != STATE_VERSION:
+    if not isinstance(payload, dict) or payload.get("version") not in (STATE_VERSION, SCOPED_STATE_VERSION):
         raise core.ToolError(
             f"VM queue state at {path} has an unsupported format; refusing VM operations"
         )
@@ -108,6 +130,8 @@ def _load_state(path: Path) -> dict[str, Any]:
     validated: dict[str, Any] = {}
     for resource, entry in resources.items():
         resource_name = _validate_resource(resource)
+        if SERVICE_SEPARATOR in resource_name and payload["version"] != SCOPED_STATE_VERSION:
+            raise core.ToolError("Service queue records require version 2; explicit migration required")
         if not isinstance(entry, dict):
             raise core.ToolError(
                 f"VM queue entry for {resource_name} is invalid; refusing VM operations"
@@ -137,10 +161,16 @@ def _load_state(path: Path) -> dict[str, Any]:
             "owner": validated_owner,
             "waiters": validated_waiters,
         }
-    return {"version": STATE_VERSION, "resources": validated}
+    result = {"version": payload["version"], "resources": validated}
+    for resource, entry in validated.items():
+        if entry["owner"] and _scope_blockers(result, resource, waiting=False):
+            raise core.ToolError("Conflicting host/service queue owners; refusing VM operations")
+    return result
 
 
 def _write_state(path: Path, state: dict[str, Any]) -> None:
+    if any(SERVICE_SEPARATOR in name for name in state["resources"]):
+        state["version"] = SCOPED_STATE_VERSION
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(
         f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -266,6 +296,7 @@ def _view(
     entry: dict[str, Any],
     *,
     requester: str | None = None,
+    state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     owner = entry.get("owner")
     waiters = list(entry.get("waiters", []))
@@ -307,6 +338,11 @@ def _view(
         result["prompt"] = (
             "This VM is unowned. Ask whether it should be claimed, then claim it explicitly."
         )
+    blockers = _scope_blockers(state, resource) if state is not None and not owner else []
+    result["blocking_resources"] = blockers
+    if blockers:
+        result["claim_available"] = False
+        result["prompt"] = "A host maintenance owner/waiter or active service blocks this claim; do not preempt."
     return result
 
 
@@ -315,7 +351,7 @@ def inspect(resource: Any, requester: Any = None) -> dict[str, Any]:
     requester_name = validate_requester(requester) if requester not in (None, "") else None
     with _locked_state() as (_, state):
         entry = state["resources"].get(resource_name, {"owner": None, "waiters": []})
-        return _view(resource_name, entry, requester=requester_name)
+        return _view(resource_name, entry, requester=requester_name, state=state)
 
 
 def request(resource: Any, requester: Any) -> dict[str, Any]:
@@ -335,8 +371,8 @@ def request(resource: Any, requester: Any) -> dict[str, Any]:
             status = "claim-available" if not owner and waiters[0]["requester"] == requester_name else "queued"
         if changed:
             _write_state(path, state)
-        result = _view(resource_name, entry, requester=requester_name)
-        result["request_status"] = status
+        result = _view(resource_name, entry, requester=requester_name, state=state)
+        result["request_status"] = "queued" if result["blocking_resources"] else status
         return result
 
 
@@ -360,7 +396,12 @@ def claim(resource: Any, requester: Any, confirm: Any) -> dict[str, Any]:
                 claim_status = "queued-owner-active"
         else:
             waiters = entry["waiters"]
-            if waiters and waiters[0]["requester"] != requester_name:
+            if _scope_blockers(state, resource_name):
+                if not any(waiter["requester"] == requester_name for waiter in waiters):
+                    waiters.append({"requester": requester_name, "requested_at": _timestamp()})
+                    changed = True
+                claim_status = "queued-scope-conflict"
+            elif waiters and waiters[0]["requester"] != requester_name:
                 if not any(waiter["requester"] == requester_name for waiter in waiters):
                     waiters.append({"requester": requester_name, "requested_at": _timestamp()})
                     changed = True
@@ -377,7 +418,7 @@ def claim(resource: Any, requester: Any, confirm: Any) -> dict[str, Any]:
                 claim_status = "claimed"
         if changed:
             _write_state(path, state)
-        result = _view(resource_name, entry, requester=requester_name)
+        result = _view(resource_name, entry, requester=requester_name, state=state)
         result["claim_status"] = claim_status
         result["claimed"] = bool(
             entry.get("owner") and entry["owner"]["requester"] == requester_name
@@ -396,7 +437,7 @@ def release(resource: Any, requester: Any) -> dict[str, Any]:
                 f"VM is owned by {owner['requester']}; {requester_name} cannot release or preempt it"
             )
         if not owner:
-            result = _view(resource_name, entry, requester=requester_name)
+            result = _view(resource_name, entry, requester=requester_name, state=state)
             result["release_status"] = "already-unowned"
             return result
         entry["owner"] = None
@@ -406,7 +447,7 @@ def release(resource: Any, requester: Any) -> dict[str, Any]:
         if not entry["waiters"]:
             state["resources"].pop(resource_name, None)
         _write_state(path, state)
-        result = _view(resource_name, entry, requester=requester_name)
+        result = _view(resource_name, entry, requester=requester_name, state=state)
         result["release_status"] = "released"
         if entry["waiters"]:
             result["action_required"] = "notify-first-waiter-to-confirm-claim"
@@ -432,7 +473,7 @@ def cancel(resource: Any, requester: Any) -> dict[str, Any]:
             cancel_status = "cancelled"
         else:
             cancel_status = "not-queued"
-        result = _view(resource_name, entry, requester=requester_name)
+        result = _view(resource_name, entry, requester=requester_name, state=state)
         result["cancel_status"] = cancel_status
         return result
 
@@ -451,7 +492,7 @@ def require_owner(resource: Any, requester: Any) -> dict[str, Any]:
             raise core.ToolError(
                 f"VM is owned by {owner['requester']}; {requester_name} must queue and cannot preempt it"
             )
-        return _view(resource_name, entry, requester=requester_name)
+        return _view(resource_name, entry, requester=requester_name, state=state)
 
 
 @contextmanager

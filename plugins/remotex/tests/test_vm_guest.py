@@ -31,6 +31,12 @@ def payload(result: dict[str, object]) -> dict[str, object]:
 
 
 class RemoteXVmGuestTests(unittest.TestCase):
+    def test_preflight_run_id_is_evaluated_before_passing_to_emitter(self) -> None:
+        value = "preflight-run-id-regression"
+        script = windows_guest._preflight_script(value, windows_guest._policy({}))
+        expression = windows_guest._ps_decode(value)
+        self.assertIn("Emit-RemoteX 'run_id' (" + expression + ")", script)
+
     def _environment(self, directory: str) -> tuple[dict[str, str], Path]:
         root = Path(directory)
         vmx = root / "windows.vmx"

@@ -592,7 +592,7 @@ $pendingPaths = @(
 foreach ($pendingPath in $pendingPaths) {{ if (Test-Path $pendingPath) {{ $pending = $true }} }}
 try {{ if ((Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -ErrorAction Stop).PendingFileRenameOperations) {{ $pending = $true }} }} catch {{}}
 $drive = Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='$($env:SystemDrive)'" -ErrorAction Stop
-Emit-RemoteX 'run_id' {_ps_decode(run_id)}
+Emit-RemoteX 'run_id' ({_ps_decode(run_id)})
 Emit-RemoteX 'machine_id' $env:COMPUTERNAME
 Emit-RemoteX 'boot_identity' $os.LastBootUpTime
 Emit-RemoteX 'os_version' $os.Version

@@ -1,7 +1,7 @@
 {
   "name": "remotex",
   "displayName": "RemoteX",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Operate remote systems with confirmed profile setup, physical Windows host admission, reusable credential aliases, secure local credential lifecycle tools, bounded execution, verified transfer, VM identity, snapshots, and cooperative leases.",
   "author": {
     "name": "Sheldon"

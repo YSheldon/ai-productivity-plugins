@@ -31,6 +31,15 @@ def payload(result: dict[str, object]) -> dict[str, object]:
 
 
 class RemoteXVmGuestTests(unittest.TestCase):
+    def test_localized_architecture_is_strictly_classified(self) -> None:
+        for value in ("64 \u4f4d", "64\u4f4d", "64-bit", "AMD64"):
+            self.assertEqual(windows_guest._architecture(value), "x64")
+        for value in ("32 \u4f4d", "32\u4f4d", "32-bit", "x86"):
+            self.assertEqual(windows_guest._architecture(value), "x86")
+        for value in ("ARM64", "64", "64 \u4f4d ARM", "unknown", ""):
+            with self.assertRaises(core.ToolError):
+                windows_guest._architecture(value)
+
     def test_preflight_run_id_is_evaluated_before_passing_to_emitter(self) -> None:
         value = "preflight-run-id-regression"
         script = windows_guest._preflight_script(value, windows_guest._policy({}))

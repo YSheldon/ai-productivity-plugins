@@ -229,7 +229,7 @@
       "name": "remotex",
       "source": "remotex",
       "description": "Operate remote systems with confirmed profile setup, physical Windows host admission, reusable credential aliases, secure local credential lifecycle tools, bounded execution, verified transfer, VM identity, snapshots, and cooperative leases.",
-      "version": "0.5.4",
+      "version": "0.5.5",
       "category": "Developer Tools",
       "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/remotex",
       "keywords": [

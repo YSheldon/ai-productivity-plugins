@@ -1,0 +1,25 @@
+{
+  "name": "world-time-reminder",
+  "version": "0.1.0",
+  "description": "A Windows taskbar Beijing clock with exact-hour first-duty reminders.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "世界时间提醒",
+    "shortDescription": "显示北京时间并在固定整点提醒休息",
+    "longDescription": "Build and install a single-instance Windows taskbar clock that displays Beijing time and shows an exact-hour first-duty rest reminder. The current-user task restarts the clock after logon or loss of the process without running an independent reminder program.",
+    "developerName": "Sheldon",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "安装世界时间提醒",
+      "检查世界时间提醒是否正在运行",
+      "卸载世界时间提醒"
+    ]
+  }
+}

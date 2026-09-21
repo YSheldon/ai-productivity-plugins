@@ -597,13 +597,22 @@ def _shell_payload(
 payload_file=$(mktemp "${{TMPDIR:-/tmp}}/remotex-payload.XXXXXX")
 script_file=$(mktemp "${{TMPDIR:-/tmp}}/remotex-script.XXXXXX")
 child_pid=
+watcher=
 cleanup() {{
-  if [ -n "${{child_pid:-}}" ] && kill -0 "$child_pid" 2>/dev/null; then
+  if [ -n "${{watcher:-}}" ]; then
+    kill -TERM "-$watcher" 2>/dev/null || kill -TERM "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+    watcher=
+  fi
+  if [ -n "${{child_pid:-}}" ]; then
     kill -TERM "-$child_pid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || true
+    kill -KILL "-$child_pid" 2>/dev/null || kill -KILL "$child_pid" 2>/dev/null || true
+    wait "$child_pid" 2>/dev/null || true
+    child_pid=
   fi
   rm -f "$payload_file" "$script_file"
 }}
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT HUP INT TERM PIPE
 cat >"$payload_file" <<'{marker}'
 {payload}
 {marker}
@@ -636,22 +645,26 @@ fi
 setsid "$interpreter" "$script_file" &
 child_pid=$!
 printf '{META_PREFIX}{{"remotePid":%s,"interpreter":"%s","processGroup":true}}\\n' "$child_pid" "$interpreter" >&2
-(
-  sleep "$wall_seconds"
-  if kill -0 "$child_pid" 2>/dev/null; then
-    kill -TERM "-$child_pid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || true
+# Give the watchdog its own group so cleanup also terminates its sleep child.
+setsid sh -c '
+  sleep "$1"
+  if kill -0 "$2" 2>/dev/null; then
+    kill -TERM "-$2" 2>/dev/null || kill -TERM "$2" 2>/dev/null || true
     sleep 2
-    kill -KILL "-$child_pid" 2>/dev/null || kill -KILL "$child_pid" 2>/dev/null || true
+    kill -KILL "-$2" 2>/dev/null || kill -KILL "$2" 2>/dev/null || true
   fi
-) &
+' remotex-watchdog "$wall_seconds" "$child_pid" </dev/null >/dev/null 2>&1 &
 watcher=$!
 set +e
 wait "$child_pid"
 status=$?
 set -e
+# The shell may exit on TERM while a descendant ignores it and holds the pipes.
+kill -KILL "-$child_pid" 2>/dev/null || true
 child_pid=
-kill "$watcher" 2>/dev/null || true
+kill -TERM "-$watcher" 2>/dev/null || kill -TERM "$watcher" 2>/dev/null || true
 wait "$watcher" 2>/dev/null || true
+watcher=
 exit "$status"
 """
     return wrapper.encode("utf-8")

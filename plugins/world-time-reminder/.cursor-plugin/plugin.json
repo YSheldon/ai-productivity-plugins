@@ -1,0 +1,15 @@
+{
+  "name": "world-time-reminder",
+  "displayName": "世界时间提醒",
+  "version": "0.1.1",
+  "description": "A Windows taskbar Beijing clock with exact-hour first-duty reminders.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/world-time-reminder",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [],
+  "category": "Productivity",
+  "skills": "./skills/"
+}

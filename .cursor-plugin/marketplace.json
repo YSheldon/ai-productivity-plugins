@@ -245,6 +245,15 @@
         "snapshot"
       ],
       "logo": "assets/remotex.svg"
+    },
+    {
+      "name": "world-time-reminder",
+      "source": "world-time-reminder",
+      "description": "A Windows taskbar Beijing clock with exact-hour first-duty reminders.",
+      "version": "0.1.1",
+      "category": "Productivity",
+      "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/world-time-reminder",
+      "keywords": []
     }
   ]
 }

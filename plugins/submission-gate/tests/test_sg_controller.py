@@ -22,9 +22,10 @@ def _load_module():
 
 
 class FakeMailGateway:
-    def __init__(self, body_text: str, request_digest: str) -> None:
+    def __init__(self, body_text: str, request_digest: str, *, uidvalidity: str = "9") -> None:
         self.body_text = body_text
         self.request_digest = request_digest
+        self.uidvalidity = uidvalidity
         self.sent: list[dict[str, object]] = []
 
     def list_accounts(self):
@@ -36,7 +37,7 @@ class FakeMailGateway:
     def read_message(self, _payload):
         return {
             "uid": "42",
-            "uidvalidity": "9",
+            "uidvalidity": self.uidvalidity,
             "message_id": "<submission@example.com>",
             "body_text": self.body_text,
             "from": [{"email": "submitter@example.com"}],
@@ -178,6 +179,34 @@ def test_run_once_scans_mail_idempotently_and_passes_submission(tmp_path: Path) 
     )
     assert gate_event["workflow"]["manifest_s"] == gate_event["gate_evidence"]["manifest_s"]
     assert gate_event["workflow"]["artifacts"] == gate_event["workflow"]["manifest_s"]["artifacts"]
+    assert gate_event["intake"]["source_transport"] == {
+        "uidvalidity": "9",
+        "uid": "42",
+        "message_id": "<submission@example.com>",
+        "raw_headers_sha256": "3" * 64,
+        "unique_key": "9|42|<submission@example.com>|" + ("3" * 64),
+    }
+
+
+def test_run_once_blocks_mail_without_uidvalidity_before_gate_execution(tmp_path: Path) -> None:
+    module = _load_module()
+    request, body_text = _signed_body(module)
+    mail = FakeMailGateway(body_text, request["request_digest"], uidvalidity="")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_base_config(tmp_path)), encoding="utf-8")
+    controller = module.SubmissionGateController(
+        config_path,
+        mail_gateway=mail,
+        gate_adapter=FakeGateAdapter(),
+        environ={"TEST_SUBMISSION_HMAC_KEY": "tttttttttttttttttttttttttttttttt"},
+    )
+
+    result = controller.run_once()
+
+    assert result["passed"] == 0
+    assert result["blocked"] == 1
+    assert mail.sent[0]["subject"].startswith("【提测阻断】")
+    assert not (tmp_path / "events" / "event-1" / "round-1" / "gate.json").exists()
 
 
 def test_run_once_is_idempotent_across_restart_and_zero_checks_block(tmp_path: Path) -> None:

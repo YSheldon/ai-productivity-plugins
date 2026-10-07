@@ -1,5 +1,13 @@
 # RemoteX
 
+Version `0.5.6` adds a fixed-purpose service-key deployment tool for the
+`lite-cloudquery` management-center key set. It extracts only the two
+allowlisted PEM entries from a local ZIP, uploads them through SFTP, and
+verifies a root-owned `0700` directory with root-owned `0600` regular files.
+It refuses to overwrite an existing destination file; private-key contents never
+enter MCP arguments, commands, logs, or results. On Windows, the archive must
+be under the approved local root `C:\Work\AI\CloudQuery`.
+
 Version `0.5.3` hardens managed SSH host-key discovery on OpenSSH builds that
 report a partial host-key algorithm mismatch. Complete key lines are retained
 when the scanner exits non-zero, and an algorithm-only failure receives one

@@ -22,7 +22,7 @@ class MCPProtocolTests(unittest.TestCase):
             }
         )
         self.assertEqual(response["result"]["serverInfo"]["name"], "remotex")
-        self.assertEqual(response["result"]["serverInfo"]["version"], "0.5.5")
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.5.6")
 
     def test_tools_list_has_all_adapters(self) -> None:
         response = remotex_mcp.handle_request(
@@ -52,6 +52,7 @@ class MCPProtocolTests(unittest.TestCase):
         self.assertIn("remotex_credential_setup", names)
         self.assertIn("remotex_credential_delete", names)
         self.assertIn("remotex_profile_setup", names)
+        self.assertIn("remotex_ssh_service_key_deploy", names)
         self.assertEqual(names, set(remotex_mcp.TOOLS))
 
     def test_side_effectful_vm_tools_require_requester(self) -> None:
@@ -79,6 +80,25 @@ class MCPProtocolTests(unittest.TestCase):
             "remotex_windows_guest_reboot",
         ):
             self.assertIn("confirm", tools[name]["inputSchema"]["required"])
+
+    def test_service_key_deploy_is_fixed_scope_and_confirmation_gated(self) -> None:
+        response = remotex_mcp.handle_request(
+            {"jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {}}
+        )
+        tool = next(
+            item
+            for item in response["result"]["tools"]
+            if item["name"] == "remotex_ssh_service_key_deploy"
+        )
+        schema = tool["inputSchema"]
+        self.assertEqual(
+            set(schema["required"]), {"archive_path", "requester", "confirm"}
+        )
+        self.assertTrue(
+            {key.casefold() for key in schema["properties"]}.isdisjoint(
+                {"private_key", "private_key_pem", "password", "token", "secret"}
+            )
+        )
 
     def test_unknown_tool_is_a_tool_error(self) -> None:
         response = remotex_mcp.handle_request(

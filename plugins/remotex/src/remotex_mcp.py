@@ -13,6 +13,7 @@ import profile_tools
 import queue_leases
 import rdp_adapter
 import remotex_core as core
+import service_keys
 import ssh_vnext
 import task_manager
 import vm_queue
@@ -22,7 +23,7 @@ import windows_guest
 
 
 SERVER_NAME = "remotex"
-SERVER_VERSION = "0.5.5"
+SERVER_VERSION = "0.5.6"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 queue_leases.install_hooks()
 
@@ -220,6 +221,7 @@ TOOLS: dict[str, dict[str, Any]] = {
     **profile_tools.TOOLS,
     **credential_tools.TOOLS,
     **ssh_vnext.TOOLS,
+    **service_keys.TOOLS,
     **task_manager.TOOLS,
     **host_keys.TOOLS,
     **rdp_adapter.TOOLS,

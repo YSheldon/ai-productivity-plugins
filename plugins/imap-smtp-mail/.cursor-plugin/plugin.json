@@ -1,0 +1,24 @@
+{
+  "name": "imap-smtp-mail",
+  "displayName": "IMAP/SMTP 邮箱",
+  "version": "0.3.3",
+  "description": "Read, search, summarize, and send email through IMAP/SMTP providers.",
+  "author": {
+    "name": "gzlicanyi; adapted by Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/imap-smtp-mail",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "email",
+    "imap",
+    "smtp",
+    "qq-mail",
+    "netease-mail",
+    "mail"
+  ],
+  "category": "Productivity",
+  "logo": "assets/mail.svg",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

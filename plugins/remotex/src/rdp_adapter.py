@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import credential_store
 import remotex_core as core
 import vm_identity
 import vm_queue
@@ -15,12 +16,22 @@ import windows_credentials
 DEFAULT_PORT = 3389
 
 
-def _credential_target(raw: dict[str, Any], host: str) -> str:
-    credential = raw.get("credential")
-    if not isinstance(credential, dict):
-        raise core.ToolError(
-            "RDP profile credential must reference Windows Credential Manager"
-        )
+def _credential_reference(
+    name: str,
+    raw: dict[str, Any],
+    bundle: core.ConfigBundle,
+) -> credential_store.ResolvedCredential:
+    return credential_store.resolve_profile_reference(bundle, name, raw, "rdp")
+
+
+def _credential_target(
+    raw: dict[str, Any],
+    host: str,
+    name: str,
+    bundle: core.ConfigBundle,
+) -> tuple[str, credential_store.ResolvedCredential]:
+    resolved = _credential_reference(name, raw, bundle)
+    credential = resolved.reference_dict()
     source = str(credential.get("source") or "").strip().lower()
     if source != "windows-credential-manager":
         raise core.ToolError(
@@ -31,12 +42,15 @@ def _credential_target(raw: dict[str, Any], host: str) -> str:
     )
     if not target.upper().startswith("TERMSRV/"):
         raise core.ToolError("RDP credential.target must start with TERMSRV/")
-    return target
+    return target, resolved
 
 
 def connection_config(profile: Any = None) -> dict[str, Any]:
     name, raw, bundle = core.select_profile("rdp", profile)
     host = core.validate_host(raw.get("host"))
+    credential_target, resolved_credential = _credential_target(
+        raw, host, name, bundle
+    )
     rdp_file: Path | None = None
     if raw.get("rdp_file"):
         rdp_file = core.expand_path(raw.get("rdp_file"), "rdp_file")
@@ -60,14 +74,27 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
         require_identity=False,
         require_guest_profile=False,
     )
-    bound_vmx_path = vm_identity.verify_bound_vmx(identity, bundle) if identity else None
+    queue_resource = (
+        identity.get("queueResource")
+        if identity is not None
+        else vm_queue.resolve_profile_resource(name)["resource"]
+    )
+    bound_vmx_path = (
+        vm_identity.verify_bound_vmx(identity, bundle)
+        if identity and identity.get("identityKind") == "vmx"
+        else None
+    )
     return {
         "profile": name,
         "raw": raw,
         "config_source": bundle.source,
         "host": host,
         "port": core.validate_port(raw.get("port"), DEFAULT_PORT),
-        "credential_target": _credential_target(raw, host),
+        "credential_target": credential_target,
+        "credential_alias": resolved_credential.alias,
+        "configuration_version": resolved_credential.configuration_version,
+        "configurationSha256": core.config_fingerprint(bundle.data),
+        "queueResource": queue_resource,
         "rdp_file": rdp_file,
         "admin": core.as_bool(raw.get("admin"), False),
         "fullscreen": core.as_bool(raw.get("fullscreen"), False),
@@ -93,9 +120,12 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
     try:
         host = core.validate_host(raw.get("host"))
         core.validate_port(raw.get("port"), DEFAULT_PORT)
-        target = _credential_target(raw, host)
+        bundle = core.load_config()
+        target, resolved_credential = _credential_target(raw, host, name, bundle)
         result["credential_source"] = "windows-credential-manager"
         result["credential_target"] = target
+        result["credential_alias"] = resolved_credential.alias
+        result["configuration_version"] = resolved_credential.configuration_version
         result["credential_present"] = _credential_present(target)
         if not result["credential_present"]:
             errors.append(f"Windows Credential Manager entry is missing: {target}")
@@ -106,9 +136,12 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
                 errors.append("rdp_file does not exist")
         identity = vm_identity.status_for_profile(name, raw)
         result["vmIdentity"] = identity
-        if raw.get("vm_identity") not in (None, "") and not identity.get("ready"):
+        if (
+            raw.get("vm_identity") not in (None, "")
+            or raw.get("host_identity") not in (None, "")
+        ) and not identity.get("ready"):
             errors.append(str(identity.get("error") or "VM identity binding is invalid"))
-        elif identity.get("ready"):
+        elif identity.get("ready") and identity.get("identityKind") == "vmx":
             result["bound_vmx_path"] = str(vm_identity.verify_bound_vmx(identity))
     except (core.ToolError, ValueError) as exc:
         errors.append(str(exc))
@@ -179,8 +212,12 @@ def open_connection(args: dict[str, Any]) -> dict[str, Any]:
         )
     else:
         popen_args["start_new_session"] = True
+    owner_kwargs: dict[str, Any] = {
+        "expected_resource": cfg.get("queueResource"),
+        "expected_config_sha256": cfg.get("configurationSha256"),
+    }
     with vm_queue.profile_owner_operation(
-        cfg["profile"], args.get("requester")
+        cfg["profile"], args.get("requester"), **owner_kwargs
     ) as ownership:
         try:
             process = subprocess.Popen(rdp_arguments(cfg), **popen_args)

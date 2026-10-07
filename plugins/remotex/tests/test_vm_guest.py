@@ -31,6 +31,21 @@ def payload(result: dict[str, object]) -> dict[str, object]:
 
 
 class RemoteXVmGuestTests(unittest.TestCase):
+    def test_localized_architecture_is_strictly_classified(self) -> None:
+        for value in ("64 \u4f4d", "64\u4f4d", "64-bit", "AMD64"):
+            self.assertEqual(windows_guest._architecture(value), "x64")
+        for value in ("32 \u4f4d", "32\u4f4d", "32-bit", "x86"):
+            self.assertEqual(windows_guest._architecture(value), "x86")
+        for value in ("ARM64", "64", "64 \u4f4d ARM", "unknown", ""):
+            with self.assertRaises(core.ToolError):
+                windows_guest._architecture(value)
+
+    def test_preflight_run_id_is_evaluated_before_passing_to_emitter(self) -> None:
+        value = "preflight-run-id-regression"
+        script = windows_guest._preflight_script(value, windows_guest._policy({}))
+        expression = windows_guest._ps_decode(value)
+        self.assertIn("Emit-RemoteX 'run_id' (" + expression + ")", script)
+
     def _environment(self, directory: str) -> tuple[dict[str, str], Path]:
         root = Path(directory)
         vmx = root / "windows.vmx"
@@ -99,6 +114,47 @@ class RemoteXVmGuestTests(unittest.TestCase):
     def _claim(self, resource: str, requester: str) -> None:
         vm_queue.claim(resource, requester, True)
         queue_leases._set_lease(resource, requester, 3600, "test-lease")
+
+    def test_version_two_guest_alias_reaches_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            environment, _ = self._environment(directory)
+            config_path = Path(environment["REMOTEX_CONFIG"])
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["version"] = 2
+            config["credentials"] = {
+                "rdp-admin": {
+                    "source": "windows-credential-manager",
+                    "target": "TERMSRV/windows.example",
+                },
+                "guest-admin": {
+                    "source": "windows-credential-manager",
+                    "target": "RemoteX/guest",
+                },
+            }
+            config["profiles"]["rdp"].pop("credential")
+            config["profiles"]["rdp"]["credential_ref"] = "rdp-admin"
+            config["profiles"]["guest"].pop("credential")
+            config["profiles"]["guest"]["credential_ref"] = "guest-admin"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with mock.patch.dict(os.environ, environment, clear=True):
+                with mock.patch.object(
+                    core,
+                    "credential_status",
+                    return_value={
+                        "source": "windows-credential-manager",
+                        "ready": True,
+                    },
+                ):
+                    cfg = windows_guest.connection_config("guest")
+        self.assertEqual(cfg["credentialAlias"], "guest-admin")
+        self.assertEqual(cfg["configurationVersion"], 2)
+        self.assertEqual(
+            cfg["credential"],
+            {
+                "source": "windows-credential-manager",
+                "target": "RemoteX/guest",
+            },
+        )
 
     def test_composite_identity_binds_rdp_guest_vmx_and_one_queue(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

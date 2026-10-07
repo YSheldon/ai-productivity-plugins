@@ -32,6 +32,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _EVENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,120}$")
 _REVISION_RE = re.compile(r"^[1-9]\d*$")
+_MESSAGE_ID_RE = re.compile(r"^<[^<>\s@]+@[^<>\s@]+>$")
 _CANONICAL_SUBJECT_RE = re.compile(
     r"^【提测】(?P<task>.+)-(?P<module>kernel|client|server|内核|客户端|服务端)-(?P<date>\d{4}-\d{2}-\d{2})$",
     re.IGNORECASE,
@@ -752,10 +753,28 @@ class SubmissionGateController:
                 raise SubmissionGateError("INVALID_REQUEST", "SVN source locator is required")
             if not _REVISION_RE.fullmatch(str(result.get("revision") or "")):
                 raise SubmissionGateError("INVALID_REQUEST", "SVN fixed numeric revision is required")
+        uidvalidity = str(message.get("uidvalidity") or "").strip()
+        uid = str(message.get("uid") or "").strip()
+        message_id = str(message.get("message_id") or "").strip()
+        raw_headers_sha256 = str(
+            (message.get("evidence") or {}).get("raw_headers_sha256") or ""
+        ).strip().lower()
+        if not _REVISION_RE.fullmatch(uidvalidity):
+            raise SubmissionGateError("MAIL_EVIDENCE_INVALID", "IMAP UIDVALIDITY is required")
+        if not _REVISION_RE.fullmatch(uid):
+            raise SubmissionGateError("MAIL_EVIDENCE_INVALID", "IMAP UID is required")
+        if not _MESSAGE_ID_RE.fullmatch(message_id):
+            raise SubmissionGateError("MAIL_EVIDENCE_INVALID", "single RFC Message-ID is required")
+        if not _SHA256_RE.fullmatch(raw_headers_sha256):
+            raise SubmissionGateError("MAIL_EVIDENCE_INVALID", "raw mail header SHA-256 is required")
+        expected_unique_key = "|".join((uidvalidity, uid, message_id, raw_headers_sha256))
+        if unique_key != expected_unique_key:
+            raise SubmissionGateError("MAIL_EVIDENCE_INVALID", "mail transport binding is inconsistent")
         result["source_transport"] = {
-            "uid": str(message.get("uid") or ""),
-            "message_id": str(message.get("message_id") or ""),
-            "raw_headers_sha256": str((message.get("evidence") or {}).get("raw_headers_sha256") or ""),
+            "uidvalidity": uidvalidity,
+            "uid": uid,
+            "message_id": message_id,
+            "raw_headers_sha256": raw_headers_sha256,
             "unique_key": unique_key,
         }
         result["request_digest"] = _sha256_json({key: value for key, value in result.items() if key != "request_digest"})

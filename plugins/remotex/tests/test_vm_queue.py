@@ -112,6 +112,28 @@ class VMQueueTests(unittest.TestCase):
         self.assertEqual(rdp["resource"], workstation["resource"])
         self.assertEqual(vsphere["resource"], "lab:esxi:/Datacenter/vm/windows")
 
+    def test_profile_owner_operation_rejects_config_changed_after_connection_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            environment = self._environment(directory)
+            with mock.patch.dict(os.environ, environment, clear=True):
+                bundle = core.load_config()
+                expected_sha256 = core.config_fingerprint(bundle.data)
+                config_path = Path(environment["REMOTEX_CONFIG"])
+                changed = json.loads(config_path.read_text(encoding="utf-8"))
+                changed["profiles"]["rdp-vm"]["queue_resource"] = "lab:changed"
+                config_path.write_text(json.dumps(changed), encoding="utf-8")
+                with self.assertRaisesRegex(
+                    core.ToolError,
+                    "configuration changed before the operation",
+                ):
+                    with vm_queue.profile_owner_operation(
+                        "rdp-vm",
+                        "tester",
+                        expected_resource="lab:windows",
+                        expected_config_sha256=expected_sha256,
+                    ):
+                        self.fail("changed configuration was accepted")
+
     def test_vsphere_resource_rejects_url_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             environment = self._environment(directory)

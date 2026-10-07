@@ -1,0 +1,26 @@
+{
+  "name": "product-release-gate",
+  "displayName": "Product Release Gate",
+  "version": "0.5.2",
+  "description": "Create verifiable product-material gates and authorized phased production releases.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/product-release-gate",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "release-gate",
+    "submission",
+    "artifact",
+    "signing",
+    "testing",
+    "release",
+    "deployment",
+    "rollback"
+  ],
+  "category": "Developer Tools",
+  "logo": "assets/product-release-gate.svg",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

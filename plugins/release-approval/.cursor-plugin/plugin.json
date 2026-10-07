@@ -1,0 +1,23 @@
+{
+  "name": "release-approval",
+  "displayName": "Release Approval",
+  "version": "0.2.7",
+  "description": "Operate one role-bound release approval controller through MCP, Skill, standalone CLI, and unattended OS scheduling.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/release-approval",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "release-approval",
+    "approval",
+    "mail",
+    "automation",
+    "audit"
+  ],
+  "category": "Developer Tools",
+  "logo": "assets/release-approval.svg",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

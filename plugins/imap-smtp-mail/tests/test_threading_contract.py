@@ -69,6 +69,27 @@ class FakeImap:
         self.logged_out = True
 
 
+class FakeImapSeparateUidValidity(FakeImap):
+    def select(self, mailbox: str, readonly: bool = True) -> tuple[str, list[bytes]]:
+        assert mailbox == "INBOX"
+        assert readonly is True
+        return "OK", [b"1"]
+
+    def response(self, code: str) -> tuple[str, list[bytes]]:
+        assert code == "UIDVALIDITY"
+        return "UIDVALIDITY", [b"777"]
+
+
+def test_select_mailbox_reads_uidvalidity_from_separate_imap_response() -> None:
+    _message, raw_headers, raw = load_fixture_message()
+    fake_imap = FakeImapSeparateUidValidity(raw, raw_headers)
+
+    count, uidvalidity = MODULE.select_mailbox_info(fake_imap, "INBOX")
+
+    assert count == 1
+    assert uidvalidity == "777"
+
+
 def test_message_evidence_extracts_authenticated_thread_fields() -> None:
     message, raw_headers, _raw = load_fixture_message()
 

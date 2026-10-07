@@ -1,0 +1,25 @@
+{
+  "name": "gitlab",
+  "displayName": "GitLab",
+  "version": "0.4.0",
+  "description": "Operate GitLab workflows, analyze CI, enforce MR approval scope binding, and securely provision a dedicated Windows project Runner from Codex.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/gitlab",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "gitlab",
+    "merge-request",
+    "code-review",
+    "issues",
+    "ci",
+    "pipelines",
+    "windows-runner"
+  ],
+  "category": "Developer Tools",
+  "logo": "assets/gitlab.svg",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

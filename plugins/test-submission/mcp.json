@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "test-submission": {
+      "command": "C:\\Windows\\System32\\cmd.exe",
+      "args": [
+        "/d",
+        "/c",
+        "${CURSOR_PLUGIN_ROOT}/scripts/launch_cursor_mcp.cmd"
+      ]
+    }
+  }
+}

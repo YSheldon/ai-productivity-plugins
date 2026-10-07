@@ -7,10 +7,13 @@ import traceback
 from typing import Any, Callable
 
 import audit_log
+import credential_tools
 import host_keys
+import profile_tools
 import queue_leases
 import rdp_adapter
 import remotex_core as core
+import service_keys
 import ssh_vnext
 import task_manager
 import vm_queue
@@ -20,7 +23,7 @@ import windows_guest
 
 
 SERVER_NAME = "remotex"
-SERVER_VERSION = "0.4.1"
+SERVER_VERSION = "0.5.6"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 queue_leases.install_hooks()
 
@@ -163,6 +166,12 @@ def status(args: dict[str, Any]) -> dict[str, Any]:
             "source": bundle.source,
             "exists": bundle.exists,
             "legacy_ssh_compatibility": bundle.source == "legacy-ssh",
+            "version": bundle.data.get("version", 1),
+            "migrationRecommended": bool(
+                bundle.exists
+                and bundle.source == "remotex"
+                and bundle.data.get("version", 1) == 1
+            ),
         },
         "defaults": bundle.data["defaults"],
         "vm_queue": queue_health,
@@ -209,7 +218,10 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
         "handler": status,
     },
+    **profile_tools.TOOLS,
+    **credential_tools.TOOLS,
     **ssh_vnext.TOOLS,
+    **service_keys.TOOLS,
     **task_manager.TOOLS,
     **host_keys.TOOLS,
     **rdp_adapter.TOOLS,

@@ -1,0 +1,22 @@
+{
+  "name": "lark-cli",
+  "displayName": "飞书 / Lark CLI",
+  "version": "0.1.0",
+  "description": "Bundle existing Lark/Feishu lark-cli skills for Codex.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/lark-cli",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "lark",
+    "feishu",
+    "cli",
+    "docs",
+    "wiki"
+  ],
+  "category": "Productivity",
+  "logo": "assets/lark-cli.svg",
+  "skills": "./skills/"
+}

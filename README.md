@@ -1,8 +1,16 @@
 # AI Productivity Plugins
 
-This repository is a local Codex plugin marketplace maintained by Sheldon. The marketplace entrypoint is:
+This repository is a plugin marketplace maintained by Sheldon. Codex, Cursor, and Grok share the plugin directories and keep separate indexes:
 
-- `.agents/plugins/marketplace.json`
+- Codex: `.agents/plugins/marketplace.json` plus each plugin's `.codex-plugin/plugin.json`
+- Cursor: `.cursor-plugin/marketplace.json` plus each plugin's `.cursor-plugin/plugin.json`
+- Grok: `.grok-plugin/marketplace.json` (currently `gitlab`, `remotex`, and `imap-smtp-mail`)
+
+Skills, scripts, and local credential files are shared. Codex MCP stays in `.mcp.json` with relative `./` paths. Cursor `mcp.json` starts `C:\Windows\System32\cmd.exe` plus `scripts/launch_cursor_mcp.cmd`, using `${CURSOR_PLUGIN_ROOT}` (not `${PLUGIN_ROOT}`) so Cursor can expand the plugin directory. The wrapper restores Node and the Python launcher, then cds via `%~dp0`. Regenerating Cursor manifests from the Codex index:
+
+```powershell
+py -3 scripts/sync_cursor_plugin_manifests.py
+```
 
 ## Included Plugins
 
@@ -15,10 +23,30 @@ This repository is a local Codex plugin marketplace maintained by Sheldon. The m
 - `pre-release`: a tester-side role plugin that records one final `PASS` or `FAIL`, builds `Manifest-R` through the locked shared gate, and sends release-gate-check mail.
 - `release-gate`: a service-side role plugin that scans signed `PRERELEASE_REQUEST` mail, runs release-gate checks through the locked shared gate, and emits release-request or blocking notices while stopping at `RELEASE_READY_NOTIFIED`.
 - `rd-flywheel`: an evidence-first R&D workflow skill for turning new requirements, projects, and tasks into real production-proven capability, with versioned visual decision gates and post-production experience harvest.
-- `remotex`: a credential-reference-first remote operations plugin for SSH, Windows RDP, authenticated Windows guests, vSphere/ESXi, and VMware Workstation. It adds bounded Windows guest execution, hash-verified transfer, preflight-bound VMware snapshots, composite VM identity, managed SSH host keys, hash-linked local audit records, and renewable FIFO leases shared across every access path to the same VM.
+- `remotex`: a credential-reference-first remote operations plugin for SSH, Windows RDP, authenticated Windows guests, vSphere/ESXi, and VMware Workstation. It adds reusable credential aliases, batch missing-reference checks, a local secure setup/rotation prompt, confirmed deletion, secret-free asynchronous tasks, bounded guest execution, verified transfer, VM identity, snapshots, audit records, and renewable FIFO leases.
 - `wecom-codex-usage`: a WeCom / Enterprise WeChat plugin packaged and maintained by Sheldon. It connects to a self-built WeCom internal application for message delivery and summarizes local Codex usage signals from the current machine's Codex config and logs.
 - `daily-vuln-bulletin-email`: a verified daily vulnerability bulletin workflow. It uses live Feishu subscribers, severity-safe text/HTML content, exact MIME Subject and Message-ID readback, and recipient-header privacy checks while reusing the existing Lark and IMAP/SMTP plugins.
 - `world-time-reminder`: a Windows taskbar Beijing clock with exact-hour first-duty reminders, a `Y` confirmation path, and 16-minute automatic close.
+
+## Use In Grok
+
+Register the marketplace, then install only the Grok-indexed plugins. Grok does not read the Codex index.
+
+```powershell
+grok plugin marketplace add YSheldon/ai-productivity-plugins
+grok plugin install gitlab --trust
+grok plugin install remotex --trust
+grok plugin install imap-smtp-mail --trust
+```
+
+Enable the plugins in `~/.grok/config.toml` if they stay off after install:
+
+```toml
+[plugins]
+enabled = ["gitlab", "remotex", "imap-smtp-mail"]
+```
+
+GitLab, RemoteX, and mail keep using the same local credential files as Codex. Do not copy tokens, mailbox passwords, or host paths into the repository. The GitHub Copilot MCP used by Codex (`github@openai-curated`) is not part of this marketplace.
 
 ## Use In Codex
 
@@ -105,7 +133,7 @@ Confirm this project's design through the visual decision gate
 
 The skill uses local Visual Companion click events as versioned design-decision evidence. Those clicks never replace Feishu approval, protected-branch policy, release authorization, or deterministic production gates.
 
-After installing RemoteX, copy `plugins/remotex/config/config.example.json` to `~/.config/remotex/config.json` and replace the example endpoints with local profile values. Keep only credential references in this file. Set `platform` and host-key policy for SSH. Profiles that represent one Windows VM must share one `vm_identity` and one `queue_resource` across SSH, RDP, Windows guest, and VMware Workstation views.
+After installing RemoteX, copy `plugins/remotex/config/config.example.json` to `~/.config/remotex/config.json` and replace the example endpoints with local profile values. Keep only top-level credential aliases and profile `credential_ref` selectors in this file. Use `remotex_credential_doctor` and the local secure setup prompt rather than putting values in chat or commands. Set `platform` and host-key policy for SSH. Profiles that represent one Windows VM must share one `vm_identity` and one `queue_resource` across SSH, RDP, Windows guest, and VMware Workstation views.
 
 Run `remotex_status` with the selected profile before connecting. It separates selected-profile readiness from aggregate status, capability matrix, missing clients, credential references, host-key governance, identity binding, and local queue state. Queue claims use bounded renewable leases; expiry and explicit stale recovery release ownership but never silently assign a waiter. Use the Windows guest preflight receipt before VMware snapshot mutations. The old SSH config remains readable in compatibility mode when no RemoteX config exists. See `plugins/remotex/README.md` for execution limits, verified transfer, snapshots, audit behavior, and safety boundaries.
 
@@ -117,13 +145,67 @@ Open the WeCom configuration wizard
 
 The wizard stores `corp_id`, app `corp_secret`, and `agent_id` in `~/.wecom-codex-usage/config.json`. The plugin can then test the connection, send WeCom app messages, and build a local Codex usage summary from `~/.codex/config.toml` plus recent `~/.codex/log/codex-tui.log` token usage lines. It does not claim to read a stable hosted profile-usage API.
 
+## Use In Cursor
+
+Cursor does not load Codex plugin marketplaces. It reads `.cursor-plugin/marketplace.json` and installs each plugin that has `.cursor-plugin/plugin.json`. The `ssh` plugin stays Codex-only (`NOT_AVAILABLE`) and is omitted from the Cursor index.
+
+### Team marketplace
+
+On Teams or Enterprise, import this GitHub repository from Dashboard → Plugins → Import from Repo:
+
+```text
+https://github.com/YSheldon/ai-productivity-plugins
+```
+
+Cursor parses `.cursor-plugin/marketplace.json`, then teammates install plugins from Customize. Enable Auto Refresh if the Cursor GitHub App is installed on the repository.
+
+CLI equivalent:
+
+```powershell
+agent plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins
+```
+
+### Local install
+
+Copy one plugin directory into Cursor's local plugin folder, then reload the window. Current Cursor builds reject symlinks that point outside `~/.cursor/plugins/local`.
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.cursor\plugins\local" | Out-Null
+Copy-Item -Recurse .\plugins\remotex "$env:USERPROFILE\.cursor\plugins\local\remotex"
+```
+
+After reload, confirm the plugin under Customize. RemoteX, GitLab, and mail keep using the same local credential files as Codex. Shared VM work still goes through the RemoteX queue; do not bypass it with a second direct SSH or RDP session.
+
 ## How Codex & GPT-5.6 were used
 
 Codex and GPT-5.6 were used as engineering assistants to inspect existing plugin contracts, implement narrowly scoped changes, generate and run tests, review security boundaries, and maintain the English documentation. The generated work was not accepted on model output alone: repository validators, unit tests, MCP protocol smoke tests, diff review, and secret-pattern scans remain required before publication. Runtime credentials and private infrastructure values were neither requested for documentation nor committed to this repository.
 
 ## Install From GitHub
 
-Register the repository marketplace, then install each workflow plugin independently:
+Register the repository marketplace, then install each workflow plugin independently.
+
+Cursor (Teams / Enterprise Import from Repo, or CLI):
+
+```powershell
+agent plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins
+```
+
+Local Cursor copy for one plugin:
+
+```powershell
+Copy-Item -Recurse .\plugins\remotex "$env:USERPROFILE\.cursor\plugins\local\remotex"
+```
+
+Grok:
+
+```powershell
+grok plugin marketplace add YSheldon/ai-productivity-plugins
+grok plugin install gitlab --trust
+grok plugin install remotex --trust
+grok plugin install imap-smtp-mail --trust
+```
+
+Codex:
 
 ```powershell
 codex plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins.git

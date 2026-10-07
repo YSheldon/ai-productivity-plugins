@@ -1,0 +1,23 @@
+{
+  "name": "release-gate",
+  "displayName": "Release Gate",
+  "version": "0.1.6",
+  "description": "Run the release gate mailbox scan, validate signed PRERELEASE_REQUEST handoffs, invoke the locked product-release-gate kernel, and send RELEASE_GATE_PASS or blocking notices without Codex runtime dependence.",
+  "author": {
+    "name": "Sheldon"
+  },
+  "homepage": "https://github.com/YSheldon/ai-productivity-plugins/tree/main/plugins/release-gate",
+  "repository": "https://github.com/YSheldon/ai-productivity-plugins",
+  "license": "MIT",
+  "keywords": [
+    "release-gate",
+    "mail",
+    "scheduler",
+    "product-release-gate",
+    "release-ready"
+  ],
+  "category": "Developer Tools",
+  "logo": "assets/release-gate.svg",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

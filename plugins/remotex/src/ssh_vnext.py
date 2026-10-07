@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import authentication_evidence
 import execution
 import remotex_core as core
 import ssh_adapter as legacy
@@ -276,6 +277,7 @@ def connection_config(profile: Any = None) -> dict[str, Any]:
 
 
 def _enforce_host_key(cfg: dict[str, Any], timeout: int) -> dict[str, Any]:
+    _enforce_expected_public_key(cfg)
     import host_keys
 
     return host_keys.enforce(cfg, timeout)
@@ -362,7 +364,7 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _public_key_evidence(cfg: dict[str, Any]) -> dict[str, Any] | None:
-    if cfg["credential_source"] != "identity-file":
+    if cfg["credential_source"] not in {"identity-file", "ssh-agent"}:
         return None
     identity_file = cfg.get("identity_file")
     if not identity_file:
@@ -390,12 +392,30 @@ def _public_key_evidence(cfg: dict[str, Any]) -> dict[str, Any] | None:
         fingerprint = base64.b64encode(
             hashlib.sha256(public_key_blob).digest()
         ).decode("ascii").rstrip("=")
-        return {
+        result = {
             "state": "available",
             "algorithm": fields[0],
             "fingerprint": f"SHA256:{fingerprint}",
         }
+        expected = cfg.get("expected_public_key_sha256")
+        if expected:
+            result["expectedFingerprint"] = expected
+            result["matchesExpected"] = result["fingerprint"] == expected
+            if not result["matchesExpected"]:
+                result["state"] = "mismatch"
+        return result
     return {"state": "missing"}
+
+
+def _enforce_expected_public_key(cfg: dict[str, Any]) -> None:
+    expected = cfg.get("expected_public_key_sha256")
+    if not expected:
+        return
+    evidence = _public_key_evidence(cfg)
+    if not evidence or evidence.get("state") != "available":
+        raise core.ToolError(
+            "Configured SSH public-key fingerprint does not match the local identity"
+        )
 
 
 def _server_advertised_methods(stderr: str) -> list[str]:
@@ -577,13 +597,22 @@ def _shell_payload(
 payload_file=$(mktemp "${{TMPDIR:-/tmp}}/remotex-payload.XXXXXX")
 script_file=$(mktemp "${{TMPDIR:-/tmp}}/remotex-script.XXXXXX")
 child_pid=
+watcher=
 cleanup() {{
-  if [ -n "${{child_pid:-}}" ] && kill -0 "$child_pid" 2>/dev/null; then
+  if [ -n "${{watcher:-}}" ]; then
+    kill -TERM "-$watcher" 2>/dev/null || kill -TERM "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+    watcher=
+  fi
+  if [ -n "${{child_pid:-}}" ]; then
     kill -TERM "-$child_pid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || true
+    kill -KILL "-$child_pid" 2>/dev/null || kill -KILL "$child_pid" 2>/dev/null || true
+    wait "$child_pid" 2>/dev/null || true
+    child_pid=
   fi
   rm -f "$payload_file" "$script_file"
 }}
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT HUP INT TERM PIPE
 cat >"$payload_file" <<'{marker}'
 {payload}
 {marker}
@@ -616,22 +645,26 @@ fi
 setsid "$interpreter" "$script_file" &
 child_pid=$!
 printf '{META_PREFIX}{{"remotePid":%s,"interpreter":"%s","processGroup":true}}\\n' "$child_pid" "$interpreter" >&2
-(
-  sleep "$wall_seconds"
-  if kill -0 "$child_pid" 2>/dev/null; then
-    kill -TERM "-$child_pid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || true
+# Give the watchdog its own group so cleanup also terminates its sleep child.
+setsid sh -c '
+  sleep "$1"
+  if kill -0 "$2" 2>/dev/null; then
+    kill -TERM "-$2" 2>/dev/null || kill -TERM "$2" 2>/dev/null || true
     sleep 2
-    kill -KILL "-$child_pid" 2>/dev/null || kill -KILL "$child_pid" 2>/dev/null || true
+    kill -KILL "-$2" 2>/dev/null || kill -KILL "$2" 2>/dev/null || true
   fi
-) &
+' remotex-watchdog "$wall_seconds" "$child_pid" </dev/null >/dev/null 2>&1 &
 watcher=$!
 set +e
 wait "$child_pid"
 status=$?
 set -e
+# The shell may exit on TERM while a descendant ignores it and holds the pipes.
+kill -KILL "-$child_pid" 2>/dev/null || true
 child_pid=
-kill "$watcher" 2>/dev/null || true
+kill -TERM "-$watcher" 2>/dev/null || kill -TERM "$watcher" 2>/dev/null || true
 wait "$watcher" 2>/dev/null || true
+watcher=
 exit "$status"
 """
     return wrapper.encode("utf-8")
@@ -768,9 +801,21 @@ def test_connection(args: dict[str, Any]) -> dict[str, Any]:
         legacy.ssh_arguments(cfg, timeout, "hostname"),
         timeout=timeout,
     )
-    return core.tool_result(
-        _connection_result(cfg, outcome, authentication_attempt=True)
-    )
+    result = _connection_result(cfg, outcome, authentication_attempt=True)
+    if result["authentication"].get("verified"):
+        try:
+            authentication_evidence.record_verified(
+                cfg["profile"],
+                cfg["credential_source"],
+                f"{cfg['host']}:{cfg['port']}",
+            )
+            result["authenticationEvidenceRecorded"] = True
+        except core.ToolError:
+            result["authenticationEvidenceRecorded"] = False
+            result["authenticationEvidenceFailureCode"] = (
+                "local-authentication-evidence-unavailable"
+            )
+    return core.tool_result(result)
 
 
 def run_command(args: dict[str, Any]) -> dict[str, Any]:

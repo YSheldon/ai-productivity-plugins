@@ -14,7 +14,9 @@ New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 foreach ($directory in @("src", "scripts")) {
     $source = Join-Path $sourceRoot $directory
     $destination = Join-Path $installDirectory $directory
-    Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
+    New-Item -ItemType Directory -Path $destination -Force | Out-Null
+    Get-ChildItem -LiteralPath $source -Force |
+        Copy-Item -Destination $destination -Recurse -Force
 }
 
 $buildScript = Join-Path $installDirectory "scripts\Build-WorldTimeReminder.ps1"

@@ -1,6 +1,6 @@
 {
   "name": "world-time-reminder",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Windows taskbar Beijing clock with exact-hour first-duty reminders.",
   "author": {
     "name": "Sheldon"

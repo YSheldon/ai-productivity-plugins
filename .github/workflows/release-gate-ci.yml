@@ -16,6 +16,11 @@ on:
       - "plugins/product-release-gate/**"
       - "plugins/rd-flywheel/**"
       - "plugins/remotex/**"
+      - "plugins/world-time-reminder/**"
+      - ".agents/plugins/marketplace.json"
+      - ".cursor-plugin/**"
+      - "tests/test_cursor_marketplace_contract.py"
+      - "scripts/sync_cursor_plugin_manifests.py"
       - "plugins/gitlab/**"
       - "tests/test_release_workflow_*.py"
       - "tests/test_release_approval_*.py"
@@ -39,6 +44,11 @@ on:
       - "plugins/product-release-gate/**"
       - "plugins/rd-flywheel/**"
       - "plugins/remotex/**"
+      - "plugins/world-time-reminder/**"
+      - ".agents/plugins/marketplace.json"
+      - ".cursor-plugin/**"
+      - "tests/test_cursor_marketplace_contract.py"
+      - "scripts/sync_cursor_plugin_manifests.py"
       - "plugins/gitlab/**"
       - "tests/test_release_workflow_*.py"
       - "tests/test_release_approval_*.py"
@@ -86,6 +96,10 @@ jobs:
           plugins/product-release-gate/scripts
           plugins/rd-flywheel/src
           plugins/gitlab/src
+
+      - name: Test Windows time reminder
+        shell: pwsh
+        run: ./plugins/world-time-reminder/tests/Test-WorldTimeReminder.ps1
 
       - name: Test complete release workflow
         shell: pwsh

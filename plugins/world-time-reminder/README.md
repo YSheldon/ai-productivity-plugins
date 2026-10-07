@@ -18,6 +18,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\plugins\world-time-rem
 
 Installation builds the executable under `%LOCALAPPDATA%\Programs\WorldTimeReminder` and registers one current-user `WorldTimeReminder` task. That task starts after logon and is retriggered every minute if the program exits. A single-instance mutex prevents duplicate clock windows.
 
+Version `0.1.1` updates source and script directory contents in place during repeat installations, so an upgrade uses the new source and registration script.
+
 The installer removes the legacy `FirstDutyRestReminder` task, its Startup launcher, and the legacy Beijing taskbar Startup shortcut only after the new unified task is registered.
 
 ## Verify
@@ -25,6 +27,8 @@ The installer removes the legacy `FirstDutyRestReminder` task, its Startup launc
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\plugins\world-time-reminder\tests\Test-WorldTimeReminder.ps1
 ```
+
+The test builds a temporary executable, verifies due, late, unscheduled, and invalid times, checks the task XML, and exercises repeat installation in an isolated fixture directory. It does not register a scheduled task or start the desktop clock. Windows CI runs this test alongside the repository regression suite.
 
 ## Uninstall
 

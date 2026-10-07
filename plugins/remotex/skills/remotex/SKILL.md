@@ -124,6 +124,18 @@ remotex_ssh_test is public-key only. When it returns configured-public-key-rejec
 
 Use remotex_ssh_run_script for PowerShell, pwsh, cmd, sh, or bash. Script text and referenced environment values travel through stdin. For transfer, preserve verify=sha256 unless there is a documented reason to use another mode.
 
+For the fixed `lite-cloudquery` management-center service-key set, use
+`remotex_ssh_service_key_deploy` instead of the generic copy tool. It accepts
+only a local ZIP path, extracts only
+`private/management-center/tls-client-key.pem` and
+`private/management-center/response-key.pem` (with one optional archive-root
+directory), and requires `confirm=true` plus the SSH queue requester. On
+Windows the archive path must be under `C:\Work\AI\CloudQuery`. The tool
+uses SFTP staging, rejects symlinks, requires authenticated root, and verifies
+the fixed target directory and both file hashes/permissions after installation.
+It refuses to overwrite existing destination files and never accepts or returns
+private-key contents.
+
 Resumable SSH tasks pass input and redaction values through a one-shot local
 pipe. They must never create `stdin.bin` or `secrets.json`. If the doctor or task
 status reports legacy sensitive artifacts, clean only an inactive validated

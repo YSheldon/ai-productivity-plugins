@@ -294,6 +294,57 @@ def queue_request(args: dict[str, Any]) -> dict[str, Any]:
     return core.tool_result(result)
 
 
+def queue_acquire(args: dict[str, Any]) -> dict[str, Any]:
+    target = _target(args)
+    resource = target["resource"]
+    requester = vm_queue.validate_requester(args.get("requester"))
+    seconds = _configured_lease(target["profile"], args.get("lease_seconds"))
+    with vm_queue._resource_operation_lock(resource):
+        # Validate before expiry processing: inconsistent persisted ownership
+        # needs operator diagnosis, not automatic lease repair.
+        with _locked() as (_, leases):
+            persisted = leases["leases"].get(resource)
+            current = vm_queue.inspect(resource, requester)
+            if persisted and (current.get("owner") or {}).get("requester") != persisted["requester"]:
+                raise core.ToolError("Queue owner and lease disagree; refusing automatic acquisition")
+        active = _expire_locked(resource)
+
+        # The existing atomic claim applies FIFO and host/service exclusion;
+        # automatic admission changes the interaction, not those constraints.
+        result = vm_queue.claim(resource, requester, True)
+        acquired = bool(result.get("claimed"))
+        if acquired and not active:
+            try:
+                active = _set_lease(resource, requester, seconds, "lease-auto-acquired")
+            except core.ToolError:
+                if result["claim_status"] == "claimed":
+                    with vm_queue._locked_state() as (path, state):
+                        entry = state["resources"].get(resource)
+                        if entry and entry.get("owner") == result["owner"]:
+                            entry["owner"] = None
+                            entry["waiters"].insert(0, {
+                                "requester": requester,
+                                "requested_at": vm_queue._timestamp(),
+                            })
+                            vm_queue._write_state(path, state)
+                raise
+        status = "acquired" if result["claim_status"] == "claimed" else result["claim_status"]
+        result.update({key: value for key, value in target.items() if key != "resource"})
+        result.update({
+            "ok": acquired,
+            "acquired": acquired,
+            "acquireStatus": status,
+            "lease": _lease_view(active),
+            "nextAction": "continue-authorized-operation" if acquired else "wait-and-retry-acquire",
+            "prompt": (
+                "Queue acquired for this requester; continue only the authorized operation."
+                if acquired
+                else "Queued without preemption. Retry acquire when the current owner and earlier waiters finish."
+            ),
+        })
+    return core.tool_result(result)
+
+
 def queue_claim(args: dict[str, Any]) -> dict[str, Any]:
     target = _target(args)
     requester = vm_queue.validate_requester(args.get("requester"))
@@ -414,9 +465,9 @@ def queue_recover_stale(args: dict[str, Any]) -> dict[str, Any]:
     result["recoveredOwner"] = stale_owner
     result["lease"] = None
     result["nextAction"] = (
-        "notify-first-waiter-to-confirm-claim"
+        "notify-first-waiter-to-acquire"
         if result.get("next_waiter")
-        else "request-and-confirm-claim"
+        else "acquire-for-authorized-task"
     )
     return core.tool_result(result)
 
@@ -544,6 +595,20 @@ LEASE_PROPERTY = {
 
 
 TOOLS: dict[str, dict[str, Any]] = {
+    "remotex_vm_queue_acquire": {
+        "description": (
+            "Automatically acquire a free FIFO resource for an authorized task, reuse "
+            "its existing lease, or join the queue without preempting another owner. "
+            "This grants queue admission only, not permission for remote operations."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {**PROFILE_PROPERTY, **REQUESTER_PROPERTY, **LEASE_PROPERTY},
+            "required": ["profile", "requester"],
+            "additionalProperties": False,
+        },
+        "handler": queue_acquire,
+    },
     "remotex_vm_queue_status": {
         "description": "Inspect cooperative FIFO ownership and its renewable lease.",
         "inputSchema": {

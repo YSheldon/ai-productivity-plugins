@@ -404,7 +404,7 @@ class QueueLeaseTests(unittest.TestCase):
         self.assertTrue(first["claimed"])
         self.assertEqual(second["claim_status"], "queued-owner-active")
         self.assertEqual(renewed["renew_status"], "renewed")
-        self.assertEqual(released["action_required"], "notify-first-waiter-to-confirm-claim")
+        self.assertEqual(released["action_required"], "notify-first-waiter-to-acquire")
         self.assertEqual(waiting["state"], "unowned")
         self.assertEqual(waiting["next_waiter"], "bob")
         self.assertTrue(waiting["claim_available"])

@@ -22,7 +22,7 @@ class MCPProtocolTests(unittest.TestCase):
             }
         )
         self.assertEqual(response["result"]["serverInfo"]["name"], "remotex")
-        self.assertEqual(response["result"]["serverInfo"]["version"], "0.5.6")
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.5.7")
 
     def test_tools_list_has_all_adapters(self) -> None:
         response = remotex_mcp.handle_request(
@@ -45,6 +45,7 @@ class MCPProtocolTests(unittest.TestCase):
         self.assertIn("remotex_windows_guest_preflight", names)
         self.assertIn("remotex_windows_guest_reboot", names)
         self.assertIn("remotex_vm_queue_claim", names)
+        self.assertIn("remotex_vm_queue_acquire", names)
         self.assertIn("remotex_vm_queue_heartbeat", names)
         self.assertIn("remotex_vm_queue_recover_stale", names)
         self.assertIn("remotex_ssh_task_cleanup_sensitive_artifacts", names)

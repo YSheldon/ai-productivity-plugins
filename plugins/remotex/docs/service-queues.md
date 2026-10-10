@@ -24,6 +24,14 @@ recovery from clearing an owner mid-operation. An expired child is not silently
 cleared by a parent claim: use the existing explicit stale-recovery workflow.
 Status includes `blocking_resources` for cross-scope conflicts.
 
+For an authorized operation, use `remotex_vm_queue_acquire` with a stable
+task-specific requester. It atomically applies the same FIFO and writer-preference
+rules, returning `acquired=true` only when the resource is owned by that requester.
+Otherwise it joins the wait queue, returns `acquired=false`, and preserves all
+other owners and earlier waiters. Repeated calls reuse a current lease without
+extending it. Retry after a queue change or when resuming work. No background
+transfer, automatic lock upgrade, or remote-action permission is implied.
+
 ## Upgrade and Configuration
 
 The first persisted service queue upgrades the queue file to version2. Older

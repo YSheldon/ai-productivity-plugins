@@ -329,14 +329,14 @@ def _view(
         result["next_waiter"] = first
         result["claim_available"] = first == requester
         result["prompt"] = (
-            "This VM is unowned and this requester is first in line. Ask for confirmation, then claim it."
+            "This VM is unowned and this requester is first in line. Use remotex_vm_queue_acquire for an authorized task."
             if first == requester
             else "This VM is unowned, but only the first queued requester may claim it."
         )
     else:
         result["claim_available"] = True
         result["prompt"] = (
-            "This VM is unowned. Ask whether it should be claimed, then claim it explicitly."
+            "This VM is unowned. Use remotex_vm_queue_acquire for an authorized task."
         )
     blockers = _scope_blockers(state, resource) if state is not None and not owner else []
     result["blocking_resources"] = blockers
@@ -450,7 +450,7 @@ def release(resource: Any, requester: Any) -> dict[str, Any]:
         result = _view(resource_name, entry, requester=requester_name, state=state)
         result["release_status"] = "released"
         if entry["waiters"]:
-            result["action_required"] = "notify-first-waiter-to-confirm-claim"
+            result["action_required"] = "notify-first-waiter-to-acquire"
         return result
 
 
@@ -486,7 +486,7 @@ def require_owner(resource: Any, requester: Any) -> dict[str, Any]:
         owner = entry.get("owner")
         if not owner:
             raise core.ToolError(
-                "VM is unowned. Request it first, ask for confirmation, then claim it before this operation."
+                "VM is unowned. Use remotex_vm_queue_acquire with this requester before the authorized operation."
             )
         if owner["requester"] != requester_name:
             raise core.ToolError(

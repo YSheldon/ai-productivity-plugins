@@ -267,6 +267,8 @@ def summarize_result(result: dict[str, Any]) -> dict[str, Any]:
             "taskId",
             "state",
             "claim_status",
+            "acquired",
+            "acquireStatus",
             "release_status",
             "renew_status",
             "heartbeatStatus",

@@ -68,14 +68,33 @@ ephemeral-only and must remain process scoped.
 
 Before any SSH side effect, remotex_rdp_open, Windows guest mutation, VMware Workstation mutation, or vSphere power operation:
 
-1. Choose a stable ASCII requester for the current user or task.
-2. Inspect the profile with remotex_vm_queue_status.
-3. If another requester owns it, join with remotex_vm_queue_request, report the FIFO position, and stop.
-4. If it is unowned, request it and show the returned prompt.
-5. Claim with confirm=true only after explicit confirmation.
-6. Pass the same requester to every side-effectful operation.
-7. Call remotex_vm_queue_heartbeat or remotex_vm_queue_renew for long work.
-8. Release after use and report the first waiter.
+1. For an authorized operation, choose an ASCII requester unique to the current
+   task and keep it stable through acquisition, execution, renewal, and release.
+   Never adopt another task's requester from the owner/waiter list.
+2. Call `remotex_vm_queue_acquire` with the intended profile, requester, and a
+   bounded `lease_seconds` appropriate to the operation. A separate confirmation
+   is not required for normal queue admission of an already authorized task.
+3. If `acquired=true`, continue the authorized operation. `acquireStatus=acquired`
+   means a free FIFO resource was claimed; `already-owned` reuses this task's
+   lease without extending it.
+4. If `acquired=false`, the request has joined the FIFO queue without preemption.
+   Report its position, owner/lease, and `blocking_resources`, continue independent
+   work, then retry with the same requester. Do not execute on that target while
+   queued. Retry acquisition when the task resumes or the queue changes; avoid
+   tight polling, and do not claim merely to answer a read-only status question.
+5. On an older runtime without `remotex_vm_queue_acquire`, inspect status and
+   join with `remotex_vm_queue_request`. For an already authorized task, call
+   `remotex_vm_queue_claim` with `confirm=true` when unowned and first in FIFO;
+   no additional conversational confirmation is needed. The claim itself
+   rechecks ownership and fairness. Inspect its returned `claimed` value.
+6. Pass the same requester to every side-effectful operation, renew before
+   expiry during long work, and release after use. Cancel this task's own wait
+   item if it no longer needs the resource.
+
+Queue acquisition only reserves a local cooperative resource. It does not
+authorize power changes, reboot, snapshots, credentials, SSH host trust, or
+other unapproved remote actions; their existing checks still apply. The legacy
+manual `remotex_vm_queue_claim` API retains its `confirm` argument.
 
 Expiry and stale recovery release ownership only to the unowned state. Never transfer ownership silently. remotex_vm_queue_recover_stale needs confirm=true and must report the recovered owner and first waiter.
 

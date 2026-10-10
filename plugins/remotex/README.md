@@ -1,5 +1,11 @@
 # RemoteX
 
+Version `0.5.7` adds one-step FIFO queue acquisition for authorized tasks.
+`remotex_vm_queue_acquire` claims an available resource, reuses the same task's
+active lease, or returns a queued result without preemption or extra queue
+confirmation. Host/service conflicts and all remote-operation checks remain in
+force.
+
 Version `0.5.6` adds a fixed-purpose service-key deployment tool for the
 `lite-cloudquery` management-center key set. It extracts only the two
 allowlisted PEM entries from a local ZIP, uploads them through SFTP, and
@@ -116,13 +122,21 @@ RemoteX maintains a persistent, process-safe FIFO queue for shared VM access. SS
 
 The default queue state is under the local RemoteX state directory. REMOTEX_VM_QUEUE_FILE and REMOTEX_VM_QUEUE_LEASE_FILE override these protected local paths.
 
-1. Call remotex_vm_queue_status with the target profile.
-2. Call remotex_vm_queue_request with a stable ASCII requester.
-3. If another requester owns it, report the FIFO position and stop.
-4. If unowned, request it, obtain confirmation, then call remotex_vm_queue_claim with confirm=true.
-5. Pass the same requester to every mutating operation.
-6. Call remotex_vm_queue_heartbeat or remotex_vm_queue_renew before lease expiry.
-7. Call remotex_vm_queue_release after the work is complete.
+1. For an authorized target operation, call `remotex_vm_queue_acquire` with its
+   profile and a stable ASCII requester unique to the task.
+2. Continue on the target only when `acquired=true`. A free resource is acquired
+   with a bounded lease; an existing lease for this task is reused without renewal.
+3. When queued, report the FIFO position and `blocking_resources`, do independent
+   work, and retry acquisition with the same requester. Never bypass an owner or
+   earlier waiter.
+4. Pass the same requester to mutating operations, renew before expiry, and
+   release after work. Cancel an own waiting request when it is no longer needed.
+
+The manual `remotex_vm_queue_claim` API remains available with `confirm=true`.
+Older runtimes can use status/request/claim for an already authorized operation
+without a second conversational approval solely for queue admission. A status
+question alone never requests ownership. Queue admission does not authorize
+remote side effects, host trust, credentials, power, reboot, or snapshot actions.
 
 Leases default to four hours and may be configured from 60 seconds to seven days. Expiry never assigns a waiter. remotex_vm_queue_recover_stale requires confirm=true, verifies that the expired lease still matches the queue owner, and releases it only to the unowned state. It records the stale owner recovery and never silently transfers ownership.
 
@@ -190,7 +204,7 @@ Report reachability, credential readiness, composite identity status, queue owne
 - Windows guest: test, preflight, bounded script, verified copy, authenticated reboot wait
 - vSphere or ESXi: about, VM inventory, power
 - VMware Workstation: running inventory, power, snapshot list, create, revert, delete
-- Queue: status, request, claim, renew, heartbeat, stale recovery, release, cancel
+- Queue: status, acquire, request, claim, renew, heartbeat, stale recovery, release, cancel
 - remotex_audit_export
 
 ## Boundaries

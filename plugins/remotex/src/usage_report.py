@@ -97,11 +97,11 @@ def _audit_snapshot() -> tuple[list[dict[str, Any]], dict[str, Any]]:
 def _category(tool: str) -> str:
     if tool.startswith("remotex_vm_queue_"):
         return "queue"
-    if re.match(r"remotex_(status$|audit_|credential_|profile_|usage_|ssh_host_key_|ssh_agent_)", tool):
+    if re.match(r"remotex_(status$|audit_|credential_|profile_|usage_|web_profile_setup|web_runtime_setup|ssh_host_key_|ssh_agent_)", tool):
         return "management"
-    if re.search(r"(_test|_about|_list_vms|_list_snapshots|_preflight|_task_status|_key_fingerprint)$", tool):
+    if re.search(r"(_test|_about|_list_vms|_list_snapshots|_preflight|_task_status|_session_status|_key_fingerprint)$", tool):
         return "diagnostic"
-    if tool.startswith(("remotex_ssh_", "remotex_windows_guest_", "remotex_vmware_", "remotex_vsphere_", "remotex_rdp_")):
+    if tool.startswith(("remotex_ssh_", "remotex_windows_guest_", "remotex_vmware_", "remotex_vsphere_", "remotex_rdp_", "remotex_web_")):
         return "work"
     return "other"
 

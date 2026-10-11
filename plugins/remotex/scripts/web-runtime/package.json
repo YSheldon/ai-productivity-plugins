@@ -1,0 +1,6 @@
+{
+  "name": "remotex-web-runtime",
+  "private": true,
+  "version": "0.5.9",
+  "dependencies": {"playwright-core": "1.62.1"}
+}

@@ -11,9 +11,15 @@ import queue_leases
 import remotex_core as core
 import vm_identity
 import vm_queue
+import web_policy
 
 
 PROFILE_SETUP_PROPERTIES: dict[str, dict[str, Any]] = {
+    "account": {"type": "string"},
+    "username_selector": {"type": "string"},
+    "password_selector": {"type": "string"},
+    "submit_selector": {"type": "string"},
+    "success_selector": {"type": "string"},
     "profile": {"type": "string"},
     "kind": {
         "type": "string",
@@ -75,6 +81,7 @@ COMMON_PROFILE_SETUP_FIELDS = frozenset(
     }
 )
 KIND_PROFILE_SETUP_FIELDS: dict[str, frozenset[str]] = {
+    "web": frozenset({"url","account","username_selector","password_selector","submit_selector","success_selector"}),
     "ssh": frozenset(
         {
             "host",
@@ -295,6 +302,11 @@ def _vsphere_profile(args: dict[str, Any], credential_ref: str) -> dict[str, Any
 
 
 def _credential_record(args: dict[str, Any], kind: str) -> dict[str, Any]:
+    if kind == "web":
+        if args.get("credential_source") != "windows-credential-manager":
+            raise core.ToolError("Web profile setup requires Windows Credential Manager")
+        _, origin = web_policy.endpoint(args.get("url"))
+        return web_policy.credential(origin, web_policy.account(args.get("account")))
     source = core._required_text(
         args.get("credential_source"),
         "credential_source",
@@ -369,6 +381,7 @@ def prepare(args: dict[str, Any]) -> PreparedProfile:
         f"profile {profile_name}",
     )
     builders = {
+        "web": web_policy.profile,
         "ssh": _ssh_profile,
         "rdp": _rdp_profile,
         "windows-guest": _windows_guest_profile,

@@ -9,7 +9,11 @@ param(
     [string]$Target,
 
     [Parameter(Mandatory = $true)]
-    [string]$ReceiptPath
+    [string]$ReceiptPath,
+
+    [string]$ExpectedUser = '',
+
+    [string]$ScopeLabel = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -154,12 +158,18 @@ try {
         [RemoteXCredentialNative]::Exists($Target, 1) -or
         [RemoteXCredentialNative]::Exists($Target, 2)
     )
-    $credential = Get-Credential -Message ('RemoteX credential setup for configured reference ' + $receipt.targetSha256.Substring(0, 12))
+    $promptArguments = @{Message=('RemoteX credential setup for configured reference ' + $receipt.targetSha256.Substring(0, 12))}
+    if ($ScopeLabel.Length -gt 0) { $promptArguments['Message'] = ('RemoteX web credential for ' + $ScopeLabel) }
+    if ($ExpectedUser.Length -gt 0) { $promptArguments['UserName'] = $ExpectedUser }
+    $credential = Get-Credential @promptArguments
     if ($null -eq $credential) {
         $receipt.status = 'cancelled'
         $exitCode = 2
     }
     else {
+        if ($ExpectedUser.Length -gt 0 -and $credential.UserName -cne $ExpectedUser) {
+            throw 'Account does not match the configured web credential.'
+        }
         [RemoteXCredentialNative]::Write($Target, $credential.UserName, $credential.Password)
         $receipt.referencePresent = (
             [RemoteXCredentialNative]::Exists($Target, 1) -or

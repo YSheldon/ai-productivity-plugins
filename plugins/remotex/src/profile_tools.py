@@ -13,7 +13,7 @@ def _preview(prepared: profile_config.PreparedProfile) -> dict[str, Any]:
     profile = prepared.profile
     endpoint = (
         profile["url"]
-        if profile["kind"] == "vsphere"
+        if profile["kind"] in {"vsphere", "web"}
         else f"{profile['host']}:{profile['port']}"
     )
     return {
@@ -50,6 +50,7 @@ def _preview(prepared: profile_config.PreparedProfile) -> dict[str, Any]:
 
 def _next_step(kind: str) -> str:
     return {
+        "web": "run-remotex-web-login",
         "ssh": "run-remotex-ssh-host-key-status",
         "rdp": "run-remotex-rdp-test",
         "windows-guest": "run-remotex-windows-guest-test",

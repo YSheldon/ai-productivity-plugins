@@ -64,15 +64,23 @@ class QueueAcquireTests(unittest.TestCase):
         self.assertEqual(result["nextAction"], "continue-authorized-operation")
 
     def test_other_owner_is_preserved_and_requests_are_deduplicated(self) -> None:
-        first = self.acquire("task-a")
-        result = self.acquire("task-b")
-        repeated = self.acquire("task-b")
+        with mock.patch.object(queue_leases, "_now", return_value=datetime(2026, 10, 10, tzinfo=timezone.utc)):
+            first = self.acquire("task-a")
+        with mock.patch.object(queue_leases, "_now", return_value=datetime(2026, 10, 10, 0, 0, 1, tzinfo=timezone.utc)):
+            result = self.acquire("task-b")
+        with mock.patch.object(queue_leases, "_now", return_value=datetime(2026, 10, 10, 0, 0, 2, tzinfo=timezone.utc)):
+            repeated = self.acquire("task-b")
         self.assertFalse(result["acquired"])
         self.assertEqual(result["acquireStatus"], "queued-owner-active")
         self.assertEqual(repeated["requester_position"], 1)
         self.assertEqual(repeated["queue_length"], 1)
         self.assertEqual(repeated["owner"], first["owner"])
-        self.assertEqual(repeated["lease"], first["lease"])
+        self.assertEqual(
+            {key: value for key, value in repeated["lease"].items() if key != "remainingSeconds"},
+            {key: value for key, value in first["lease"].items() if key != "remainingSeconds"},
+        )
+        self.assertEqual(first["lease"]["remainingSeconds"], 120)
+        self.assertEqual(repeated["lease"]["remainingSeconds"], 118)
         self.assertEqual(result["nextAction"], "wait-and-retry-acquire")
 
     def test_repeated_acquire_reuses_lease_without_extending_it(self) -> None:

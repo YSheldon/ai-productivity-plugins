@@ -16,6 +16,7 @@ import remotex_core as core
 import service_keys
 import ssh_vnext
 import task_manager
+import usage_report
 import vm_queue
 import vmware_adapter
 import vsphere_adapter
@@ -23,7 +24,7 @@ import windows_guest
 
 
 SERVER_NAME = "remotex"
-SERVER_VERSION = "0.5.7"
+SERVER_VERSION = "0.5.8"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 queue_leases.install_hooks()
 
@@ -230,6 +231,7 @@ TOOLS: dict[str, dict[str, Any]] = {
     **windows_guest.TOOLS,
     **queue_leases.TOOLS,
     **audit_log.TOOLS,
+    **usage_report.TOOLS,
 }
 
 

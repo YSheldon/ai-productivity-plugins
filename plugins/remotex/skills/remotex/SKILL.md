@@ -27,6 +27,24 @@ Never ask the user to paste a password, token, authorization code, private key, 
 
 ## Credential Lifecycle
 
+For Edge web sign-in, use `remotex_web_profile_setup` with the exact HTTPS URL,
+account identifier, credential alias and observed element-ID selectors. Preview
+with `confirm=false`; after the user authorizes that scope, use `confirm=true`
+to open the local password window. Never accept a password in chat. Existing
+credential setup/delete/doctor tools support these web-only aliases too.
+
+Run `remotex_web_runtime_setup` to check dependencies, then
+`remotex_web_probe` before submitting credentials. Do not bypass certificate
+errors or change browser security policy. A probe never uses credentials.
+For an authorized login, acquire its web queue with a stable requester and
+a lease covering `session_seconds` plus 45 seconds, then call
+`remotex_web_login` with `confirm=true`. Use the returned `webSessionId` as
+`session_id` for status/close tools; the audit `sessionId` is different.
+Submit once. `needs-user-check` is not successful authentication; do not retry
+passwords or solve MFA/CAPTCHA automatically. Close the owned session, wait
+for closed state, and release its queue. Other requesters may wait but cannot
+release a live browser's resource. See [Web credentials](../../docs/web-credentials.md).
+
 Use `remotex_credential_doctor` for collection-wide or selected profile checks.
 Treat `referencePresent`, `localProtectionReady`, and
 `authenticationVerified` as independent evidence. A present Credential Manager

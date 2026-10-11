@@ -21,15 +21,17 @@ import vm_queue
 import vmware_adapter
 import vsphere_adapter
 import windows_guest
+import web_adapter
 
 
 SERVER_NAME = "remotex"
-SERVER_VERSION = "0.5.8"
+SERVER_VERSION = "0.5.9"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 queue_leases.install_hooks()
 
 
 STATUS_HANDLERS: dict[str, Callable[[str, dict[str, Any]], dict[str, Any]]] = {
+    "web": web_adapter.profile_status,
     "ssh": ssh_vnext.profile_status,
     "rdp": rdp_adapter.profile_status,
     "vsphere": vsphere_adapter.profile_status,
@@ -54,7 +56,7 @@ def _queue_status_for_profile(
             queue_leases._legacy_lease_view() if result.get("owner") else None
         )
         return result
-    if kind in {"rdp", "vmware-workstation", "windows-guest"}:
+    if kind in {"rdp", "vmware-workstation", "windows-guest", "web"}:
         target = vm_queue.resolve_profile_resource(name)
         lease = queue_leases.inspect_resource(target["resource"])
         result = vm_queue.inspect(target["resource"])
@@ -232,6 +234,7 @@ TOOLS: dict[str, dict[str, Any]] = {
     **queue_leases.TOOLS,
     **audit_log.TOOLS,
     **usage_report.TOOLS,
+    **web_adapter.TOOLS,
 }
 
 

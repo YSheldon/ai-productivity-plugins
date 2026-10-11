@@ -31,11 +31,12 @@ PROVIDER_FIELDS: dict[str, frozenset[str]] = {
     "ssh-agent": frozenset(
         {"source", "identity_file", "expected_public_key_sha256"}
     ),
-    "windows-credential-manager": frozenset({"source", "target"}),
+    "windows-credential-manager": frozenset({"source", "target", "web_origin", "web_account"}),
     "windows-integrated": frozenset({"source"}),
     "environment": frozenset({"source", "username_env", "password_env"}),
 }
 KIND_PROVIDERS: dict[str, frozenset[str]] = {
+    "web": frozenset({"windows-credential-manager"}),
     "ssh": frozenset({"identity-file", "ssh-agent"}),
     "rdp": frozenset({"windows-credential-manager"}),
     "windows-guest": frozenset(
@@ -72,6 +73,8 @@ def _validate_record(record: Any, field: str) -> dict[str, Any]:
         missing = [name for name in missing if name not in {"identity_file", "expected_public_key_sha256"}]
     elif source == "identity-file":
         missing = [name for name in missing if name != "expected_public_key_sha256"]
+    elif source == "windows-credential-manager":
+        missing = [name for name in missing if name not in {"web_origin", "web_account"}]
     if unknown:
         raise core.ToolError(f"unknown credential field: {field}.{unknown[0]}")
     if missing:
@@ -81,6 +84,8 @@ def _validate_record(record: Any, field: str) -> dict[str, Any]:
     for key in allowed - {"source"}:
         raw = record.get(key)
         if raw in (None, ""):
+            if source == "windows-credential-manager" and key in {"web_origin", "web_account"}:
+                continue
             if key == "expected_public_key_sha256" and source in {
                 "identity-file",
                 "ssh-agent",
@@ -95,6 +100,12 @@ def _validate_record(record: Any, field: str) -> dict[str, Any]:
 
     if source == "windows-credential-manager" and len(normalized["target"]) > 512:
         raise core.ToolError(f"{field}.target is too long")
+    if "web_origin" in normalized or "web_account" in normalized or normalized.get("target", "").casefold().startswith("remotex/web/"):
+        import web_policy
+        _, origin = web_policy.endpoint(normalized.get("web_origin"))
+        user = web_policy.account(normalized.get("web_account"))
+        if normalized != web_policy.credential(origin, user):
+            raise core.ToolError("Web credential binding is invalid")
     if source == "environment":
         normalized["username_env"] = core._environment_name(
             normalized["username_env"], f"{field}.username_env"
@@ -121,6 +132,8 @@ def validate_provider_for_kind(source: str, kind: str, field: str) -> None:
 def validate_config_credentials(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     version = data.get("version", 1)
     if version == 1:
+        if any(p.get("kind") == "web" for p in data.get("profiles", {}).values() if isinstance(p, dict)):
+            raise core.ToolError("Web credentials require configuration version 2")
         if "credentials" in data:
             raise core.ToolError("RemoteX version 1 config must not contain credentials aliases")
         for name, profile in data.get("profiles", {}).items():
@@ -162,9 +175,18 @@ def validate_config_credentials(data: dict[str, Any]) -> dict[str, dict[str, Any
             validate_provider_for_kind(
                 normalized[alias]["source"], kind, f"profile {profile_name}"
             )
+            if kind == "web":
+                import web_policy
+                web_policy.validate_binding(profile, normalized[alias])
+            elif "web_origin" in normalized[alias]:
+                raise core.ToolError("Web credentials cannot be reused by other protocol kinds")
         elif inline is not None:
             record = _validate_record(inline, f"profiles.{profile_name}.credential")
             validate_provider_for_kind(record["source"], kind, f"profile {profile_name}")
+            if kind == "web" or "web_origin" in record:
+                raise core.ToolError("Web credentials require a named web-only alias")
+        elif kind == "web":
+            raise core.ToolError("Web profile requires a named credential_ref")
     return normalized
 
 
@@ -323,6 +345,13 @@ def resolve_profile_reference(
     else:
         raise core.ToolError(f"Profile {profile_name} credential reference is missing")
     validate_provider_for_kind(reference["source"], normalized_kind, f"profile {profile_name}")
+    if "web_origin" in reference and normalized_kind != "web":
+        raise core.ToolError("Web credentials cannot be used by another protocol")
+    if normalized_kind == "web":
+        import web_policy
+        if version != 2 or alias is None:
+            raise core.ToolError("Web credentials require a named version 2 binding")
+        web_policy.validate_binding(profile, reference)
     return ResolvedCredential.create(
         profile_name=profile_name,
         kind=normalized_kind,
@@ -393,7 +422,7 @@ def _setup_arguments(
     helper = Path(__file__).resolve().parents[1] / "scripts" / "manage_windows_credential.ps1"
     if not helper.is_file():
         raise core.ToolError("RemoteX credential setup helper is unavailable")
-    return [
+    arguments = [
         _powershell_path(),
         "-NoLogo",
         "-NoProfile",
@@ -408,6 +437,10 @@ def _setup_arguments(
         "-ReceiptPath",
         str(receipt_path),
     ]
+    if reference.reference_dict().get("web_account"):
+        arguments += ["-ExpectedUser", reference.reference_dict()["web_account"]]
+        arguments += ["-ScopeLabel", reference.reference_dict()["web_origin"]]
+    return arguments
 
 
 def _decode_setup_receipt(path: Path, expected_target_sha256: str) -> dict[str, Any]:

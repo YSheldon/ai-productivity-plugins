@@ -1,5 +1,12 @@
 # RemoteX
 
+Version `0.5.9` adds Windows web credential profiles bound to one HTTPS origin
+and account, a local secure setup window, credential-free Edge probes, and
+bounded visible Edge login sessions. It keeps password values out of MCP,
+command arguments, environment variables and receipts. See
+[Web credentials](docs/web-credentials.md) for prerequisites, session ownership,
+certificate handling and verification limits.
+
 Version `0.5.8` adds local per-credential usage and system-evidence reports.
 Use `remotex_usage_report` for structured results and `remotex_usage_export`
 for private HTML, JSON and CSV files. Both accept an optional `credential_ref`

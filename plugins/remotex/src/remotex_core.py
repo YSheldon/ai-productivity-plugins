@@ -23,6 +23,7 @@ MAX_SCRIPT_LENGTH = 1024 * 1024
 MAX_OUTPUT_CHARS = 256 * 1024
 
 KIND_ALIASES = {
+    "web": "web",
     "ssh": "ssh",
     "rdp": "rdp",
     "esxi": "vsphere",

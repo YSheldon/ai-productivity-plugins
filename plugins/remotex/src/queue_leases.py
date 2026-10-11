@@ -214,6 +214,9 @@ def _expire_locked(resource: str) -> dict[str, Any] | None:
         expires = _parse_timestamp(record["expiresAt"], "expiresAt")
         if expires > _now():
             return record
+        if resource.startswith("web:"):
+            import web_adapter
+            web_adapter.assert_resource_idle(resource)
         with vm_queue._locked_state() as (queue_file, queue_state):
             entry = queue_state["resources"].get(resource)
             owner = entry.get("owner") if isinstance(entry, dict) else None
@@ -426,6 +429,9 @@ def queue_recover_stale(args: dict[str, Any]) -> dict[str, Any]:
             "confirm=true is required to recover a stale VM lease; recovery never transfers ownership"
         )
     with vm_queue._resource_operation_lock(target["resource"]):
+        if target["resource"].startswith("web:"):
+            import web_adapter
+            web_adapter.assert_resource_idle(target["resource"])
         with _locked() as (lease_file, leases):
             record = leases["leases"].get(target["resource"])
             if not isinstance(record, dict):

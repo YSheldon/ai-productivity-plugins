@@ -21,7 +21,7 @@ LOCK_TIMEOUT_SECONDS = 5.0
 MAX_RESOURCE_LENGTH = 512
 SERVICE_SEPARATOR = "::service::"
 REQUESTER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,127}$")
-SUPPORTED_KINDS = {"rdp", "vsphere", "vmware-workstation", "windows-guest"}
+SUPPORTED_KINDS = {"rdp", "vsphere", "vmware-workstation", "windows-guest", "web"}
 _PROCESS_LOCKS: set[str] = set()
 _PROCESS_LOCKS_GUARD = threading.Lock()
 
@@ -430,6 +430,9 @@ def release(resource: Any, requester: Any) -> dict[str, Any]:
     resource_name = _validate_resource(resource)
     requester_name = validate_requester(requester)
     with _resource_operation_lock(resource_name), _locked_state() as (path, state):
+        if resource_name.startswith("web:"):
+            import web_adapter
+            web_adapter.assert_resource_idle(resource_name)
         entry = _entry(state, resource_name)
         owner = entry.get("owner")
         if owner and owner["requester"] != requester_name:
@@ -541,7 +544,11 @@ def resolve_profile_resource(
         _validate_resource(configured) if configured not in (None, "") else None
     )
     selected_vm: str | None = None
-    if kind == "rdp":
+    if kind == "web":
+        if virtual_machine not in (None, "") or not configured_resource:
+            raise core.ToolError("Web queues require the configured origin/account resource")
+        resource = configured_resource
+    elif kind == "rdp":
         if virtual_machine not in (None, ""):
             raise core.ToolError("virtual_machine is not valid for an RDP profile")
         host = core.validate_host(raw.get("host"))

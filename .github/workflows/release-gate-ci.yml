@@ -81,6 +81,14 @@ jobs:
       - name: Install test dependency
         run: python -m pip install --disable-pip-version-check pytest==8.3.5
 
+      - name: Set up Node for Edge credential tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install pinned browser test runtime
+        run: npm ci --prefix plugins/remotex/scripts/web-runtime --ignore-scripts --no-audit --no-fund
+
       - name: Compile release workflow sources
         run: >-
           python -m compileall -q

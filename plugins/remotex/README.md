@@ -1,5 +1,13 @@
 # RemoteX
 
+Version `0.5.8` adds local per-credential usage and system-evidence reports.
+Use `remotex_usage_report` for structured results and `remotex_usage_export`
+for private HTML, JSON and CSV files. Both accept an optional `credential_ref`
+or `profile` and a rolling `days` window (1-365, default 30). Reports cover
+historical OS versions, architecture labels and conflicts, call counts, queue
+reservations, and last use. See [Usage reports](docs/usage-reports.md) for
+measurement definitions and coverage limitations.
+
 Version `0.5.7` adds one-step FIFO queue acquisition for authorized tasks.
 `remotex_vm_queue_acquire` claims an available resource, reuses the same task's
 active lease, or returns a queued result without preemption or extra queue

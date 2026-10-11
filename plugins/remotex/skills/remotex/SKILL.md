@@ -9,6 +9,18 @@ Use this skill for remote-system and virtual-machine work that should reuse name
 
 ## Required First Step
 
+For local statistics requests, call `remotex_usage_report` directly. It reads
+metadata without connecting to hosts or expiring queue owners. Use
+`remotex_usage_export` when the user wants a saved HTML/CSV/JSON report.
+Pass `credential_ref` for a named alias, or `profile` for one profile (including
+legacy inline references); omit both for the full inventory. `days` defaults
+to 30 and accepts 1-365. Do not call status or claim a queue merely to report
+usage. Report system versions as historical evidence with their timestamps,
+configuration architecture labels separately from native ISA, and reservation
+percentages as recorded lower bounds. Missing OS data and conflicting bitness
+must remain explicit. See [Usage reports](../../docs/usage-reports.md) for the
+metric definitions.
+
 Call remotex_status with the intended profile. For SSH, selectedProfileReady proves only local configuration, client availability, and host-key readiness; it does not prove that the server has authorized the selected public key. Run remotex_ssh_test to verify server-side authentication, then report overallStatus separately. A missing client, profile, credential reference, host-key registration, identity binding, or queue file is a configuration gap, not proof of invalid credentials.
 
 Never ask the user to paste a password, token, authorization code, private key, or credential-manager export into chat. RemoteX accepts credential references from SSH Agent, identity-file paths, Windows Credential Manager, Windows integrated authentication, or named environment variables.

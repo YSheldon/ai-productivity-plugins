@@ -131,13 +131,15 @@ public static class RemoteXCredentialNative
 Add-Type -TypeDefinition $nativeSource -Language CSharp
 
 $receipt = [ordered]@{
-    schema = 'RemoteXCredentialSetupReceipt/v1'
+    schema = 'RemoteXCredentialSetupReceipt/v2'
     status = 'failed'
     existingBefore = $false
     referencePresent = $false
     targetSha256 = $null
+    failureCode = $null
 }
 $exitCode = 1
+$failureCode = 'prompt-unavailable'
 
 try {
     $targetBytes = [Text.Encoding]::UTF8.GetBytes($Target)
@@ -168,9 +170,12 @@ try {
     }
     else {
         if ($ExpectedUser.Length -gt 0 -and $credential.UserName -cne $ExpectedUser) {
+            $failureCode = 'account-mismatch'
             throw 'Account does not match the configured web credential.'
         }
+        $failureCode = 'credential-write-failed'
         [RemoteXCredentialNative]::Write($Target, $credential.UserName, $credential.Password)
+        $failureCode = 'presence-readback-failed'
         $receipt.referencePresent = (
             [RemoteXCredentialNative]::Exists($Target, 1) -or
             [RemoteXCredentialNative]::Exists($Target, 2)
@@ -188,6 +193,7 @@ catch [System.Management.Automation.PipelineStoppedException] {
 }
 catch {
     $receipt.status = 'failed'
+    $receipt.failureCode = $failureCode
     $exitCode = 1
 }
 finally {

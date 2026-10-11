@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import os
 import re
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import credential_store
+import config_store
 import execution
 import profile_tools
 import queue_leases
@@ -27,7 +29,7 @@ PLAYWRIGHT_VERSION = "1.62.1"
 PLUGIN = Path(__file__).resolve().parents[1]
 STATE_FIELDS = {"state","loginSubmitted","authenticationVerified","failureCode","updatedAt"}
 STATES = {"starting","opening","ready","submitted","verified","needs-user-check","failed","closed"}
-FAILURES = {None,"invalid-job","origin-blocked","redirect-blocked","tls-or-navigation-failed","form-unavailable","login-flow-failed","network-guard-failed","unsupported-transport","lease-no-longer-covers-session"}
+FAILURES = {None,"invalid-job","origin-blocked","redirect-blocked","tls-or-navigation-failed","certificate-pin-mismatch","certificate-validity-failed","request-too-large","response-too-large","form-unavailable","login-flow-failed","network-guard-failed","unsupported-transport","lease-no-longer-covers-session"}
 
 
 def state_root() -> Path:
@@ -90,7 +92,7 @@ def runtime_setup(args: dict[str, Any]) -> dict[str, Any]:
     return core.tool_result({"ok":True,"ready":True,"playwrightVersion":PLAYWRIGHT_VERSION,"installedNow":True})
 
 
-SETUP_FIELDS = {"profile","url","account","credential_ref","username_selector","password_selector","submit_selector","success_selector","confirm","timeout_seconds"}
+SETUP_FIELDS = {"profile","url","account","credential_ref","username_selector","password_selector","submit_selector","success_selector","certificate_sha256","confirm","timeout_seconds"}
 
 
 def setup(args: dict[str, Any]) -> dict[str, Any]:
@@ -99,7 +101,34 @@ def setup(args: dict[str, Any]) -> dict[str, Any]:
     result = profile_tools.setup({**args,"kind":"web","credential_source":"windows-credential-manager"})
     value = json.loads(result["content"][0]["text"])
     value["webScope"] = {"origin":web_policy.endpoint(args["url"])[1],"account":web_policy.account(args["account"]),"browser":"edge"}
+    value["certificateTrust"] = {"mode":"certificate-sha256" if "certificate_sha256" in args else "system", "sha256":web_policy.certificate_pin(args["certificate_sha256"]) if "certificate_sha256" in args else None}
     return core.tool_result(value)
+
+
+def certificate_trust(args: dict[str, Any]) -> dict[str, Any]:
+    if set(args) != {"profile", "origin", "certificate_sha256", "confirm"}:
+        raise core.ToolError("Pass profile, exact origin, certificate_sha256 (or null), and confirm")
+    name, raw, bundle = core.select_profile("web", args["profile"])
+    reference = credential_store.resolve_profile_reference(bundle, name, raw, "web")
+    web_policy.validate_binding(raw, reference.reference_dict())
+    if args["origin"] != raw["origin"]:
+        raise core.ToolError("Certificate trust must name the profile's exact HTTPS origin")
+    pin = web_policy.certificate_pin(args["certificate_sha256"]) if args["certificate_sha256"] is not None else None
+    result = {"ok":True,"profile":name,"origin":raw["origin"],"previousSha256":raw.get("certificate_sha256"),
+              "certificateSha256":pin,"trustMode":"certificate-sha256" if pin else "system", "preview":True,"configurationStored":False}
+    if not core.as_bool(args["confirm"], False):
+        return core.tool_result(result)
+    with vm_queue._resource_operation_lock(raw["queue_resource"]):
+        assert_resource_idle(raw["queue_resource"])
+        candidate = copy.deepcopy(bundle.data)
+        selected = candidate["profiles"][name]
+        if pin is None:
+            selected.pop("certificate_sha256", None)
+        else:
+            selected["certificate_sha256"] = pin
+        core._validate_config(candidate)
+        receipt = config_store.write_config(bundle.path, candidate, expected=bundle.data, expected_exists=True)
+    return core.tool_result({**result,"preview":False,"configurationStored":True,"configSha256":receipt.config_sha256})
 
 
 def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
@@ -309,6 +338,10 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
     resource = raw["queue_resource"]
     with queue_leases.leased_owner_operation(resource,requester) as owner:
         assert_resource_idle(resource)
+        _, current, current_bundle = core.select_profile("web", name)
+        current_reference = credential_store.resolve_profile_reference(current_bundle, name, current, "web")
+        if current != raw or current_reference.reference_dict() != reference.reference_dict():
+            raise core.ToolError("Web profile or certificate trust changed; probe the current configuration before login")
         lease = owner.get("lease") or {}
         if lease.get("remainingSeconds",0) < seconds + 45:
             raise core.ToolError("Renew this task's web queue lease to cover session_seconds plus 45 seconds")
@@ -386,6 +419,8 @@ def _schema(properties: dict, required: list[str]) -> dict:
 
 
 TOOLS = {
+    "remotex_web_certificate_trust":{"description":"Preview or explicitly set/revoke one web profile's exact-origin certificate SHA-256 trust. Confirm the fingerprint through a trusted channel first; null restores system trust.",
+        "inputSchema":_schema({"profile":{"type":"string"},"origin":{"type":"string"},"certificate_sha256":{"type":["string","null"]},"confirm":{"type":"boolean"}},["profile","origin","certificate_sha256","confirm"]),"handler":certificate_trust},
     "remotex_web_probe":{"description":"Open an isolated Edge session to verify HTTPS and login controls without reading or submitting credentials.","inputSchema":_schema({"profile":{"type":"string"}},["profile"]),"handler":probe},
     "remotex_web_profile_setup":{"description":"Preview or create an HTTPS/account-bound Edge web profile and open the local secure credential window. Password values are never accepted.",
         "inputSchema":_schema({k:({"type":"boolean"} if k=="confirm" else {"type":"integer","minimum":1,"maximum":600} if k=="timeout_seconds" else {"type":"string"}) for k in sorted(SETUP_FIELDS)},

@@ -1,6 +1,6 @@
 # Web Credentials
 
-RemoteX 0.5.9 adds Windows-only credential management for one HTTPS web origin
+RemoteX 0.5.10 provides Windows-only credential management for one HTTPS web origin
 and account. It uses the existing Windows Credential Manager and visible
 Get-Credential window, plus an isolated Microsoft Edge session. It does not
 read Edge's password database or attach to the user's existing tabs.
@@ -52,9 +52,42 @@ an existing matching package; this is local trusted configuration, not MCP input
 
 `remotex_web_probe({"profile":"web-console"})` opens and closes an isolated
 Edge session and checks the HTTPS page and controls without reading credentials.
-Self-signed, expired, untrusted or name-mismatched certificates stop the flow.
-Use a valid hostname and a certificate trusted by the local system. There is
-no ignore-certificate switch or automatic trust-store modification.
+By default, self-signed, expired, untrusted or name-mismatched certificates stop
+the flow. Use a valid hostname and a certificate trusted by the local system,
+or explicitly approve the exact-origin certificate pin described below.
+There is no global ignore-certificate switch or automatic trust-store change.
+
+## Exact-Origin Certificate Trust
+
+For a private endpoint that cannot use normal CA/hostname validation, first
+verify the leaf certificate's SHA-256 fingerprint through a trusted server
+console or another trusted channel. Network discovery alone is not approval.
+After the user explicitly approves that fingerprint and HTTPS origin, pass
+`certificate_sha256` to `remotex_web_profile_setup`. The field accepts 64 hex
+digits or 32 colon-separated hex byte pairs. The preview returns the normalized
+pin and exact origin; `confirm=true` stores the approved binding.
+
+For an existing profile, use `remotex_web_certificate_trust` with `profile`,
+`origin`, `certificate_sha256`, and `confirm=false` to preview a change. Repeat
+the approved request with `confirm=true`. `origin` must exactly match the stored
+scheme, host and port, without a path. To revoke only the pin and restore normal
+system CA/hostname validation, set `certificate_sha256` to JSON `null`; this
+does not delete the password or change other profiles. Active browser sessions
+must be closed before changing their trust. A changed profile/trust snapshot
+is rejected if a login was waiting to acquire its resource lock.
+
+The pin substitutes for CA-chain and hostname identity validation only at that
+origin. Each new TLS connection must present the exact leaf certificate and
+pass its validity dates before any HTTP header, cookie or request body can be
+sent. A changed, expired or not-yet-valid certificate blocks the operation;
+never silently replace a pin. The helper does not follow redirects, reuse TLS
+sessions, alter Edge flags to ignore errors, or install certificates into the
+system trust store. The ordinary strict-TLS path is unchanged for profiles
+without a pin. After any trust change, run the credential-free probe again.
+
+`certificate-pin-mismatch` and `certificate-validity-failed` are separate from
+`tls-or-navigation-failed`. Pins and endpoints are local configuration metadata;
+do not publish actual internal endpoint/fingerprint pairs in repository examples.
 
 ## Login And Lifetime
 
@@ -84,7 +117,8 @@ marker cleanup even if the original cleanup-lock attempt was busy.
 ## Browser Network Boundary
 
 The isolated browser runs offline behind a reject-only loopback proxy. A local
-driver broker handles only same-origin HTTPS requests with strict TLS and
+driver broker handles only same-origin HTTPS requests with system TLS trust or
+an explicitly approved per-origin certificate pin and
 rejects redirects rather than replaying credential-bearing requests. Service
 workers and WebSockets are blocked. A synthetic STUN UDP/TURN TCP canary runs
 at each browser start; failure blocks the login. These controls are tested
@@ -110,3 +144,13 @@ page read proves recovery for that attempt, not a diagnosed root cause.
 `REMOTEX_WEB_STATE_DIR` selects a protected local runtime/session directory.
 Normal reports show web login activity through its Profile's credential alias;
 they do not infer an operating-system version from a web console.
+
+The local credential helper uses an absolute Windows PowerShell executable and
+a child-only system `PSModulePath`. It does not inherit PowerShell 7 module
+search paths, module cache overrides or secret environment variables. This
+avoids `Get-Credential` disappearing when launched through a PowerShell 7 parent.
+Failure receipts expose only `prompt-unavailable`, `account-mismatch`,
+`credential-write-failed` or `presence-readback-failed`, never exception text.
+Stored, cancelled and failed exit codes are handled separately. On cancellation
+or failure the profile wizard rolls back the new configuration; a window launch
+alone is not evidence that a credential was saved.

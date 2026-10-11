@@ -50,6 +50,12 @@ def binding_id(origin: str, user: str) -> str:
     return hashlib.sha256((origin + "\0" + user).encode("utf-8")).hexdigest()
 
 
+def certificate_pin(value: Any) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"(?:[A-Fa-f0-9]{64}|(?:[A-Fa-f0-9]{2}:){31}[A-Fa-f0-9]{2})", value):
+        raise core.ToolError("certificate_sha256 must be one complete SHA-256 certificate fingerprint")
+    return value.replace(":", "").lower()
+
+
 def credential(origin: str, user: str) -> dict[str, str]:
     return {"source":"windows-credential-manager", "target":"RemoteX/Web/" + binding_id(origin, user),
             "web_origin":origin,"web_account":user}
@@ -65,8 +71,11 @@ def profile(args: dict[str, Any], alias: str) -> dict[str, Any]:
     resource = "web:" + binding_id(origin, user)
     if args.get("queue_resource") not in (None, resource):
         raise core.ToolError("Web queue resource must match the origin/account binding")
-    return {"kind":"web","url":url,"origin":origin,"account":user,"browser":"edge",
+    result = {"kind":"web","url":url,"origin":origin,"account":user,"browser":"edge",
             "credential_ref":alias,"queue_resource":resource,"queue_lease_seconds":1800, **selectors}
+    if "certificate_sha256" in args:
+        result["certificate_sha256"] = certificate_pin(args["certificate_sha256"])
+    return result
 
 
 def validate_binding(raw: dict[str, Any], record: dict[str, Any]) -> None:

@@ -15,6 +15,7 @@ import web_policy
 
 
 PROFILE_SETUP_PROPERTIES: dict[str, dict[str, Any]] = {
+    "certificate_sha256": {"type": "string"},
     "account": {"type": "string"},
     "username_selector": {"type": "string"},
     "password_selector": {"type": "string"},
@@ -81,7 +82,7 @@ COMMON_PROFILE_SETUP_FIELDS = frozenset(
     }
 )
 KIND_PROFILE_SETUP_FIELDS: dict[str, frozenset[str]] = {
-    "web": frozenset({"url","account","username_selector","password_selector","submit_selector","success_selector"}),
+    "web": frozenset({"url","account","username_selector","password_selector","submit_selector","success_selector","certificate_sha256"}),
     "ssh": frozenset(
         {
             "host",

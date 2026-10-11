@@ -1,5 +1,12 @@
 # RemoteX
 
+Version `0.5.10` adds explicitly approved, exact-origin SHA-256 certificate
+trust for web profiles. Pins replace CA/hostname identity validation only for
+that origin; certificate validity, HTTPS, redirect blocking and credential
+isolation remain enforced. Pins can be rotated or revoked through a confirmed
+tool. Windows credential prompts now isolate their system module path from
+PowerShell 7 parents and return sanitized, correctly classified failures.
+
 Version `0.5.9` adds Windows web credential profiles bound to one HTTPS origin
 and account, a local secure setup window, credential-free Edge probes, and
 bounded visible Edge login sessions. It keeps password values out of MCP,

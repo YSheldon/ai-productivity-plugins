@@ -4,6 +4,7 @@ import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import net from 'node:net';
 import dgram from 'node:dgram';
+import {pinnedResponse} from './web_tls.mjs';
 
 export async function launchEdge(pw, headless = false) {
   const deny = net.createServer(socket=>socket.destroy());
@@ -42,16 +43,34 @@ export function sameOrigin(url, origin) {
   catch { return false; }
 }
 
-export async function guardRoute(route, origin, failed) {
+export function browserCancellation(context) {
+  const cancellation = new AbortController();
+  context.once('close',()=>cancellation.abort());
+  return cancellation;
+}
+
+export async function guardRoute(route, origin, failed, certificateSha256, signal) {
   if (!sameOrigin(route.request().url(), origin)) { failed('origin-blocked'); await route.abort(); return; }
   try {
+    if (certificateSha256 !== undefined) {
+      const response = await pinnedResponse(route.request(), origin, certificateSha256, signal);
+      if (response.status >= 300 && response.status < 400 && response.status !== 304) {
+        failed('redirect-blocked');await route.abort();return;
+      }
+      await route.fulfill(response);
+      return;
+    }
     // Fulfil only a non-redirect response: automatic redirect replay could send a POST elsewhere.
     const response = await route.fetch({maxRedirects:0, timeout:20000});
     if (response.status() >= 300 && response.status() < 400 && response.status() !== 304) {
       failed('redirect-blocked'); await route.abort(); return;
     }
     await route.fulfill({response});
-  } catch { failed('tls-or-navigation-failed'); await route.abort().catch(()=>{}); }
+  } catch (error) {
+    const allowed = new Set(['invalid-job','origin-blocked','certificate-pin-mismatch','certificate-validity-failed','request-too-large','response-too-large']);
+    failed(allowed.has(error?.message)?error.message:'tls-or-navigation-failed');
+    await route.abort().catch(()=>{});
+  }
 }
 
 export function validateJob(job) {
@@ -63,6 +82,7 @@ export function validateJob(job) {
     if (!/^#[A-Za-z][A-Za-z0-9_-]{0,95}$/.test(c[field])) throw new Error('invalid-job');
   }
   if (c.success_selector && !/^#[A-Za-z][A-Za-z0-9_-]{0,95}$/.test(c.success_selector)) throw new Error('invalid-job');
+  if ('certificate_sha256' in c && (typeof c.certificate_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(c.certificate_sha256))) throw new Error('invalid-job');
   if (!Number.isFinite(job.deadline) || job.deadline <= Date.now() || job.deadline > Date.now()+3600000) throw new Error('invalid-job');
   return c;
 }
@@ -94,7 +114,7 @@ async function readJob() {
 
 async function main() {
   const directory = process.argv[2], modulePath = process.argv[3];
-  let browser, deny, context, page, timer, stopTimer, job, failure = null, state = {state:'starting',loginSubmitted:false,authenticationVerified:false,failureCode:null};
+  let browser, deny, context, page, timer, stopTimer, job, cancellation, failure = null, state = {state:'starting',loginSubmitted:false,authenticationVerified:false,failureCode:null};
   let writeSequence = Promise.resolve();
   const write = patch => {
     state = {...state,...patch,updatedAt:new Date().toISOString()};
@@ -110,14 +130,17 @@ async function main() {
     ({browser,deny}=await launchEdge(pw));
     await verifyNetworkGuard(browser);
     context = await browser.newContext({ignoreHTTPSErrors:false,serviceWorkers:'block',acceptDownloads:false});
+    cancellation = browserCancellation(context);
+    browser.once('disconnected',()=>cancellation.abort());
     await context.setOffline(true);
-    await context.route('**/*', route=>guardRoute(route,cfg.origin,code=>{failure=code;}));
+    await context.route('**/*', route=>guardRoute(route,cfg.origin,code=>{failure=code;},cfg.certificate_sha256,cancellation.signal));
     await context.routeWebSocket('**/*', socket=>{
       failure='unsupported-transport';socket.close();
     });
     page = await context.newPage();
+    page.once('close',()=>cancellation.abort());
     context.on('page', extra=>{if(extra!==page) void extra.close();});
-    const close = () => context.close().catch(()=>{});
+    const close = () => {cancellation.abort();return context.close().catch(()=>{});};
     timer = setTimeout(close, Math.max(1,job.deadline-Date.now()));
     stopTimer = setInterval(async()=>{try{await fs.access(path.join(directory,'close.request'));void close();}catch{}},500);
     await write({state:'opening'});
@@ -141,12 +164,13 @@ async function main() {
     await new Promise(resolve=>{if(page.isClosed())resolve();else page.once('close',resolve);});
     await write({state:'closed'});
   } catch (error) {
-    const allowed = new Set(['invalid-job','origin-blocked','redirect-blocked','tls-or-navigation-failed','form-unavailable','network-guard-failed','unsupported-transport']);
+    const allowed = new Set(['invalid-job','origin-blocked','redirect-blocked','tls-or-navigation-failed','certificate-pin-mismatch','certificate-validity-failed','request-too-large','response-too-large','form-unavailable','network-guard-failed','unsupported-transport']);
     const code = failure || (allowed.has(error?.message)?error.message:'login-flow-failed');
     if (page && job?.config) await page.locator(job.config.password_selector).fill('').catch(()=>{});
     await write({state:'failed',failureCode:code}).catch(()=>{});
   } finally {
     if(job)job.password=''; clearTimeout(timer);clearInterval(stopTimer);
+    cancellation?.abort();
     await context?.close().catch(()=>{});await browser?.close().catch(()=>{});
     deny?.close();
   }

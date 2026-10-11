@@ -407,6 +407,16 @@ def _powershell_path() -> str:
     )
 
 
+def _setup_environment() -> dict[str, str]:
+    allowed = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "USERPROFILE",
+               "LOCALAPPDATA", "APPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
+               "HOMEDRIVE", "HOMEPATH"}
+    environment = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+    # A PowerShell 7 parent can otherwise shadow the Windows PowerShell cmdlets.
+    environment["PSModulePath"] = str(Path(_powershell_path()).parent / "Modules")
+    return environment
+
+
 def _setup_arguments(
     reference: ResolvedCredential,
     receipt_path: Path,
@@ -456,16 +466,25 @@ def _decode_setup_receipt(path: Path, expected_target_sha256: str) -> dict[str, 
         "referencePresent",
         "targetSha256",
     }
+    if isinstance(value, dict) and value.get("schema") == "RemoteXCredentialSetupReceipt/v2":
+        expected_fields.add("failureCode")
     if (
         not isinstance(value, dict)
         or set(value) != expected_fields
-        or value.get("schema") != "RemoteXCredentialSetupReceipt/v1"
+        or not isinstance(value.get("schema"), str)
+        or value.get("schema") not in {"RemoteXCredentialSetupReceipt/v1", "RemoteXCredentialSetupReceipt/v2"}
+        or not isinstance(value.get("status"), str)
         or value.get("status") not in {"stored", "cancelled", "failed"}
         or type(value.get("existingBefore")) is not bool
         or type(value.get("referencePresent")) is not bool
         or value.get("targetSha256") != expected_target_sha256
     ):
         raise core.ToolError("RemoteX credential setup receipt is invalid")
+    if value["schema"] == "RemoteXCredentialSetupReceipt/v2":
+        failures = {"prompt-unavailable", "account-mismatch", "credential-write-failed", "presence-readback-failed"}
+        code = value["failureCode"]
+        if (value["status"] == "failed" and (not isinstance(code, str) or code not in failures)) or (value["status"] != "failed" and code is not None):
+            raise core.ToolError("RemoteX credential setup receipt is invalid")
     return value
 
 
@@ -496,6 +515,7 @@ def launch_secure_setup(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=_setup_environment(),
             close_fds=True,
             creationflags=(
                 subprocess.CREATE_NEW_CONSOLE
@@ -511,13 +531,14 @@ def launch_secure_setup(
         if not receipt_path.is_file():
             raise core.ToolError("RemoteX credential setup did not produce a receipt")
         receipt = _decode_setup_receipt(receipt_path, target_sha256)
-        expected_exit = 0 if receipt["status"] == "stored" else 2
+        expected_exit = {"stored": 0, "cancelled": 2, "failed": 1}[receipt["status"]]
         if process.returncode != expected_exit:
             raise core.ToolError(
                 "RemoteX credential setup receipt and exit status differ"
             )
         if receipt["status"] == "failed":
-            raise core.ToolError("RemoteX credential setup failed")
+            code = receipt.get("failureCode") or "setup-failed"
+            raise core.ToolError(f"RemoteX credential setup failed ({code})")
         present = windows_credentials.credential_exists(
             target,
             credential_types=(1, 2),

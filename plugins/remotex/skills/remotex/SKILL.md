@@ -34,8 +34,21 @@ to open the local password window. Never accept a password in chat. Existing
 credential setup/delete/doctor tools support these web-only aliases too.
 
 Run `remotex_web_runtime_setup` to check dependencies, then
-`remotex_web_probe` before submitting credentials. Do not bypass certificate
-errors or change browser security policy. A probe never uses credentials.
+`remotex_web_probe` before submitting credentials. A probe never uses credentials.
+Keep normal system TLS trust unless the user has explicitly approved both the
+exact HTTPS origin and a leaf certificate SHA-256 fingerprint verified through
+a trusted channel. Network discovery alone is not trusted confirmation.
+For a new profile, include the approved `certificate_sha256` in the setup
+preview and confirmed request. For an existing profile, preview
+`remotex_web_certificate_trust` with `profile`, the exact stored `origin`,
+`certificate_sha256`, and `confirm=false`; apply the approved request with
+`confirm=true`. To revoke only the pin, use that tool with
+`certificate_sha256=null` after approval. Close active sessions first.
+Pins replace CA/hostname identity checks only for that origin; validity dates
+remain enforced. A changed/expired pin blocks login and requires new trusted
+verification, never automatic replacement. Run the probe again after changing
+trust. Do not bypass browser warnings, globally ignore TLS errors, or modify
+system trust stores. See the web-credentials reference for formats and errors.
 For an authorized login, acquire its web queue with a stable requester and
 a lease covering `session_seconds` plus 45 seconds, then call
 `remotex_web_login` with `confirm=true`. Use the returned `webSessionId` as

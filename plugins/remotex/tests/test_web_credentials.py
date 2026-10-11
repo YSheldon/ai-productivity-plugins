@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import time
 import io
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -44,6 +45,74 @@ class WebCredentialTests(unittest.TestCase):
         self.assertTrue(p.profile["queue_resource"].startswith("web:"))
         self.assertNotIn("password", p.record)
         self.assertEqual(json.loads(self.path.read_text())["profiles"], {})
+
+    def test_certificate_pin_is_explicit_normalized_and_origin_bound(self):
+        p = profile_config.prepare({**self.args, "certificate_sha256": "AB:" * 31 + "AB"})
+        self.assertEqual(p.profile["certificate_sha256"], "ab" * 32)
+        bundle = core.ConfigBundle(p.candidate, self.path, "remotex", True)
+        credential_store.resolve_profile_reference(bundle, "web-lab", p.profile, "web")
+        p.candidate["profiles"]["web-lab"]["origin"] = "https://other.example:6868"
+        with self.assertRaises(core.ToolError):
+            core._validate_config(p.candidate)
+
+    def test_invalid_certificate_pins_cannot_enable_a_trust_exception(self):
+        for pin in ("", "a" * 63, "z" * 64, True, "*", "ab:" * 32, " a" * 32):
+            with self.subTest(pin=pin), self.assertRaises(core.ToolError):
+                profile_config.prepare({**self.args, "certificate_sha256": pin})
+
+    def test_existing_web_profiles_remain_strict_without_a_pin(self):
+        p = self.prepared()
+        self.assertNotIn("certificate_sha256", p.profile)
+        core._validate_config(p.candidate)
+
+    def test_certificate_trust_preview_write_and_revoke_are_exact_origin_scoped(self):
+        import web_adapter
+        self.assertTrue(callable(getattr(web_adapter, "certificate_trust", None)))
+        p = self.prepared()
+        self.path.write_text(json.dumps(p.candidate))
+        before = self.path.read_bytes()
+        args = {"profile": "web-lab", "origin": "https://console.example:6868",
+                "certificate_sha256": "ab" * 32, "confirm": False}
+        preview = json.loads(web_adapter.certificate_trust(args)["content"][0]["text"])
+        self.assertTrue(preview["preview"])
+        self.assertEqual(self.path.read_bytes(), before)
+        with self.assertRaises(core.ToolError):
+            web_adapter.certificate_trust({**args, "origin": "https://console.example", "confirm": True})
+        self.assertEqual(self.path.read_bytes(), before)
+        stored = json.loads(web_adapter.certificate_trust({**args, "confirm": True})["content"][0]["text"])
+        self.assertTrue(stored["configurationStored"])
+        self.assertEqual(core.load_config().data["profiles"]["web-lab"]["certificate_sha256"], "ab" * 32)
+        web_adapter.certificate_trust({**args, "certificate_sha256": None, "confirm": True})
+        self.assertNotIn("certificate_sha256", core.load_config().data["profiles"]["web-lab"])
+
+    def test_certificate_trust_cannot_change_during_an_active_browser_session(self):
+        import web_adapter
+        self.assertTrue(callable(getattr(web_adapter, "certificate_trust", None)))
+        self.path.write_text(json.dumps(self.prepared().candidate))
+        before = self.path.read_bytes()
+        with mock.patch.object(web_adapter, "assert_resource_idle", side_effect=core.ToolError("active web session")):
+            with self.assertRaisesRegex(core.ToolError, "active web session"):
+                web_adapter.certificate_trust({"profile": "web-lab", "origin": "https://console.example:6868",
+                    "certificate_sha256": "ab" * 32, "confirm": True})
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_login_rechecks_trust_after_acquiring_the_resource_lock(self):
+        import web_adapter, queue_leases
+        p = profile_config.prepare({**self.args, "certificate_sha256": "ab" * 32})
+        self.path.write_text(json.dumps(p.candidate))
+
+        @contextmanager
+        def rotate_before_acquisition(resource, requester):
+            web_adapter.certificate_trust({"profile": "web-lab", "origin": p.profile["origin"],
+                "certificate_sha256": None, "confirm": True})
+            yield {"lease": {"remainingSeconds": 1800}}
+
+        with (mock.patch.object(web_adapter, "_node", return_value="node"),
+              mock.patch.object(web_adapter, "_module_path", return_value=self.root),
+              mock.patch.object(queue_leases, "leased_owner_operation", rotate_before_acquisition),
+              mock.patch.object(core, "read_windows_generic_credential", side_effect=AssertionError("must not read credentials after trust changed"))):
+            with self.assertRaisesRegex(core.ToolError, "changed"):
+                web_adapter.login({"profile": "web-lab", "requester": "owner", "confirm": True})
 
     def test_setup_rejects_unsafe_origin_and_selector_inputs(self):
         for url in ("http://console.example/", "https://user:secret@console.example/", "https://console.example/?token=x", "https://console.example\\@evil.example/", "file:///x"):

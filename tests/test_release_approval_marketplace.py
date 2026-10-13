@@ -156,11 +156,14 @@ def test_repository_documents_feature_branch_and_per_plugin_install_commands() -
     assert readme_path.is_file()
     readme = readme_path.read_text(encoding="utf-8")
     assert f"codex plugin marketplace add {MARKETPLACE_URL}" in readme
-    assert "build-embedded shared `release_workflow_core`" in readme
-    assert "no longer depend on a runtime `product-release-gate` bridge" in readme
+    assert "docs/installation.md" in readme
+    installation = (ROOT / "docs/installation.md").read_text(encoding="utf-8")
+    assert "build-embedded shared\n`release_workflow_core`" in installation
+    assert "integrity-locked adapter commands" in installation
+    catalog = (ROOT / "docs/plugin-catalog.md").read_text(encoding="utf-8")
     for plugin in PLUGINS:
-        assert f"codex plugin add {plugin.name}@{MARKETPLACE_NAME}" in readme
-        assert plugin.name in readme
+        assert f"codex plugin add {plugin.name}@{MARKETPLACE_NAME}" in installation
+        assert f"../plugins/{plugin.name}/README.md" in catalog
 
 
 @pytest.mark.parametrize("plugin", PLUGINS, ids=lambda item: item.name)

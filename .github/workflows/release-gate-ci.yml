@@ -3,6 +3,13 @@ name: Release gate CI
 on:
   pull_request:
     paths:
+      - "README.md"
+      - "CHANGELOG.md"
+      - "docs/**"
+      - "scripts/project_docs.py"
+      - "tests/test_project_docs.py"
+      - "plugins/**/.codex-plugin/plugin.json"
+      - ".grok-plugin/marketplace.json"
       - ".github/workflows/release-gate-ci.yml"
       - "contracts/release-approval/**"
       - "shared/release_workflow_core/**"
@@ -31,6 +38,13 @@ on:
     branches:
       - main
     paths:
+      - "README.md"
+      - "CHANGELOG.md"
+      - "docs/**"
+      - "scripts/project_docs.py"
+      - "tests/test_project_docs.py"
+      - "plugins/**/.codex-plugin/plugin.json"
+      - ".grok-plugin/marketplace.json"
       - ".github/workflows/release-gate-ci.yml"
       - "contracts/release-approval/**"
       - "shared/release_workflow_core/**"
@@ -80,6 +94,9 @@ jobs:
 
       - name: Install test dependency
         run: python -m pip install --disable-pip-version-check pytest==8.3.5
+
+      - name: Validate project documentation
+        run: python scripts/project_docs.py --check
 
       - name: Set up Node for Edge credential tests
         uses: actions/setup-node@v4

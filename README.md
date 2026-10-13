@@ -1,227 +1,145 @@
 # AI Productivity Plugins
 
-This repository is a plugin marketplace maintained by Sheldon. Codex, Cursor, and Grok share the plugin directories and keep separate indexes:
+Practical plugins for remote operations, engineering delivery, and workplace automation.
 
-- Codex: `.agents/plugins/marketplace.json` plus each plugin's `.codex-plugin/plugin.json`
-- Cursor: `.cursor-plugin/marketplace.json` plus each plugin's `.cursor-plugin/plugin.json`
-- Grok: `.grok-plugin/marketplace.json` (currently `gitlab`, `remotex`, and `imap-smtp-mail`)
+[![Release gate CI](https://github.com/YSheldon/ai-productivity-plugins/actions/workflows/release-gate-ci.yml/badge.svg?branch=main)](https://github.com/YSheldon/ai-productivity-plugins/actions/workflows/release-gate-ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-16856b)](LICENSE)
 
-Skills, scripts, and local credential files are shared. Codex MCP stays in `.mcp.json` with relative `./` paths. Cursor `mcp.json` starts `C:\Windows\System32\cmd.exe` plus `scripts/launch_cursor_mcp.cmd`, using `${CURSOR_PLUGIN_ROOT}` (not `${PLUGIN_ROOT}`) so Cursor can expand the plugin directory. The wrapper restores Node and the Python launcher, then cds via `%~dp0`. Regenerating Cursor manifests from the Codex index:
+[Quick Start](#quick-start) | [Plugin Catalog](docs/plugin-catalog.md) | [What's New](CHANGELOG.md) | [Security](#security-and-compatibility)
 
-```powershell
-py -3 scripts/sync_cursor_plugin_manifests.py
-```
+A community-maintained marketplace by Sheldon for **Codex, Cursor, and Grok**.
+Install the plugins you need, keep credentials local, and reuse named profiles
+across supported clients. Selected engineering workflows also provide standalone
+CLIs and OS schedulers; they do not require Codex after setup.
 
-## Included Plugins
+## What's New
 
-- `imap-smtp-mail`: an IMAP/SMTP mail plugin adapted from the original `imap-smtp-email` skill by [gzlicanyi](https://github.com/gzlicanyi). Original source: [openclaw/skills: skills/gzlicanyi/imap-smtp-email](https://github.com/openclaw/skills/tree/main/skills/gzlicanyi/imap-smtp-email). This local adaptation supports QQ Mail, NetEase 163/126/yeah, Tencent Exmail, Ali Mail, 139 Mail, and custom IMAP/SMTP mailboxes.
-- `lark-cli`: a Lark/Feishu CLI plugin packaged and maintained by Sheldon. It bundles the existing `lark-*` skills and uses the locally installed `lark-cli` to work with docs, wikis, calendars, messages, Base tables, sheets, and related workflows.
-- `gitlab`: a GitLab REST API plugin for Codex. It supports project discovery, merge requests, sanitized approval and CI optimization analysis, a generic `CI_JOB_TOKEN` approval/scope gate, issues, pipelines, decoded API calls, and policy-bound atomic provisioning of a dedicated Windows project Runner with paused-first activation, token-safe child-process registration, Authenticode/SHA256/ACL validation, API attestation, and rollback.
-- `product-release-gate`: a fail-closed product material gate for immutable submission manifests, submission checks, test evidence and approval, final-material generation, release checks, scoped production authorization, four-stage deployment/rollback, production readback, and auditable report delivery.
-- `test-submission`: a submitter-side product material role plugin that freezes one explicit module submission, previews the request through the locked shared gate, and sends test-request mail through the locked IMAP/SMTP CLI.
-- `submission-gate`: a service-side role plugin that scans signed test-request mail, executes the authoritative submission gate through the locked shared gate, and sends pass or blocked notices.
-- `pre-release`: a tester-side role plugin that records one final `PASS` or `FAIL`, builds `Manifest-R` through the locked shared gate, and sends release-gate-check mail.
-- `release-gate`: a service-side role plugin that scans signed `PRERELEASE_REQUEST` mail, runs release-gate checks through the locked shared gate, and emits release-request or blocking notices while stopping at `RELEASE_READY_NOTIFIED`.
-- `rd-flywheel`: an evidence-first R&D workflow skill for turning new requirements, projects, and tasks into real production-proven capability, with versioned visual decision gates and post-production experience harvest.
-- `remotex`: a credential-reference-first remote operations plugin for SSH, Windows RDP, authenticated Windows guests, vSphere/ESXi, and VMware Workstation. It adds reusable credential aliases, batch missing-reference checks, a local secure setup/rotation prompt, confirmed deletion, secret-free asynchronous tasks, bounded guest execution, verified transfer, VM identity, snapshots, audit records, and renewable FIFO leases.
-- `wecom-codex-usage`: a WeCom / Enterprise WeChat plugin packaged and maintained by Sheldon. It connects to a self-built WeCom internal application for message delivery and summarizes local Codex usage signals from the current machine's Codex config and logs.
-- `daily-vuln-bulletin-email`: a verified daily vulnerability bulletin workflow. It uses live Feishu subscribers, severity-safe text/HTML content, exact MIME Subject and Message-ID readback, and recipient-header privacy checks while reusing the existing Lark and IMAP/SMTP plugins.
-- `world-time-reminder`: a Windows taskbar Beijing clock with exact-hour first-duty reminders, a `Y` confirmation path, and 16-minute automatic close.
+| Plugin version | New capability | Details |
+| --- | --- | --- |
+| RemoteX 0.5.10 | Exact-origin certificate trust and a more reliable Windows credential window | [Web credentials](plugins/remotex/docs/web-credentials.md) |
+| RemoteX 0.5.9 | Origin/account-bound credentials and isolated Edge sign-in | [Login workflow](docs/remotex-showcase.md#secure-web-sign-in) |
+| RemoteX 0.5.8 | Per-credential systems, architecture evidence, calls, queues, and last-use reports | [Usage reports](plugins/remotex/docs/usage-reports.md) |
+| RemoteX 0.5.7 | One-step FIFO admission for authorized tasks, without preemption | [Queue behavior](plugins/remotex/README.md#shared-vm-queue) |
+| RemoteX 0.5.6 | Verified deployment of a fixed management-center service-key set | [Scope and limits](CHANGELOG.md#remotex-056) |
 
-## Use In Grok
+[Full change history and upgrade notes](CHANGELOG.md). Versions belong to individual
+plugins, not to the marketplace as a whole.
 
-Register the marketplace, then install only the Grok-indexed plugins. Grok does not read the Codex index.
+## RemoteX Spotlight
 
-```powershell
-grok plugin marketplace add YSheldon/ai-productivity-plugins
-grok plugin install gitlab --trust
-grok plugin install remotex --trust
-grok plugin install imap-smtp-mail --trust
-```
+**One profile-based toolkit for SSH, RDP, Windows guests, VMware, and secure Edge sign-in.**
+RemoteX combines local credential aliases, physical-host and VM identity checks,
+bounded execution, verified transfers, and cooperative queue ownership.
 
-Enable the plugins in `~/.grok/config.toml` if they stay off after install:
+**Report preview: synthetic demo data**
 
-```toml
-[plugins]
-enabled = ["gitlab", "remotex", "imap-smtp-mail"]
-```
+| Credential alias | Historical OS evidence | Configured architecture | Remote calls | Reservation lower bound | Last use (UTC) |
+| --- | --- | --- | --- | --- | --- |
+| lab-x86-operator | 10.0.19045 | x86 | 18 | 0.8% | Jan 14, 09:20 |
+| lab-amd64-operator | 10.0.22631 | AMD64 | 42 | 1.9% | Jan 15, 10:45 |
+| lab-arm64-operator | 10.0.26100 | ARM64 | 27 | 1.3% | Jan 15, 11:10 |
 
-GitLab, RemoteX, and mail keep using the same local credential files as Codex. Do not copy tokens, mailbox passwords, or host paths into the repository. The GitHub Copilot MCP used by Codex (`github@openai-curated`) is not part of this marketplace.
+*Illustrative 30-day summary, not a live inventory or application screenshot.
+System observations are historical; reservations are recorded lower bounds,
+not CPU utilization or proof of global machine exclusivity. [Full demo context](docs/remotex-showcase.md#per-credential-reports).*
 
-## Use In Codex
-
-Open this repository in Codex App. Codex reads `.agents/plugins/marketplace.json` and shows the `IMAP/SMTP Mail`, `Lark / Feishu CLI`, `GitLab`, `Product Release Gate`, `Test Submission`, `Submission Gate`, `Pre Release`, `Release Gate`, `RemoteX`, `WeCom Codex Usage`, and `Daily Vulnerability Bulletin` plugins under this local marketplace.
-
-After installing the IMAP/SMTP Mail plugin, the recommended setup path is the local setup wizard. Ask Codex:
+Try these prompts after installing RemoteX:
 
 ```text
-Open the mail setup wizard
+Use RemoteX to check all missing credential references without modifying anything.
+Use RemoteX to export a 30-day per-credential usage report as HTML, JSON, and CSV.
+Use RemoteX to probe the configured web-console profile, then sign in once if ready.
 ```
 
-The wizard opens a local browser page. Choose the mail provider, enter the mailbox address and client authorization code, then save. You do not need to edit JSON by hand.
+[Explore RemoteX](docs/remotex-showcase.md) for local secure input, certificate-pin
+approval, platform requirements, and the distinction between submitted and verified sign-in.
 
-Manual configuration is also supported:
+## Choose Your Workflow
 
-```bash
-mkdir -p ~/.imap-smtp-mail
-cp ./plugins/imap-smtp-mail/config/accounts.example.json ~/.imap-smtp-mail/accounts.json
-```
+| Goal | Start here |
+| --- | --- |
+| Operate shared hosts and VMs, inspect usage, or sign in to a web console | [RemoteX](plugins/remotex/README.md) |
+| Review merge requests, analyze CI, bind approvals to scope, or provision a Windows Runner | [GitLab](plugins/gitlab/README.md) |
+| Submit artifacts, verify gates, collect approvals, and authorize staged releases | [Release workflow guide](docs/product-material-release/installation-and-quickstart.md) |
+| Read and send mail, work in Lark, or send WeCom application messages | [Collaboration plugins](docs/plugin-catalog.md#collaboration-and-reporting) |
+| Deliver an audited vulnerability bulletin | [Daily Vulnerability Bulletin](plugins/daily-vuln-bulletin-email/README.md) |
+| Govern capability gaps through MCP, CLI, and scheduling | [R&D Flywheel](plugins/rd-flywheel/README.md) |
+| Display a Beijing taskbar clock with duty reminders on Windows | [World Time Reminder](plugins/world-time-reminder/README.md) |
 
-Edit `~/.imap-smtp-mail/accounts.json` with the email address, username, and client authorization code.
+The [complete catalog](docs/plugin-catalog.md) includes every available plugin,
+its manifest version, and its client-index membership. The original `ssh` entry
+is legacy and unavailable for new installation; use RemoteX instead.
 
-Do not use a web login password. Providers such as QQ Mail and NetEase usually require IMAP/SMTP to be enabled in the web mailbox settings first, then an authorization code or app-specific password must be generated.
+## Quick Start
 
-After installing the Lark / Feishu CLI plugin, use the existing Lark skill prompts, for example:
-
-```text
-Read and summarize a Lark document
-Check my Lark calendar
-```
-
-The plugin does not add a separate MCP wrapper and does not reimplement Lark OpenAPI calls. It packages the existing `lark-*` skills and keeps using the locally installed and authenticated `lark-cli`.
-
-After installing the GitLab plugin, configure a personal access token or a profile config:
-
-```powershell
-$env:GITLAB_URL = "https://gitlab.example.com"
-$env:GITLAB_TOKEN = "<personal-access-token>"
-```
-
-For multiple GitLab instances, set `GITLAB_CONFIG` to a JSON profile file based on `plugins/gitlab/config/config.example.json`. Store tokens in environment variables through `token_env` rather than committing secrets.
-
-After installing the Product Release Gate plugin, use the built-in production bootstrap for filesystem targets. It writes a disabled, fail-closed configuration and an exact adapter dependency lock without writing secret values:
-
-```powershell
-py -3 plugins/product-release-gate/scripts/bootstrap_filesystem_production.py `
-  --output-config C:\ProgramData\ProductReleaseGate\config.json `
-  --preproduction-target D:\ReleaseTargets\Preproduction `
-  --canary-target D:\ReleaseTargets\Canary `
-  --production-target D:\ReleaseTargets\Production
-```
-
-For another adapter type, copy and customize `plugins/product-release-gate/config/config.example.json`. Then point the plugin at the protected configuration:
-
-```powershell
-$env:PRODUCT_RELEASE_GATE_CONFIG = "C:\path\to\product-release-gate.json"
-```
-
-Run `release_gate_preflight` before creating a release event. The plugin exposes a fail-closed flow:
-
-```text
-submission -> submission gate -> test evidence -> approval
--> final material -> release gate -> RELEASE_READY
--> unified approval -> RELEASE_AUTHORIZED
--> pre-production -> canary -> full deployment -> production readback
--> PRODUCTION_VERIFIED -> sealed report -> SMTP delivery + exact IMAP readback
-```
-
-The cloud-scan, automated-test, deployment, rollback, and production-readback commands are locked local adapter contracts and must return schema-bound JSON. Missing adapters, invalid signatures, non-clean scan results, failed tests, missing files, extra files, SHA1/SHA256 drift, approval drift, deployment evidence drift, or production readback mismatch block the event. `RELEASE_READY` proves gate completion only. The independent production controller then requires unified approval, issues an expiring stage-scoped credential, executes the configured stages, verifies production state, and can deliver the sealed completion report with deterministic Message-ID and exact IMAP readback. All production automation and report delivery remain explicit opt-ins and default to disabled.
-
-The four product-material role plugins are moving to one build-embedded shared `release_workflow_core` copy per plugin so they no longer depend on a runtime `product-release-gate` bridge, while still keeping submitter, gate, tester, and release-mailbox responsibilities separate:
-
-- `test-submission`: explicit `kernel` / `client` / `server` submission only, no default module, retry-only scheduler, and standalone CLI or MCP without a Codex runtime requirement after setup.
-- `submission-gate`: fail-closed mailbox automation with one credential-free config, no `allowed_senders` list escape hatch, and unattended scheduler support on Windows Task Scheduler, systemd, or cron.
-- `pre-release`: final `test_result` and `output_dir` stay task-level inputs instead of installation defaults, with the same MCP, Skill, CLI, setup, and unattended scheduler surfaces.
-- `release-gate`: validates `PRERELEASE_REQUEST` handoffs, emits `RELEASE_GATE_PASS`, and stops at `RELEASE_READY_NOTIFIED`; it never claims deployment success or production authorization.
-
-After installing the R&D Flywheel plugin, invoke it for new requirements, projects, automations, and engineering tasks that must become reusable production capability:
-
-```text
-Use this new requirement as the first R&D Flywheel practice
-Confirm this project's design through the visual decision gate
-```
-
-The skill uses local Visual Companion click events as versioned design-decision evidence. Those clicks never replace Feishu approval, protected-branch policy, release authorization, or deterministic production gates.
-
-After installing RemoteX, copy `plugins/remotex/config/config.example.json` to `~/.config/remotex/config.json` and replace the example endpoints with local profile values. Keep only top-level credential aliases and profile `credential_ref` selectors in this file. Use `remotex_credential_doctor` and the local secure setup prompt rather than putting values in chat or commands. Set `platform` and host-key policy for SSH. Profiles that represent one Windows VM must share one `vm_identity` and one `queue_resource` across SSH, RDP, Windows guest, and VMware Workstation views.
-
-Run `remotex_status` with the selected profile before connecting. It separates selected-profile readiness from aggregate status, capability matrix, missing clients, credential references, host-key governance, identity binding, and local queue state. Queue claims use bounded renewable leases; expiry and explicit stale recovery release ownership but never silently assign a waiter. Use the Windows guest preflight receipt before VMware snapshot mutations. The old SSH config remains readable in compatibility mode when no RemoteX config exists. See `plugins/remotex/README.md` for execution limits, verified transfer, snapshots, audit behavior, and safety boundaries.
-
-After installing the WeCom Codex Usage plugin, configure a WeCom self-built internal application:
-
-```text
-Open the WeCom configuration wizard
-```
-
-The wizard stores `corp_id`, app `corp_secret`, and `agent_id` in `~/.wecom-codex-usage/config.json`. The plugin can then test the connection, send WeCom app messages, and build a local Codex usage summary from `~/.codex/config.toml` plus recent `~/.codex/log/codex-tui.log` token usage lines. It does not claim to read a stable hosted profile-usage API.
-
-## Use In Cursor
-
-Cursor does not load Codex plugin marketplaces. It reads `.cursor-plugin/marketplace.json` and installs each plugin that has `.cursor-plugin/plugin.json`. The `ssh` plugin stays Codex-only (`NOT_AVAILABLE`) and is omitted from the Cursor index.
-
-### Team marketplace
-
-On Teams or Enterprise, import this GitHub repository from Dashboard → Plugins → Import from Repo:
-
-```text
-https://github.com/YSheldon/ai-productivity-plugins
-```
-
-Cursor parses `.cursor-plugin/marketplace.json`, then teammates install plugins from Customize. Enable Auto Refresh if the Cursor GitHub App is installed on the repository.
-
-CLI equivalent:
-
-```powershell
-agent plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins
-```
-
-### Local install
-
-Copy one plugin directory into Cursor's local plugin folder, then reload the window. Current Cursor builds reject symlinks that point outside `~/.cursor/plugins/local`.
-
-```powershell
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.cursor\plugins\local" | Out-Null
-Copy-Item -Recurse .\plugins\remotex "$env:USERPROFILE\.cursor\plugins\local\remotex"
-```
-
-After reload, confirm the plugin under Customize. RemoteX, GitLab, and mail keep using the same local credential files as Codex. Shared VM work still goes through the RemoteX queue; do not bypass it with a second direct SSH or RDP session.
-
-## How Codex & GPT-5.6 were used
-
-Codex and GPT-5.6 were used as engineering assistants to inspect existing plugin contracts, implement narrowly scoped changes, generate and run tests, review security boundaries, and maintain the English documentation. The generated work was not accepted on model output alone: repository validators, unit tests, MCP protocol smoke tests, diff review, and secret-pattern scans remain required before publication. Runtime credentials and private infrastructure values were neither requested for documentation nor committed to this repository.
-
-## Install From GitHub
-
-Register the repository marketplace, then install each workflow plugin independently.
-
-Cursor (Teams / Enterprise Import from Repo, or CLI):
-
-```powershell
-agent plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins
-```
-
-Local Cursor copy for one plugin:
-
-```powershell
-Copy-Item -Recurse .\plugins\remotex "$env:USERPROFILE\.cursor\plugins\local\remotex"
-```
-
-Grok:
-
-```powershell
-grok plugin marketplace add YSheldon/ai-productivity-plugins
-grok plugin install gitlab --trust
-grok plugin install remotex --trust
-grok plugin install imap-smtp-mail --trust
-```
-
-Codex:
+### Codex
 
 ```powershell
 codex plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins.git
-codex plugin add release-approval@ai-productivity-plugins
-codex plugin add release-approval-verifier@ai-productivity-plugins
-codex plugin add product-release-gate@ai-productivity-plugins
-codex plugin add test-submission@ai-productivity-plugins
-codex plugin add submission-gate@ai-productivity-plugins
-codex plugin add pre-release@ai-productivity-plugins
-codex plugin add release-gate@ai-productivity-plugins
-codex plugin add rd-flywheel@ai-productivity-plugins
 codex plugin add remotex@ai-productivity-plugins
 ```
 
-The release workflow plugins also provide standalone CLIs and OS schedulers, so those workflows can run without Codex after setup.
+Then ask: `Use RemoteX to check runtime readiness and preview a new profile.`
+Enter credentials only through the plugin's local setup flow, never in chat.
 
-To publish these plugins in the official public marketplace, follow the official review and submission process. This repository already contains the local marketplace structure.
+### Cursor
 
-Only plugin source, skills, and example configuration are committed. Real mailbox accounts, authorization codes, GitLab tokens, WeCom app secrets, Lark tokens, SSH private keys, RemoteX profiles, remote-management credentials, release-gate adapter settings, and local runtime caches are not included. Real mailbox configuration belongs in each user's local `~/.imap-smtp-mail/accounts.json`; real WeCom configuration belongs in `~/.wecom-codex-usage/config.json`; real RemoteX configuration belongs in `~/.config/remotex/config.json` or a protected file referenced by `REMOTEX_CONFIG`; real release-gate configuration belongs in a protected local file referenced by `PRODUCT_RELEASE_GATE_CONFIG`.
+Import this repository into your team marketplace, then install the desired
+plugin from **Customize**. For a local Windows installation, use the
+[copy-and-verify instructions](docs/installation.md#cursor); avoid nested copies
+when updating an already populated plugin directory.
+
+### Grok
+
+```powershell
+grok plugin marketplace add YSheldon/ai-productivity-plugins
+grok plugin install remotex --trust
+```
+
+Only GitLab, RemoteX, and IMAP/SMTP Mail are currently indexed for Grok. Follow the
+[installation guide](docs/installation.md) for prerequisites, authentication,
+update checks, and safe reconnection of running clients.
+
+## Security and Compatibility
+
+- **References, not chat secrets.** Keep real tokens, passwords, keys, profiles,
+  and environment-specific configuration outside this repository. Storage
+  mechanisms differ by plugin; consult its security notes.
+- **Narrow trust.** Web pins require trusted-channel confirmation of the exact
+  origin and leaf certificate. They replace CA/hostname checks only for that
+  origin; validity dates remain enforced. There is no global TLS-ignore switch.
+- **No queue preemption.** RemoteX queues are cooperative and local to the
+  machine. Queue admission does not authorize reboot, snapshots, or deployment.
+- **Evidence has a scope.** Credential presence is not authentication. A passing
+  gate is not deployment. Historical system receipts are not fresh host probes.
+- **Client discovery is not platform certification.** An indexed plugin may have
+  Windows-only operations or require installed clients and configured adapters.
+  See the [compatibility notes](docs/plugin-catalog.md#compatibility-and-evidence).
+
+## Documentation and Contributing
+
+- [Plugin catalog](docs/plugin-catalog.md): choose a plugin and inspect its current version.
+- [Installation and upgrades](docs/installation.md): configure a client without overwriting local state.
+- [RemoteX showcase](docs/remotex-showcase.md): examples, report preview, and web credential flow.
+- [Changelog](CHANGELOG.md): user-facing changes and version-specific limits.
+- [Documentation maintenance](docs/maintaining-project-docs.md): regenerate the catalog and validate a release update.
+
+For a contribution, use a focused branch, preserve existing behavior, add relevant
+tests, update affected documentation, and run the full repository test suite.
+Public examples must use synthetic data and reserved example endpoints.
+
+## Attribution and License
+
+Licensed under [MIT](LICENSE). IMAP/SMTP Mail is adapted from the original
+`imap-smtp-email` skill by [gzlicanyi](https://github.com/gzlicanyi), available in
+[openclaw/skills](https://github.com/openclaw/skills/tree/main/skills/gzlicanyi/imap-smtp-email).
+Preserve upstream notices and plugin-specific attribution when redistributing.
+
+## How Codex & GPT-5.6 were used
+
+Codex and GPT-5.6 assisted with contract inspection, scoped implementation,
+regression tests, security review, and English documentation. Changes were checked
+with repository validators, unit tests, MCP smoke tests, diff review, and
+secret-pattern scans. Generated code and passing fixtures alone do not establish
+production acceptance. Real credentials and private infrastructure values are not
+part of the published examples.

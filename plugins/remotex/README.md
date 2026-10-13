@@ -1,5 +1,21 @@
 # RemoteX
 
+[Showcase and examples](https://github.com/YSheldon/ai-productivity-plugins/blob/main/docs/remotex-showcase.md) | [Install and upgrade](https://github.com/YSheldon/ai-productivity-plugins/blob/main/docs/installation.md) | [Change history](https://github.com/YSheldon/ai-productivity-plugins/blob/main/CHANGELOG.md)
+
+Named profiles for remote operations, local credential management, and evidence-backed reporting.
+
+| Need | Entry point |
+| --- | --- |
+| Systems, architecture evidence, calls, queues, and last use by credential | [Usage reports](docs/usage-reports.md) |
+| HTTPS console sign-in through isolated Edge and local secure input | [Web credentials](docs/web-credentials.md) |
+| Profile setup, missing aliases, rotation, and deletion | [Credential lifecycle](docs/credential-lifecycle.md) |
+| Authorized tasks without preemption | [Shared VM queue](#shared-vm-queue) |
+| SSH, RDP, VMware, and vSphere | [Protocol reference](#ssh-rdp-and-vsphere) |
+
+[View a synthetic report preview and credential workflow](https://github.com/YSheldon/ai-productivity-plugins/blob/main/docs/remotex-showcase.md).
+
+## Recent Versions
+
 Version `0.5.10` adds explicitly approved, exact-origin SHA-256 certificate
 trust for web profiles. Pins replace CA/hostname identity validation only for
 that origin; certificate validity, HTTPS, redirect blocking and credential
@@ -221,6 +237,8 @@ Report reachability, credential readiness, composite identity status, queue owne
 - remotex_status
 - Profile setup: confirmed preview, v1-to-v2 write, credential prompt, rollback
 - Credentials: doctor, secure setup/rotation, confirmed deletion
+- Web: profile setup, runtime check, credential-free probe, certificate trust, bounded Edge login, session status and close
+- Usage: per-credential systems/activity report and local HTML/JSON/CSV export
 - SSH: test, command or script execution, transfer, resumable tasks, agent and host-key governance
 - RDP: remotex_rdp_test and remotex_rdp_open
 - Windows guest: test, preflight, bounded script, verified copy, authenticated reboot wait

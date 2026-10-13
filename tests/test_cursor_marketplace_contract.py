@@ -152,11 +152,14 @@ def test_cursor_mcp_launcher_maps_python3_to_py() -> None:
 
 def test_readme_documents_cursor_install_without_replacing_codex() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert ".cursor-plugin/marketplace.json" in readme
-    assert ".agents/plugins/marketplace.json" in readme
+    assert "docs/installation.md" in readme
+    installation = (ROOT / "docs/installation.md").read_text(encoding="utf-8")
+    maintenance = (ROOT / "docs/maintaining-project-docs.md").read_text(encoding="utf-8")
+    assert ".cursor-plugin/marketplace.json" in installation
+    assert ".agents/plugins/marketplace.json" in installation
     assert "https://github.com/YSheldon/ai-productivity-plugins" in readme
     assert "codex plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins.git" in readme
-    assert "Import from Repo" in readme
-    assert "agent plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins" in readme
-    assert r".cursor\plugins\local" in readme or "~/.cursor/plugins/local" in readme
-    assert "py -3 scripts/sync_cursor_plugin_manifests.py" in readme
+    assert "Import from Repo" in installation
+    assert "cursor-agent plugin marketplace add https://github.com/YSheldon/ai-productivity-plugins" in installation
+    assert r".cursor\plugins\local" in installation or "~/.cursor/plugins/local" in installation
+    assert "py -3 scripts/sync_cursor_plugin_manifests.py" in maintenance

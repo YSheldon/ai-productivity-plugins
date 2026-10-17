@@ -16,6 +16,7 @@ CLIs and OS schedulers; they do not require Codex after setup.
 
 | Plugin version | New capability | Details |
 | --- | --- | --- |
+| RemoteX 0.5.12 | Isolated Edge pages resize with the window, with read-only geometry diagnostics | [Responsive windows](plugins/remotex/docs/web-credentials.md#responsive-windows) |
 | RemoteX 0.5.11 | Read the authenticated page and passive business results in the same isolated session | [Same-session control](plugins/remotex/docs/web-credentials.md#same-session-controlled-operations) |
 | RemoteX 0.5.10 | Exact-origin certificate trust and a more reliable Windows credential window | [Web credentials](plugins/remotex/docs/web-credentials.md) |
 | RemoteX 0.5.9 | Origin/account-bound credentials and isolated Edge sign-in | [Login workflow](docs/remotex-showcase.md#secure-web-sign-in) |

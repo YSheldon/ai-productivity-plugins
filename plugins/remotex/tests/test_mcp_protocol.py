@@ -22,7 +22,7 @@ class MCPProtocolTests(unittest.TestCase):
             }
         )
         self.assertEqual(response["result"]["serverInfo"]["name"], "remotex")
-        self.assertEqual(response["result"]["serverInfo"]["version"], "0.5.11")
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.5.12")
 
     def test_tools_list_has_all_adapters(self) -> None:
         response = remotex_mcp.handle_request(

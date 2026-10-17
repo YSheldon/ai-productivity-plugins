@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 import {sameOrigin,guardRoute,validateJob,submitLogin,launchEdge,verifyNetworkGuard} from '../scripts/web_login_worker.mjs';
+import * as worker from '../scripts/web_login_worker.mjs';
+import {SessionControl} from '../scripts/web_control.mjs';
 
 const cfg = {url:'https://console.example:6868/#/',origin:'https://console.example:6868',account:'security',username_selector:'#user',password_selector:'#pass',submit_selector:'#login',success_selector:null};
 test('origin matching rejects scheme, port, userinfo and sibling-host changes',()=>{
@@ -55,4 +57,48 @@ test('real Edge fixture sends exact keyboard input and masks legacy text field',
     assert.deepEqual(await page.evaluate(()=>window.received),{user:'security',pass:'synthetic-pass!42',type:'password'});
     assert.equal(await page.locator('#success').isVisible(),true);
   } finally { await browser.close();deny.close(); }
+});
+
+test('visible Edge content follows actual window enlargement and shrinking', {timeout:30000},async()=>{
+  assert.equal(typeof worker.createWebContext,'function');
+  const require=createRequire(import.meta.url);
+  const pw=require('../scripts/web-runtime/node_modules/playwright-core');
+  const {browser,deny}=await launchEdge(pw,false);
+  try {
+    const context=await worker.createWebContext(browser);
+    await context.setOffline(true);
+    await context.route('**/*',r=>r.fulfill({contentType:'text/html',body:'<style>html,body{margin:0;overflow:hidden}#main{width:100vw;height:100vh}</style><input id="pass" hidden><main id="main">Responsive console fixture</main>'}));
+    const page=await context.newPage();await page.goto(cfg.url);
+    const pageCDP=await context.newCDPSession(page),browserCDP=await browser.newBrowserCDPSession();
+    const {targetInfo}=await pageCDP.send('Target.getTargetInfo');
+    const {windowId}=await browserCDP.send('Browser.getWindowForTarget',{targetId:targetInfo.targetId});
+    const resize=async(width,height,previous)=>{
+      await browserCDP.send('Browser.setWindowBounds',{windowId,bounds:{windowState:'normal'}});
+      await browserCDP.send('Browser.setWindowBounds',{windowId,bounds:{left:40,top:40,width,height}});
+      let view,bounds;
+      for(let attempt=0;attempt<30;attempt++){
+        ({bounds}=await browserCDP.send('Browser.getWindowBounds',{windowId}));
+        view=await page.evaluate(()=>({width:innerWidth,height:innerHeight,contentWidth:document.getElementById('main').getBoundingClientRect().width,contentHeight:document.getElementById('main').getBoundingClientRect().height}));
+        if(bounds.width===width && bounds.height===height && (!previous || (view.width!==previous.width && view.height!==previous.height)))break;
+        await new Promise(resolve=>setTimeout(resolve,100));
+      }
+      assert.equal(bounds.width,width);assert.equal(bounds.height,height);
+      assert.equal(view.contentWidth,view.width);assert.equal(view.contentHeight,view.height);
+      return view;
+    };
+    // Keep the test windows within the small desktop available on hosted runners.
+    const narrow=await resize(600,460),wide=await resize(900,680,narrow),shrunk=await resize(700,500,wide);
+    assert.ok(wide.width>narrow.width+200,`${narrow.width} -> ${wide.width}: viewport must grow with the window`);
+    assert.ok(wide.height>narrow.height+100,`${narrow.height} -> ${wide.height}: viewport height must grow`);
+    assert.ok(shrunk.width<wide.width-100 && shrunk.height<wide.height-100,'viewport must shrink with the window');
+    assert.equal(page.viewportSize(),null,'the visible window must not use an emulated fixed viewport');
+    const control=new SessionControl(page,{...cfg,success_selector:'#main'},{deadline:Date.now()+60000,secret:'fixture-secret',check:()=>{}});
+    try {
+      const observation=await control.observe();
+      assert.equal(observation.geometry.mode,'window');
+      assert.deepEqual(observation.geometry.viewport,{width:shrunk.width,height:shrunk.height});
+      assert.deepEqual(observation.geometry.content,{width:shrunk.contentWidth,height:shrunk.contentHeight});
+      assert.ok(observation.geometry.window.width>=observation.geometry.viewport.width);
+    } finally {await control.dispose();}
+  } finally {await browser.close();deny.close();}
 });

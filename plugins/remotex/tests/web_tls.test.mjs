@@ -191,6 +191,7 @@ async function workerControlFixture(t, rejectTransport=false) {
   };
   const observation=await call('observe');
   assert.match(observation.text,/Fixture Center/);
+  assert.equal(observation.geometry.mode,'window','the actual login worker must not restore a fixed viewport');
   await new Promise(r=>setTimeout(r,700));
   const business=await call('read-result');
   assert.equal(business.newRequestSent,false);

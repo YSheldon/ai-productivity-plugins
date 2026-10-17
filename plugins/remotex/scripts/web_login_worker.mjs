@@ -18,6 +18,11 @@ export async function launchEdge(pw, headless = false) {
   } catch(error) {deny.close();throw error;}
 }
 
+export function createWebContext(browser) {
+  // Visible sessions follow the user's window instead of Playwright's fixed test viewport.
+  return browser.newContext({viewport:null,ignoreHTTPSErrors:false,serviceWorkers:'block',acceptDownloads:false});
+}
+
 export async function verifyNetworkGuard(browser) {
   let packets=0,connections=0;
   const udp=dgram.createSocket('udp4'),tcp=net.createServer(socket=>{connections++;socket.destroy();});
@@ -128,7 +133,7 @@ async function main() {
     const pw = require(modulePath);
     ({browser,deny}=await launchEdge(pw));
     await verifyNetworkGuard(browser);
-    context = await browser.newContext({ignoreHTTPSErrors:false,serviceWorkers:'block',acceptDownloads:false});
+    context = await createWebContext(browser);
     cancellation = browserCancellation(context);
     browser.once('disconnected',()=>cancellation.abort());
     await context.setOffline(true);

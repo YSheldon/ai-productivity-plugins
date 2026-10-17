@@ -22,7 +22,7 @@ Explore [web sign-in, scoped certificate trust, and per-credential reports](remo
 
 | Plugin / guide | Version | Codex | Cursor | Grok | Purpose |
 | --- | --- | --- | --- | --- | --- |
-| [remotex](../plugins/remotex/README.md) | 0.5.10 | Yes | Yes | Yes | Operate remote systems with confirmed profile setup, physical Windows host admission, reusable credential aliases, secure local credential lifecycle tools, bounded execution, verified transfer, VM identity, snapshots, and cooperative leases. |
+| [remotex](../plugins/remotex/README.md) | 0.5.11 | Yes | Yes | Yes | Operate remote systems with confirmed profile setup, physical Windows host admission, reusable credential aliases, secure local credential lifecycle tools, bounded execution, verified transfer, VM identity, snapshots, and cooperative leases. |
 
 ## GitLab and CI
 

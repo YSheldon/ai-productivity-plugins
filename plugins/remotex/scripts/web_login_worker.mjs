@@ -5,6 +5,7 @@ import {fileURLToPath} from 'node:url';
 import net from 'node:net';
 import dgram from 'node:dgram';
 import {pinnedResponse} from './web_tls.mjs';
+import {SessionControl, dispatch, projectResponse, readFrames} from './web_control.mjs';
 
 export async function launchEdge(pw, headless = false) {
   const deny = net.createServer(socket=>socket.destroy());
@@ -49,7 +50,7 @@ export function browserCancellation(context) {
   return cancellation;
 }
 
-export async function guardRoute(route, origin, failed, certificateSha256, signal) {
+export async function guardRoute(route, origin, failed, certificateSha256, signal, observed) {
   if (!sameOrigin(route.request().url(), origin)) { failed('origin-blocked'); await route.abort(); return; }
   try {
     if (certificateSha256 !== undefined) {
@@ -58,6 +59,7 @@ export async function guardRoute(route, origin, failed, certificateSha256, signa
         failed('redirect-blocked');await route.abort();return;
       }
       await route.fulfill(response);
+      if(observed){const summary=projectResponse(route.request(),response.status,response.body);if(summary)observed(summary);}
       return;
     }
     // Fulfil only a non-redirect response: automatic redirect replay could send a POST elsewhere.
@@ -66,6 +68,9 @@ export async function guardRoute(route, origin, failed, certificateSha256, signa
       failed('redirect-blocked'); await route.abort(); return;
     }
     await route.fulfill({response});
+    if(observed && ['xhr','fetch'].includes(route.request().resourceType())){
+      const summary=projectResponse(route.request(),response.status(),await response.body());if(summary)observed(summary);
+    }
   } catch (error) {
     const allowed = new Set(['invalid-job','origin-blocked','certificate-pin-mismatch','certificate-validity-failed','request-too-large','response-too-large']);
     failed(allowed.has(error?.message)?error.message:'tls-or-navigation-failed');
@@ -105,16 +110,9 @@ export async function submitLogin(page, cfg, username, password, check) {
   await submit.click({timeout:10000});
 }
 
-async function readJob() {
-  const chunks = []; let bytes = 0;
-  for await (const chunk of process.stdin) { bytes += chunk.length; if (bytes > 65536) throw new Error('invalid-job'); chunks.push(chunk); }
-  const raw = Buffer.concat(chunks);
-  try { return JSON.parse(raw.toString('utf8')); } finally { raw.fill(0); for (const c of chunks) c.fill(0); }
-}
-
 async function main() {
   const directory = process.argv[2], modulePath = process.argv[3];
-  let browser, deny, context, page, timer, stopTimer, job, cancellation, failure = null, state = {state:'starting',loginSubmitted:false,authenticationVerified:false,failureCode:null};
+  let browser, deny, context, page, timer, stopTimer, job, cancellation, control, failure = null, state = {state:'starting',loginSubmitted:false,authenticationVerified:false,failureCode:null};
   let writeSequence = Promise.resolve();
   const write = patch => {
     state = {...state,...patch,updatedAt:new Date().toISOString()};
@@ -124,7 +122,8 @@ async function main() {
   };
   const check = () => { if (failure) throw new Error(failure); };
   try {
-    job = await readJob(); const cfg = validateJob(job);
+    const frames=readFrames(process.stdin);
+    job = (await frames.next()).value; const cfg = validateJob(job);
     const require = createRequire(import.meta.url);
     const pw = require(modulePath);
     ({browser,deny}=await launchEdge(pw));
@@ -133,9 +132,11 @@ async function main() {
     cancellation = browserCancellation(context);
     browser.once('disconnected',()=>cancellation.abort());
     await context.setOffline(true);
-    await context.route('**/*', route=>guardRoute(route,cfg.origin,code=>{failure=code;},cfg.certificate_sha256,cancellation.signal));
+    const rejected=code=>{failure=code;cancellation.abort();void context.close().catch(()=>{});};
+    await context.route('**/*', route=>guardRoute(route,cfg.origin,rejected,cfg.certificate_sha256,cancellation.signal,
+      summary=>{if(state.authenticationVerified)control?.record(summary);}));
     await context.routeWebSocket('**/*', socket=>{
-      failure='unsupported-transport';socket.close();
+      rejected('unsupported-transport');socket.close();
     });
     page = await context.newPage();
     page.once('close',()=>cancellation.abort());
@@ -148,6 +149,7 @@ async function main() {
     for (const name of ['username_selector','password_selector','submit_selector']) await page.locator(cfg[name]).waitFor({state:'visible',timeout:10000});
     check();
     if (job.mode === 'probe') {await write({state:'ready'});return;}
+    control=new SessionControl(page,cfg,{deadline:job.deadline,secret:job.password,check});
     const successVisibleBefore = cfg.success_selector ? await page.locator(cfg.success_selector).isVisible() : false;
     await submitLogin(page,cfg,job.username,job.password,check);
     job.password='';
@@ -161,7 +163,24 @@ async function main() {
     }
     if (await secret.isVisible()) await secret.fill('');
     await write({state:verified?'verified':'needs-user-check',authenticationVerified:verified});
-    await new Promise(resolve=>{if(page.isClosed())resolve();else page.once('close',resolve);});
+    const commands=async()=>{
+      for await(const command of frames){
+        let result;
+        try {
+          if(!state.authenticationVerified)throw new Error('authentication-required');
+          result=await dispatch(control,command);
+        } catch(error) {
+          const allowed=new Set(['invalid-command','authentication-required','origin-blocked','stale-observation','session-unavailable']);
+          const code=allowed.has(error?.message)?error.message:'control-failed';
+          if(code==='authentication-required')await write({state:'needs-user-check',authenticationVerified:false});
+          result={ok:false,failureCode:code};
+        }
+        const id=typeof command?.id==='string' && /^[a-f0-9]{32}$/.test(command.id)?command.id:null;
+        await new Promise((resolve,reject)=>process.stdout.write(JSON.stringify({id,result})+'\n',error=>error?reject(error):resolve()));
+      }
+    };
+    await Promise.race([commands(),new Promise(resolve=>{if(page.isClosed())resolve();else page.once('close',resolve);})]);
+    check();
     await write({state:'closed'});
   } catch (error) {
     const allowed = new Set(['invalid-job','origin-blocked','redirect-blocked','tls-or-navigation-failed','certificate-pin-mismatch','certificate-validity-failed','request-too-large','response-too-large','form-unavailable','network-guard-failed','unsupported-transport']);
@@ -171,8 +190,10 @@ async function main() {
   } finally {
     if(job)job.password=''; clearTimeout(timer);clearInterval(stopTimer);
     cancellation?.abort();
+    await control?.dispose();
     await context?.close().catch(()=>{});await browser?.close().catch(()=>{});
     deny?.close();
+    process.stdin.destroy();
   }
 }
 

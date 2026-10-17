@@ -8,6 +8,7 @@ Named profiles for remote operations, local credential management, and evidence-
 | --- | --- |
 | Systems, architecture evidence, calls, queues, and last use by credential | [Usage reports](docs/usage-reports.md) |
 | HTTPS console sign-in through isolated Edge and local secure input | [Web credentials](docs/web-credentials.md) |
+| Read the authenticated page and passive result codes without copying cookies | [Same-session control](docs/web-credentials.md#same-session-controlled-operations) |
 | Profile setup, missing aliases, rotation, and deletion | [Credential lifecycle](docs/credential-lifecycle.md) |
 | Authorized tasks without preemption | [Shared VM queue](#shared-vm-queue) |
 | SSH, RDP, VMware, and vSphere | [Protocol reference](#ssh-rdp-and-vsphere) |
@@ -15,6 +16,13 @@ Named profiles for remote operations, local credential management, and evidence-
 [View a synthetic report preview and credential workflow](https://github.com/YSheldon/ai-productivity-plugins/blob/main/docs/remotex-showcase.md).
 
 ## Recent Versions
+
+Version `0.5.11` adds same-session page observation, fresh observed fragment
+navigation, and passive business-result summaries after isolated Edge login.
+The original MCP process, requester, covering lease, exact origin, and trust
+snapshot remain mandatory. It does not attach the isolated page to another
+browser controller or attest host browser permissions. No arbitrary scripts,
+HTTP calls, form submissions, or cookie exports are exposed.
 
 Version `0.5.10` adds explicitly approved, exact-origin SHA-256 certificate
 trust for web profiles. Pins replace CA/hostname identity validation only for
@@ -237,7 +245,7 @@ Report reachability, credential readiness, composite identity status, queue owne
 - remotex_status
 - Profile setup: confirmed preview, v1-to-v2 write, credential prompt, rollback
 - Credentials: doctor, secure setup/rotation, confirmed deletion
-- Web: profile setup, runtime check, credential-free probe, certificate trust, bounded Edge login, session status and close
+- Web: profile setup, runtime check, credential-free probe, certificate trust, bounded Edge login, same-session observation/fragment navigation/passive result summaries, session status and close
 - Usage: per-credential systems/activity report and local HTML/JSON/CSV export
 - SSH: test, command or script execution, transfer, resumable tasks, agent and host-key governance
 - RDP: remotex_rdp_test and remotex_rdp_open

@@ -6,11 +6,12 @@ import {once} from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawn} from 'node:child_process';
 import {X509Certificate} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {guardRoute, launchEdge} from '../scripts/web_login_worker.mjs';
 import * as worker from '../scripts/web_login_worker.mjs';
+import {readFrames} from '../scripts/web_control.mjs';
 
 async function fixture(t, handler, handshakeGate) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'remotex-tls-test-'));
@@ -154,3 +155,63 @@ test('real browser closure cancels pending pinned credential transmission', {tim
     assert.equal(f.evidence.requests,0);assert.equal(f.evidence.applicationBytes,0);
   } finally {releaseHandshake?.();await browser.close();deny.close();}
 });
+
+async function workerControlFixture(t, rejectTransport=false) {
+  let loginCount=0,businessCount=0;
+  const f=await fixture(t,(req,res)=>{
+    if(req.url==='/login'){
+      loginCount++;res.writeHead(200,{'content-type':'application/json','set-cookie':'auth=fixture-only; Secure; HttpOnly; Path=/'});res.end('{"ok":true}');return;
+    }
+    if(req.url.startsWith('/api')){
+      assert.match(req.headers.cookie||'',/auth=fixture-only/);businessCount++;
+      res.writeHead(200,{'content-type':'application/json'});res.end('{"nResult":0,"token":"not-for-export","total":2}');return;
+    }
+    res.writeHead(200,{'content-type':'text/html'});
+    res.end(`<input id="user"><input id="pass"><button id="login">Login</button><main id="main" hidden><h1>Fixture Center</h1><a href="#/assets">Assets</a></main><script>
+      document.getElementById('login').onclick=async()=>{await fetch('/login',{method:'POST',body:document.getElementById('pass').value});document.getElementById('pass').hidden=true;document.getElementById('main').hidden=false;setInterval(()=>fetch('/api?cmd=get_status'),300);};
+      ${rejectTransport ? "window.addEventListener('hashchange',()=>fetch('https://foreign.invalid/blocked').catch(()=>{}));" : ''}
+    </script>`);
+  });
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'remotex-control-test-'));
+  const child=spawn(process.execPath,['--use-system-ca',path.resolve('scripts/web_login_worker.mjs'),directory,path.resolve('scripts/web-runtime/node_modules/playwright-core')],{stdio:['pipe','pipe','ignore'],windowsHide:true});
+  const exited=once(child,'exit');
+  t.after(async()=>{child.stdin.end();await Promise.race([exited,new Promise(r=>setTimeout(r,5000))]);if(child.exitCode===null)child.kill();await fs.rm(directory,{recursive:true,force:true});});
+  child.stdin.write(JSON.stringify({config:{origin:f.origin,url:f.origin+'/#/home',account:'operator',username_selector:'#user',password_selector:'#pass',submit_selector:'#login',success_selector:'#main',certificate_sha256:f.fingerprint},username:'operator',password:'synthetic-session-secret',deadline:Date.now()+30000})+'\n');
+  let state;
+  for(let n=0;n<150;n++){
+    try{state=JSON.parse(await fs.readFile(path.join(directory,'state.json'),'utf8'));}catch{}
+    if(state?.state==='verified'||state?.state==='failed')break;
+    await new Promise(r=>setTimeout(r,100));
+  }
+  assert.equal(state?.state,'verified');
+  const frames=readFrames(child.stdout);
+  const call=async(operation,args={})=>{
+    child.stdin.write(JSON.stringify({id:'a'.repeat(32),operation,arguments:args})+'\n');
+    const response=(await frames.next()).value;assert.equal(response.id,'a'.repeat(32));return response.result;
+  };
+  const observation=await call('observe');
+  assert.match(observation.text,/Fixture Center/);
+  await new Promise(r=>setTimeout(r,700));
+  const business=await call('read-result');
+  assert.equal(business.newRequestSent,false);
+  assert.ok(business.results.some(row=>row.command==='get_status'&&row.result.nResult===0));
+  const navigation={observation_id:observation.observationId,element_ref:observation.links[0].ref,confirm:true};
+  if(rejectTransport){
+    child.stdin.write(JSON.stringify({id:'b'.repeat(32),operation:'navigate',arguments:navigation})+'\n');
+    await exited;
+    const failed=JSON.parse(await fs.readFile(path.join(directory,'state.json'),'utf8'));
+    assert.equal(failed.state,'failed');assert.equal(failed.failureCode,'origin-blocked');
+    assert.equal(loginCount,1);return;
+  }
+  const navigated=await call('navigate',navigation);
+  assert.equal(navigated.page.route,'#/assets');assert.equal(loginCount,1);assert.ok(businessCount>0);
+  for(const content of [JSON.stringify(observation),JSON.stringify(business),await fs.readFile(path.join(directory,'state.json'),'utf8')]){
+    for(const forbidden of ['synthetic-session-secret','auth=fixture-only','not-for-export'])assert.ok(!content.includes(forbidden));
+  }
+  assert.deepEqual((await fs.readdir(directory)).filter(name=>!name.endsWith('.tmp')),['state.json']);
+  child.stdin.end();await exited;
+  assert.equal(child.exitCode,0);
+}
+
+test('worker pipe reuses authenticated Edge for page and passive business readback without content files', {timeout:45000},t=>workerControlFixture(t));
+test('post-login origin rejection closes the same worker and preserves a failed receipt', {timeout:45000},t=>workerControlFixture(t,true));

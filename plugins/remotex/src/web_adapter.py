@@ -23,6 +23,7 @@ import remotex_core as core
 import secure_paths
 import vm_queue
 import web_policy
+import web_channel
 
 
 PLAYWRIGHT_VERSION = "1.62.1"
@@ -30,6 +31,8 @@ PLUGIN = Path(__file__).resolve().parents[1]
 STATE_FIELDS = {"state","loginSubmitted","authenticationVerified","failureCode","updatedAt"}
 STATES = {"starting","opening","ready","submitted","verified","needs-user-check","failed","closed"}
 FAILURES = {None,"invalid-job","origin-blocked","redirect-blocked","tls-or-navigation-failed","certificate-pin-mismatch","certificate-validity-failed","request-too-large","response-too-large","form-unavailable","login-flow-failed","network-guard-failed","unsupported-transport","lease-no-longer-covers-session"}
+_CHANNELS: dict[str, web_channel.Channel] = {}
+_CHANNELS_LOCK = threading.Lock()
 
 
 def state_root() -> Path:
@@ -258,6 +261,10 @@ def _supervise(process: subprocess.Popen, job: Any, directory: Path, resource: s
         job.terminate()
         process.wait(timeout=10)
     finally:
+        with _CHANNELS_LOCK:
+            channel = _CHANNELS.pop(identifier, None)
+        if channel is not None:
+            channel.close()
         job.close()
         proof = {"webSessionId":identifier,"processId":process.pid,"supervisorId":os.getpid()}
         _write(directory / "closed.json",proof)
@@ -359,7 +366,7 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
         process = job = None
         try:
             process = subprocess.Popen([node,"--use-system-ca",str(PLUGIN / "scripts" / "web_login_worker.mjs"),str(directory),str(module)],
-                stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=_environment(),close_fds=True,
+                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env=_environment(),close_fds=True,
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
             job = execution._WindowsJob(process,memory_limit_mb=None,cpu_time_seconds=None,max_processes=None)
             if not job.assigned:
@@ -367,12 +374,20 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
             marker = _active_path(resource)
             secure_paths.ensure_private_directory(marker.parent)
             _write(marker,{"webSessionId":identifier,"processId":process.pid,"supervisorId":os.getpid()})
-            packet = json.dumps({"config":raw,"username":secret.username,"password":secret.password,"deadline":deadline}).encode("utf-8")
+            packet = json.dumps({"config":raw,"username":secret.username,"password":secret.password,"deadline":deadline}).encode("utf-8") + b'\n'
             process.stdin.write(packet)
-            process.stdin.close()
+            process.stdin.flush()
             del packet, secret
+            channel = web_channel.Channel(process,job,profile=name,requester=requester,resource=resource,deadline=deadline,config=raw)
+            with _CHANNELS_LOCK:
+                _CHANNELS[identifier] = channel
+            channel.start()
             threading.Thread(target=_supervise,args=(process,job,directory,resource,identifier,deadline,requester),daemon=True).start()
         except Exception as exc:
+            with _CHANNELS_LOCK:
+                channel = _CHANNELS.pop(identifier,None)
+            if channel is not None:
+                channel.close()
             if process is not None:
                 if job is not None:
                     job.terminate()
@@ -397,7 +412,58 @@ def session_status(args: dict[str, Any]) -> dict[str, Any]:
     expired = time.time()*1000 > metadata["deadline"] + 10000
     result = {"ok":state["state"] != "failed","webSessionId":args["session_id"],**state,
               "deadlineExceeded":expired,"nextStep":"release-own-web-queue" if state["state"] in {"failed","closed"} else "inspect-login-result-or-close-session"}
+    with _CHANNELS_LOCK:
+        channel = _CHANNELS.get(args['session_id'])
+    result['sameSessionControlAvailable'] = bool(channel and channel.available and state['state']=='verified' and not expired)
+    result['browserPolicyAttested'] = False
     return core.tool_result(result)
+
+
+def _control(args: dict[str, Any], operation: str, extra: set[str]) -> dict[str, Any]:
+    if set(args) != {'session_id','requester'} | extra:
+        raise core.ToolError('Pass only the declared same-session control fields')
+    identifier = args['session_id']
+    if not isinstance(identifier,str) or re.fullmatch(r'[a-f0-9]{32}',identifier) is None:
+        raise core.ToolError('Invalid web session ID')
+    requester = vm_queue.validate_requester(args['requester'])
+    with _CHANNELS_LOCK:
+        channel = _CHANNELS.get(identifier)
+    if channel is None:
+        raise core.ToolError('Same-session control is available only in the MCP process that started this session; do not attach another browser or copy cookies')
+    if channel.requester != requester:
+        raise core.ToolError('Another requester owns this web session')
+    with queue_leases.leased_owner_operation(channel.resource,requester) as owner:
+        remaining = (owner.get('lease') or {}).get('remainingSeconds')
+        if time.time()*1000 >= channel.deadline or not isinstance(remaining,(int,float)) or remaining < (channel.deadline/1000-time.time())+45:
+            channel.close()
+            raise core.ToolError('Current queue lease no longer covers this web session')
+        try:
+            _, current, _ = core.select_profile('web',channel.profile)
+        except core.ToolError:
+            channel.close()
+            raise
+        if current != channel.config:
+            channel.close()
+            raise core.ToolError('Web configuration changed; close this session and probe the current configuration')
+        result = channel.request(operation,{key:args[key] for key in extra})
+    output = core.tool_result({**result,'webSessionId':identifier})
+    if result.get('ok') is not True:
+        output['isError'] = True
+    return output
+
+
+def observe(args: dict[str, Any]) -> dict[str, Any]:
+    return _control(args,'observe',set())
+
+
+def read_result(args: dict[str, Any]) -> dict[str, Any]:
+    return _control(args,'read-result',set())
+
+
+def navigate(args: dict[str, Any]) -> dict[str, Any]:
+    if type(args.get('confirm')) is not bool or any(not isinstance(args.get(k),str) or re.fullmatch(r'[a-f0-9]{32}',args[k]) is None for k in ('observation_id','element_ref')):
+        raise core.ToolError('Navigation requires fresh observation and element IDs plus a boolean confirm')
+    return _control(args,'navigate',{'observation_id','element_ref','confirm'})
 
 
 def close_session(args: dict[str, Any]) -> dict[str, Any]:
@@ -419,6 +485,12 @@ def _schema(properties: dict, required: list[str]) -> dict:
 
 
 TOOLS = {
+    'remotex_web_observe':{'description':'Read bounded, redacted visible text and navigation references from the authenticated RemoteX page. Requires current host browser permission and the original requester/lease; never use after host browser access is denied or unknown.',
+        'inputSchema':_schema({'session_id':{'type':'string'},'requester':{'type':'string'}},['session_id','requester']),'handler':observe},
+    'remotex_web_read_result':{'description':'Read numeric/boolean result-code summaries of responses already received by this authenticated page. Sends no request. Not proof of business success or task permissions. Requires current host browser permission and the original requester/lease.',
+        'inputSchema':_schema({'session_id':{'type':'string'},'requester':{'type':'string'}},['session_id','requester']),'handler':read_result},
+    'remotex_web_navigate':{'description':'Preview or follow one fresh observed same-document fragment link in the same session. No arbitrary URL, click handler, form, script or raw HTTP. confirm=true requires authorized destination and current host browser permission; navigation is not proof that the site is read-only.',
+        'inputSchema':_schema({'session_id':{'type':'string'},'requester':{'type':'string'},'observation_id':{'type':'string'},'element_ref':{'type':'string'},'confirm':{'type':'boolean'}},['session_id','requester','observation_id','element_ref','confirm']),'handler':navigate},
     "remotex_web_certificate_trust":{"description":"Preview or explicitly set/revoke one web profile's exact-origin certificate SHA-256 trust. Confirm the fingerprint through a trusted channel first; null restores system trust.",
         "inputSchema":_schema({"profile":{"type":"string"},"origin":{"type":"string"},"certificate_sha256":{"type":["string","null"]},"confirm":{"type":"boolean"}},["profile","origin","certificate_sha256","confirm"]),"handler":certificate_trust},
     "remotex_web_probe":{"description":"Open an isolated Edge session to verify HTTPS and login controls without reading or submitting credentials.","inputSchema":_schema({"profile":{"type":"string"}},["profile"]),"handler":probe},

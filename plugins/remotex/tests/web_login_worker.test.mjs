@@ -86,7 +86,8 @@ test('visible Edge content follows actual window enlargement and shrinking', {ti
       assert.equal(view.contentWidth,view.width);assert.equal(view.contentHeight,view.height);
       return view;
     };
-    const narrow=await resize(900,650),wide=await resize(1200,850,narrow),shrunk=await resize(1000,700,wide);
+    // Keep the test windows within the small desktop available on hosted runners.
+    const narrow=await resize(600,460),wide=await resize(900,680,narrow),shrunk=await resize(700,500,wide);
     assert.ok(wide.width>narrow.width+200,`${narrow.width} -> ${wide.width}: viewport must grow with the window`);
     assert.ok(wide.height>narrow.height+100,`${narrow.height} -> ${wide.height}: viewport height must grow`);
     assert.ok(shrunk.width<wide.width-100 && shrunk.height<wide.height-100,'viewport must shrink with the window');

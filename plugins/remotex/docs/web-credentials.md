@@ -1,6 +1,6 @@
 # Web Credentials
 
-RemoteX 0.5.10 provides Windows-only credential management for one HTTPS web origin
+RemoteX 0.5.11 provides Windows-only credential management for one HTTPS web origin
 and account. It uses the existing Windows Credential Manager and visible
 Get-Credential window, plus an isolated Microsoft Edge session. It does not
 read Edge's password database or attach to the user's existing tabs.
@@ -42,6 +42,16 @@ or by changing a Profile's origin/account. The `RemoteX/Web/` target namespace
 is reserved, including case variants. Web profiles require version 2 config.
 
 ## Runtime And Probe
+
+First establish current browser access through the host's supported interface,
+including a successful read of the intended browser surface. Denied, disabled,
+unavailable, or unknown access stops web operations. RemoteX is not a fallback
+around host browser policy and does not offer a trusted policy-introspection API.
+The client/skill enforces this prerequisite; `browserPolicyAttested=false` must
+not be interpreted as a runtime policy attestation. Do not change host settings,
+use raw CDP, or switch transports to bypass an access decision.
+After denial, owned-session status/closure and queue release after confirmed
+closure are cleanup only; they do not authorize further page interaction.
 
 Install Microsoft Edge and Node.js 24 or newer. `remotex_web_runtime_setup`
 first checks for Playwright Core 1.62.1 in the private runtime or Codex bundle.
@@ -124,8 +134,52 @@ workers and WebSockets are blocked. A synthetic STUN UDP/TURN TCP canary runs
 at each browser start; failure blocks the login. These controls are tested
 against the installed Edge runtime, not a claim of OS-grade browser confinement.
 External protocol handlers and arbitrary post-login workflows are outside the
-supported automated login flow. The authorized same-origin application still
+supported controlled flow. The authorized same-origin application still
 receives the password as in a normal browser sign-in.
+
+## Same-Session Controlled Operations
+
+After `authenticationVerified=true`, use the following tools with the original
+`session_id` and `requester` in the MCP process that started login:
+
+| Tool | Output or operation | Boundary |
+| --- | --- | --- |
+| `remotex_web_observe` | Visible text, current route, fresh link references | Success region only; 16,000 text characters, 100 candidate links, no editable/hidden/embedded/canvas content |
+| `remotex_web_navigate` | Preview with `confirm=false`, navigate with `confirm=true` | Fresh observed same-document fragment link only; no caller URL, arbitrary click handler, form, script, or raw HTTP |
+| `remotex_web_read_result` | Passive result-code summaries with timestamps | Last 20 of at most 64 retained responses, never sends a request |
+
+Observation references expire after 30 seconds, are invalidated when the page
+changes, and are consumed by navigation. The DOM node and destination are
+rechecked. Navigation still needs authorization for the destination: a site's
+router can have effects, so this is not a blanket read-only guarantee.
+Read-only acceptance can use observation and passive results without navigation.
+
+The response projection accepts only root-level `nResult`, `code`, `status`,
+`success`, `total`, and `count` numeric/boolean values from bounded JSON XHR/fetch
+responses received after authentication. It omits bodies, headers, cookies,
+query values, and arbitrary string fields. A read-like command name is only a
+label, not proof of the endpoint's semantics. No response is replayed.
+
+`authenticationVerified`, `sameSessionControlAvailable`, and actual business
+success are separate checks. A result keeps `businessSuccessVerified=false`:
+the caller must evaluate current command/path, HTTP status, result code, and
+the user's acceptance criteria. An empty list means no eligible response was
+observed, not success. Host/task permissions and target scope are not inferred.
+
+The private pipe stays in memory and is available only to the original
+supervisor. Each call checks owner, covering lease, deadline and unchanged
+profile/trust, then rechecks origin and the authenticated page. Closing the
+browser, losing the lease, EOF, or an uncertain command timeout ends control.
+Timeouts close the worker instead of replaying a potentially completed action.
+Status/closure receipts remain content-free; page and response output is not
+written to the RemoteX audit log. Sanitized tool results are still visible to
+the calling host and may be retained in its conversation history.
+
+This does not register the isolated window in Codex's supported browser list.
+`webSessionId` is not a browser `tabId`. Existing sessions cannot be adopted by
+another process or version; finish them normally and start a new session after
+reconnecting the affected idle MCP client. Existing profiles, pins, SSH/VM
+configuration and credential references require no migration.
 
 This design uses Microsoft's documented
 [Playwright Edge support](https://learn.microsoft.com/en-us/microsoft-edge/playwright/).

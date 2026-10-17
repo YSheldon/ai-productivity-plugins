@@ -14,6 +14,22 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.5.11
+
+### Added
+
+- `remotex_web_observe` reads bounded visible text and short-lived navigation references from the already authenticated isolated page.
+- `remotex_web_navigate` previews or follows an observed same-document fragment route. It accepts no raw URL, selector, script, form value, or arbitrary click.
+- `remotex_web_read_result` projects numeric/boolean status fields from responses the page already received. It sends no new request and does not infer business success or task permissions.
+- An in-memory supervisor-owned pipe preserves page identity without exporting cookies or persisting page/network content. Requester, lease coverage, profile/trust snapshot, origin, authentication, and lifetime are rechecked.
+
+### Upgrade Notes and Limits
+
+- Reconnect only the affected idle MCP client. Existing configuration and credential aliases need no migration; old live sessions are not adopted by a new process.
+- A RemoteX session ID is not a Codex browser tab ID. The isolated window remains outside other browser controllers; the new RemoteX tools operate it directly.
+- The client must establish current supported-browser permission before using web tools. A denied or unknown host policy is a stop, never a reason to switch transports. RemoteX cannot attest that policy.
+- Page text is untrusted data. Editable, hidden, embedded, and canvas content is not exported. Result summaries omit response bodies, headers, cookies, and query values.
+
 ## RemoteX 0.5.10
 
 Source: [PR #40](https://github.com/YSheldon/ai-productivity-plugins/pull/40).

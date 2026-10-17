@@ -60,7 +60,8 @@ flowchart LR
     D --> E[Acquire local FIFO lease]
     E --> F[Submit once in isolated Edge]
     F --> G[Verified or needs user check]
-    G --> H[Close session and release own lease]
+    G --> H[Observe same page and passive result codes]
+    H --> I[Close session and release own lease]
 ```
 
 1. Inspect the login page to identify unique element-ID selectors.
@@ -68,7 +69,8 @@ flowchart LR
 3. Use normal system TLS trust. For a private endpoint, a user may explicitly approve its exact origin and a trusted-channel-verified leaf certificate SHA-256 pin.
 4. Run the credential-free probe. A wrong, expired, or not-yet-valid pinned certificate blocks HTTP transmission.
 5. Acquire the local queue for the authorized operation and submit once in isolated Edge.
-6. Distinguish `submitted`, `needs-user-check`, and `verified`. Close the session and release its queue.
+6. Distinguish `submitted`, `needs-user-check`, and `verified`. With current host browser permission, use `remotex_web_observe` and `remotex_web_read_result` in that same session.
+7. Validate the actual read-only business result separately. Close the session and release its queue.
 
 ```text
 Use RemoteX to preview a web-console profile for https://console.example:6868
@@ -81,6 +83,19 @@ demo pin as real trust. Web sign-in requires **Windows, Edge, Node.js 24+, and
 Playwright Core 1.62.1**. Pins substitute for CA/hostname identity checks only at
 the approved origin; validity checks remain. No global trust-store change or
 browser warning bypass is performed. [Full guide](../plugins/remotex/docs/web-credentials.md).
+
+```text
+Use RemoteX to sign in to my existing web-console profile, then read the center
+page and passive read-only business response codes in the same session.
+Do not submit forms, change settings, issue tasks, or copy cookies.
+Stop if the host's browser permission is denied or cannot be established.
+```
+
+Same-session control does not register the isolated window as a generic browser
+tab. Navigation is restricted to fresh observed same-document fragment links;
+it never executes arbitrary link click handlers. Server-side effects of a site
+route still require user authorization. Observation and passive result reading
+send no application request of their own.
 
 ## Shared Hosts Without Preemption
 

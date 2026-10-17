@@ -1,6 +1,6 @@
 # Web Credentials
 
-RemoteX 0.5.11 provides Windows-only credential management for one HTTPS web origin
+RemoteX 0.5.12 provides Windows-only credential management for one HTTPS web origin
 and account. It uses the existing Windows Credential Manager and visible
 Get-Credential window, plus an isolated Microsoft Edge session. It does not
 read Edge's password database or attach to the user's existing tabs.
@@ -136,6 +136,26 @@ against the installed Edge runtime, not a claim of OS-grade browser confinement.
 External protocol handlers and arbitrary post-login workflows are outside the
 supported controlled flow. The authorized same-origin application still
 receives the password as in a normal browser sign-in.
+
+## Responsive Windows
+
+Visible login and probe contexts use `viewport: null`. This disables Playwright's
+default fixed 1280x720 viewport so normal Edge window resizing changes the page's
+available width and height. It does not change browser zoom, display scaling,
+site CSS, TLS verification, or the isolated-session security boundaries.
+The internal synthetic network canary retains its own deterministic viewport.
+
+`remotex_web_observe` includes bounded read-only `geometry` fields in CSS pixels:
+`viewport` is the current inner width/height, `window` is the outer width/height,
+and `content` measures the configured success region. `mode` is `window` or
+`emulated`, derived from the actual Playwright page configuration. These fields
+do not resize the browser or expose an arbitrary window-control API.
+
+Site-defined minimum widths, fixed-size widgets, browser chrome, and DPI can
+still affect layout. Compare both viewport and content dimensions when validating
+a real console; a larger outer window alone is not sufficient evidence.
+Existing windows keep their creation-time settings. Finish them normally, then
+start a new owned session after reconnecting the updated MCP process.
 
 ## Same-Session Controlled Operations
 

@@ -44,6 +44,7 @@ test('real Edge keeps one page, redacts fields, rejects stale refs and reads pas
     const control=new SessionControl(page,cfg,{deadline:Date.now()+60000,secret:'secret-canary',check:()=>{}});
     const observed=await control.observe();
     assert.equal(observed.authenticationVerified,true);
+    assert.equal(observed.geometry.mode,'emulated');
     assert.equal(observed.controlScope,'same-session');
     assert.match(observed.text,/Console/);
     for(const value of ['secret-canary','private-field','private-area','private-edit','private-hidden','private-link-area','private-link-edit','private-link-hidden'])assert.ok(!JSON.stringify(observed).includes(value),value);

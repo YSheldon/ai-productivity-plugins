@@ -14,6 +14,13 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.5.12
+
+- Fixed the isolated Edge context inheriting Playwright's fixed 1280x720 viewport. Visible login and probe pages now follow the actual browser window without changing browser zoom, system display settings, or site code.
+- Added bounded read-only window, viewport, and content-region dimensions to `remotex_web_observe`. `geometry.mode` distinguishes window sizing from viewport emulation.
+- Added a real visible-Edge enlargement/shrink regression and an actual login-worker assertion. Existing origin, certificate, credential, queue, and lifetime checks are unchanged.
+- No profile or credential migration is needed. Start a new session from the updated MCP process; existing windows retain their creation-time viewport settings.
+
 ## RemoteX 0.5.11
 
 ### Added

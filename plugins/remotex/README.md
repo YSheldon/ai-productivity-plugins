@@ -17,6 +17,12 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
+Version `0.5.12` makes visible Edge login/probe pages follow the actual window
+size instead of a fixed 1280x720 viewport. Same-session observations include
+bounded window, viewport, and content dimensions for resize verification.
+Existing site, credential, certificate, queue, and session boundaries remain
+unchanged. See [Responsive windows](docs/web-credentials.md#responsive-windows).
+
 Version `0.5.11` adds same-session page observation, fresh observed fragment
 navigation, and passive business-result summaries after isolated Edge login.
 The original MCP process, requester, covering lease, exact origin, and trust

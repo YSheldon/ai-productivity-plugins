@@ -146,9 +146,14 @@ export class SessionControl {
           links.push({node:anchor,href:anchor.href,label:label.text});
         }
       }
-      return {...content,links};
+      const dimension=value=>Number.isFinite(value)?Math.max(0,Math.min(100000,Math.round(value))):null;
+      const bounds=root.getBoundingClientRect();
+      const geometry={viewport:{width:dimension(innerWidth),height:dimension(innerHeight)},
+        window:{width:dimension(outerWidth),height:dimension(outerHeight)},
+        content:{width:dimension(bounds.width),height:dimension(bounds.height)}};
+      return {...content,links,geometry};
     },this.config.success_selector);
-    const snapshot=await this.handle.evaluate(value=>({text:value.text,truncated:value.truncated,links:value.links.map(({href,label},index)=>({href,label,index}))}));
+    const snapshot=await this.handle.evaluate(value=>({text:value.text,truncated:value.truncated,geometry:value.geometry,links:value.links.map(({href,label},index)=>({href,label,index}))}));
     await this.admit();
     if(this.page.url()!==current){await this.invalidate();throw new Error('stale-observation');}
     const links=[],array=await this.handle.getProperty('links');
@@ -162,7 +167,8 @@ export class SessionControl {
     } finally {await array.dispose();}
     this.snapshot={id:randomUUID().replaceAll('-',''),url:current,at:Date.now()};
     return boundResult({ok:true,authenticationVerified:true,controlScope:'same-session',observationId:this.snapshot.id,
-      page:this.pageInfo(current),text:this.redact(snapshot.text),truncated:snapshot.truncated,links,
+      page:this.pageInfo(current),geometry:{...snapshot.geometry,mode:this.page.viewportSize()===null?'window':'emulated'},
+      text:this.redact(snapshot.text),truncated:snapshot.truncated,links,
       observationExpiresInSeconds:30,businessSuccessVerified:false,contentTrust:'untrusted-page-data'});
   }
 

@@ -636,7 +636,7 @@ _TASKS={
         'items':{'type':'array','items':_TEXT,'maxItems':32,'uniqueItems':True},'end_task':{'type':'boolean'}},[],
         'Cancel one own pending request, revoke a grant or selected items, or end task authority. Concurrent effects are fenced; already accepted server work cannot be undone.'),
     'remotex_web_login_resume':('resume-login',{},[],
-        'Resume the same owned login page after local approval of exact blocked startup contracts. Never replays HTTP packets or resubmits a potentially transmitted authentication exchange. Requires current supported host browser access.'),
+        'Resume the same owned login page after local approval of exact blocked startup contracts; the original result may take up to 55 seconds. Never replays HTTP packets or resubmits a potentially transmitted authentication exchange. Requires current supported host browser access.'),
 }
 
 for _name,(_operation,_properties,_required,_description) in _TASKS.items():

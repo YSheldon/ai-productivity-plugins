@@ -5,7 +5,8 @@ submission in the **same RemoteX-owned Edge session**. It does not adopt an
 ordinary browser tab, share cookies, bypass host browser policy, or change the
 center's business code. SSH, VM profiles and stored credentials are unchanged.
 Use 0.6.2 or later for native batch-review controls; 0.6.1 fixed native window
-startup. For an interactive
+startup. Version 0.6.3 adds bounded startup scheduling and late-reply recovery.
+For an interactive
 Windows regression, set `REMOTEX_TEST_NATIVE_APPROVAL=1` when running
 `plugins/remotex/tests/test_web_approval.py`. Its synthetic helper uses no saved
 credential, network request or approval, and closes only its own test window.
@@ -93,6 +94,30 @@ traffic or retries an authentication exchange that may already have been sent.
 MFA, CAPTCHA, unsupported request encodings and missing semantics remain operator
 prerequisites. An isolated credential-free probe may report a missing contract
 rather than opening an unrestricted page.
+
+### Bounded Startup Waiting
+
+In 0.6.3, pre-authentication same-origin JS/CSS GET checks without query/body
+fields share a queue of at most 64 checks, including one in flight. Unknown
+resources still require an exact active human-approved contract. The queue is
+not an origin or file-extension permission, and does not cache earlier permits.
+All check types together retain the existing maximum of 16 emitted checks.
+
+Every emitted check still has at most 10 seconds. Queued checks keep the original
+startup operation's deadline and are denied on cancellation, phase/generation
+change or expiry; a later resume cannot renew an older request.
+Queued routes are checked for cancellation again before broker emission;
+already-emitted checks can still consume quota even if forwarding is cancelled.
+Known expired reply IDs are deny-only metadata, bounded to 64 entries and 60 seconds. Their late
+reply is discarded once, never converted into permission or a command. Unknown
+or malformed protocol messages remain fail-closed.
+
+Document navigation and fragment restoration share one total 45-second budget.
+Only `remotex_web_login_resume` may wait up to 55 seconds for its original result,
+further capped by the existing session. Business operations keep their 30-second
+behavior. These limits do not extend the 120-second native review, grant TTL,
+quotas, session, lease or permission scope. Inspect the original session/outcome
+after a timeout; never replay a request or retry potentially submitted credentials.
 
 ## Approve a Read or Button Batch
 

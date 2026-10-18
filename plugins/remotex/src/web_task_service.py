@@ -41,7 +41,14 @@ class Service:
 
     def _worker(self, operation, args):
         self.broker._valid()
-        result = self.channel.request(operation, args)
+        options={}
+        if operation=='resume-login':
+            remaining=self.channel.deadline/1000-time.time()
+            if remaining<=0:
+                self.channel.close()
+                raise ScopeError('session-unavailable')
+            options['timeout']=min(55,remaining)
+        result = self.channel.request(operation, args, **options)
         if result.get('ok') is not True:
             code = result.get('failureCode', 'control-failed')
             if not isinstance(code, str) or len(code)>64:
@@ -185,6 +192,8 @@ class Service:
                 if contract.get('phase')!=phase:
                     continue
                 if action and contract.get('parent_id')!=action['item_id']:
+                    continue
+                if phase in {'bootstrap','login-once'} and canonical(contract.get('descriptor'))!=canonical(message['descriptor']):
                     continue
                 try:
                     _, scope=self.broker._grant(grant_id,item_id)

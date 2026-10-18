@@ -10,6 +10,7 @@ import {execFileSync,spawn} from 'node:child_process';
 import {X509Certificate} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
+import {setTimeout as sleep} from 'node:timers/promises';
 import {guardRoute, launchEdge} from '../scripts/web_login_worker.mjs';
 import * as worker from '../scripts/web_login_worker.mjs';
 import {readFrames} from '../scripts/web_control.mjs';
@@ -157,9 +158,19 @@ test('real browser closure cancels pending pinned credential transmission', {tim
   } finally {releaseHandshake?.();await browser.close();deny.close();}
 });
 
-async function workerControlFixture(t, rejectTransport=false) {
-  let loginCount=0,businessCount=0;
+async function workerControlFixture(t, rejectTransport=false, {slowStatic=false,competing=0,bootstrapOnly=false}={}) {
+  let loginCount=0,businessCount=0,unapprovedStaticCount=0;
+  const markup='<input id="user"><input id="pass"><button id="login">Login</button><main id="main" hidden><h1>Fixture Center</h1><a href="#/assets">Assets</a><button id="refresh">Refresh</button></main>';
+  const behavior=`
+    document.getElementById('login').onclick=async()=>{try{await fetch('/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('pass').value})});document.getElementById('pass').hidden=true;document.getElementById('main').hidden=false;setInterval(()=>fetch('/api?cmd=get_status').catch(()=>{}),300);}catch{}};
+    document.getElementById('refresh').onclick=()=>fetch('/api?cmd=get_status');
+    ${rejectTransport ? "window.addEventListener('hashchange',()=>{if(location.hash==='#/assets')fetch('https://foreign.invalid/blocked').catch(()=>{});});" : ''}`;
   const f=await fixture(t,(req,res)=>{
+    if(req.url.startsWith('/unapproved/')){unapprovedStaticCount++;res.end('');return;}
+    if(/^\/assets\/[0-9]+\.js$/.test(req.url)){
+      res.writeHead(200,{'content-type':'application/javascript'});
+      res.end('window.assetCount++;if(window.assetCount===15)window.mountFixture();');return;
+    }
     if(req.url==='/login'){
       loginCount++;res.writeHead(200,{'content-type':'application/json','set-cookie':'auth=fixture-only; Secure; HttpOnly; Path=/'});res.end('{"ok":true}');return;
     }
@@ -168,48 +179,65 @@ async function workerControlFixture(t, rejectTransport=false) {
       res.writeHead(200,{'content-type':'application/json'});res.end('{"nResult":0,"token":"not-for-export","total":2}');return;
     }
     res.writeHead(200,{'content-type':'text/html'});
-    res.end(`<input id="user"><input id="pass"><button id="login">Login</button><main id="main" hidden><h1>Fixture Center</h1><a href="#/assets">Assets</a><button id="refresh">Refresh</button></main><script>
-      document.getElementById('login').onclick=async()=>{await fetch('/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('pass').value})});document.getElementById('pass').hidden=true;document.getElementById('main').hidden=false;setInterval(()=>fetch('/api?cmd=get_status').catch(()=>{}),300);};
-      document.getElementById('refresh').onclick=()=>fetch('/api?cmd=get_status');
-      ${rejectTransport ? "window.addEventListener('hashchange',()=>{if(location.hash==='#/assets')fetch('https://foreign.invalid/blocked').catch(()=>{});});" : ''}
-    </script>`);
+    if(!slowStatic){res.end(markup+`<script>${behavior}</script>`);return;}
+    res.end(`<script>window.assetCount=0;window.mountFixture=()=>{document.body.innerHTML=${JSON.stringify(markup)};${behavior}};</script>`+
+      Array.from({length:competing},(_,index)=>`<script defer src="/unapproved/${index}.js"></script>`).join('')+
+      Array.from({length:15},(_,index)=>`<script defer src="/assets/${index}.js"></script>`).join(''));
   });
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'remotex-control-test-'));
   const child=spawn(process.execPath,['--use-system-ca',fileURLToPath(new URL('../scripts/web_login_worker.mjs',import.meta.url)),directory,
     fileURLToPath(new URL('../scripts/web-runtime/node_modules/playwright-core',import.meta.url))],{stdio:['pipe','pipe','ignore'],windowsHide:true});
   const exited=once(child,'exit');
-  t.after(async()=>{child.stdin.end();await Promise.race([exited,new Promise(r=>setTimeout(r,5000))]);if(child.exitCode===null)child.kill();await fs.rm(directory,{recursive:true,force:true});});
-  const pending=new Map(),approvedActions=new Set(),trace=[];let rootApproved=false,loginApproved=false,allowBusiness=false;
+  const stopped=new AbortController();
+  t.after(async()=>{stopped.abort();child.stdin.end();await Promise.race([exited,new Promise(r=>setTimeout(r,5000))]);if(child.exitCode===null)child.kill();await fs.rm(directory,{recursive:true,force:true});});
+  const pending=new Map(),approvedActions=new Set(),trace=[];
+  let rootApproved=false,loginApproved=false,allowBusiness=false,coreApproved=!slowStatic;
+  let loginRootApproved=!slowStatic,loginCoreApproved=!slowStatic,staticOutstanding=0,maxStaticOutstanding=0;
+  let decisions=Promise.resolve(),transportFailure=null;
+  const fail=error=>{if(stopped.signal.aborted)return;transportFailure=error;for(const entry of pending.values())entry.reject(error);};
+  child.stdin.on('error',fail);
   const transport=(async()=>{
     for await(const frame of readFrames(child.stdout)){
       if(frame.event==='authorization-check'){
         const value=frame.request,descriptor=value.descriptor;
-        let allowed=value.kind==='action'&&approvedActions.has(value.attempt_id);
-        if(value.kind==='network'){
-          allowed=!!(rootApproved&&['bootstrap','login-once'].includes(value.phase)&&descriptor.method==='GET'&&descriptor.path==='/'&&descriptor.body===null)||
-            !!(loginApproved&&value.phase==='login-once'&&descriptor.method==='POST'&&descriptor.path==='/login'&&descriptor.body?.password?.internalAuth===true)||
-            !!(allowBusiness&&value.phase==='grant-active'&&approvedActions.has(value.attempt_id)&&descriptor.method==='GET'&&descriptor.path==='/api'&&descriptor.query.cmd==='get_status');
-        }
-        if(trace.length<64)trace.push({kind:value.kind,phase:value.phase,path:descriptor?.path,allowed});
-        child.stdin.write(JSON.stringify({authorization_reply:frame.id,allowed})+'\n');
+        const staticCheck=value.kind==='network'&&descriptor.method==='GET'&&/\.(js|css)$/.test(descriptor.path);
+        if(staticCheck){staticOutstanding++;maxStaticOutstanding=Math.max(maxStaticOutstanding,staticOutstanding);}
+        decisions=decisions.then(async()=>{
+          if(stopped.signal.aborted)return;
+          let allowed=value.kind==='action'&&approvedActions.has(value.attempt_id);
+          if(value.kind==='network'){
+            const root=value.phase==='bootstrap'?rootApproved:value.phase==='login-once'&&loginRootApproved;
+            const core=value.phase==='bootstrap'?coreApproved:value.phase==='login-once'&&loginCoreApproved;
+            allowed=!!(root&&descriptor.method==='GET'&&descriptor.path==='/'&&descriptor.body===null)||
+              !!(core&&descriptor.method==='GET'&&/^\/assets\/(?:[0-9]|1[0-4])\.js$/.test(descriptor.path)&&descriptor.body===null&&Object.keys(descriptor.query).length===0)||
+              !!(loginApproved&&value.phase==='login-once'&&descriptor.method==='POST'&&descriptor.path==='/login'&&descriptor.body?.password?.internalAuth===true)||
+              !!(allowBusiness&&value.phase==='grant-active'&&approvedActions.has(value.attempt_id)&&descriptor.method==='GET'&&descriptor.path==='/api'&&descriptor.query.cmd==='get_status');
+          }
+          if(slowStatic&&staticCheck&&allowed)await sleep(1400,undefined,{signal:stopped.signal});
+          if(trace.length<(slowStatic?256:64))trace.push({kind:value.kind,phase:value.phase,path:descriptor?.path,allowed});
+          if(!stopped.signal.aborted)child.stdin.write(JSON.stringify({authorization_reply:frame.id,allowed})+'\n');
+          if(staticCheck)staticOutstanding--;
+        }).catch(fail);
       }else{
-        const resolve=pending.get(frame.id);assert.ok(resolve,'Unexpected worker response');pending.delete(frame.id);resolve(frame.result);
+        const entry=pending.get(frame.id);assert.ok(entry,'Unexpected worker response');pending.delete(frame.id);entry.resolve(frame.result);
       }
     }
-  })();
-  child.stdin.write(JSON.stringify({config:{origin:f.origin,url:f.origin+'/#/home',account:'operator',username_selector:'#user',password_selector:'#pass',submit_selector:'#login',success_selector:'#main',certificate_sha256:f.fingerprint},username:'operator',password:'synthetic-session-secret',deadline:Date.now()+60000})+'\n');
+    await decisions;
+  })().catch(fail);
+  child.stdin.write(JSON.stringify({config:{origin:f.origin,url:f.origin+'/#/home',account:'operator',username_selector:'#user',password_selector:'#pass',submit_selector:'#login',success_selector:'#main',certificate_sha256:f.fingerprint},username:'operator',password:'synthetic-session-secret',deadline:Date.now()+(slowStatic?150000:60000)})+'\n');
   let sequence=0;
   const call=async(operation,args={})=>{
+    if(transportFailure)throw transportFailure;
     const id=(++sequence).toString(16).padStart(32,'0');
-    const result=new Promise(resolve=>pending.set(id,resolve));
+    const result=new Promise((resolve,reject)=>pending.set(id,{resolve,reject}));
     child.stdin.write(JSON.stringify({id,operation,arguments:args})+'\n');
     let timeout;
     try {return await Promise.race([result,new Promise((_,reject)=>{
       timeout=setTimeout(async()=>{
         let state='unavailable';try{state=await fs.readFile(path.join(directory,'state.json'),'utf8');}catch{}
         reject(new Error(`Worker ${operation} timed out; receipt: ${state}; exit: ${child.exitCode}`));
-      },18000);
-    })]);}finally{clearTimeout(timeout);}
+      },slowStatic?60000:18000);
+    }),exited.then(()=>{throw new Error(`Worker exited during ${operation}`);})]);}finally{clearTimeout(timeout);}
   };
   const blocked=await call('network-status');
   assert.equal(f.evidence.requests,0,'Unknown startup traffic must be blocked before any request is sent');
@@ -218,6 +246,21 @@ async function workerControlFixture(t, rejectTransport=false) {
   const firstResume=await call('resume-login');
   assert.equal(firstResume.authenticationVerified,false);
   assert.equal(loginCount,0,'An unapproved authentication request must not leave the worker');
+  if(slowStatic){
+    const assets=await call('network-status');
+    assert.equal(assets.phase,'bootstrap');
+    assert.equal(assets.descriptors.filter(row=>/^\/assets\/[0-9]+\.js$/.test(row.path)).length,15);
+    coreApproved=true;
+    await call('resume-login');
+    const ready=await call('network-status');
+    assert.equal(ready.phase,'login-once','15 granted assets must commit the login controls despite serial broker latency');
+    assert.equal(maxStaticOutstanding,1,'the real worker must wire bounded single-flight startup checks');
+    assert.equal(unapprovedStaticCount,0,'competing unknown assets must never reach the server');
+    if(bootstrapOnly){
+      assert.equal(loginCount,0);assert.equal(child.exitCode,null);
+      child.stdin.end();await exited;await transport;assert.equal(child.exitCode,0);return;
+    }
+  }
   let authenticationBlocked=false;
   for(let attempt=0;attempt<50;attempt++){
     const network=await call('network-status');
@@ -227,9 +270,20 @@ async function workerControlFixture(t, rejectTransport=false) {
   assert.ok(authenticationBlocked,JSON.stringify({message:'Authentication descriptor not captured',firstResume,trace,
     receipt:JSON.parse(await fs.readFile(path.join(directory,'state.json'),'utf8')),loginCount,requestCount:f.evidence.requests}));
   loginApproved=true;
+  if(slowStatic){
+    await call('resume-login');
+    const deniedRoot=await call('network-status');
+    assert.ok(deniedRoot.descriptors.some(row=>row.path==='/'));
+    assert.equal(loginCount,0,'bootstrap grants must not authorize login-phase documents');
+    loginRootApproved=true;await call('resume-login');
+    const deniedAssets=await call('network-status');
+    assert.equal(deniedAssets.descriptors.filter(row=>/^\/assets\/[0-9]+\.js$/.test(row.path)).length,15);
+    assert.equal(loginCount,0);loginCoreApproved=true;
+  }
   const resumed=await call('resume-login');
   const receipt=JSON.parse(await fs.readFile(path.join(directory,'state.json'),'utf8'));
   assert.equal(resumed.authenticationVerified,true,JSON.stringify({resumed,receipt,loginCount}));
+  if(slowStatic){assert.equal(maxStaticOutstanding,1);assert.equal(unapprovedStaticCount,0);}
   assert.equal((await call('observe')).failureCode,'approval-required');
   assert.equal(businessCount,0,'Post-login polling must not inherit login permission');
   const view=await call('components');
@@ -269,6 +323,11 @@ async function workerControlFixture(t, rejectTransport=false) {
 
 test('worker pipe reuses authenticated Edge for approved page and business readback without content files', {timeout:65000},t=>workerControlFixture(t));
 test('post-login origin rejection closes the same approved worker and preserves a failed receipt', {timeout:65000},t=>workerControlFixture(t,true));
+
+test('slow serial startup loads 15 approved assets then logs in and reads in the same worker',
+  {timeout:150000},t=>workerControlFixture(t,false,{slowStatic:true}));
+test('slow serial startup admits its 15 core assets among 47 competing checks without leaking unknown requests',
+  {timeout:100000},t=>workerControlFixture(t,false,{slowStatic:true,competing:32,bootstrapOnly:true}));
 
 test('bootstrap diagnosis distinguishes an allowed HTML response from committed page readiness', {timeout:40000},async t=>{
   const f=await fixture(t,(_req,res)=>{res.writeHead(200,{'content-type':'text/html'});res.end('<input id="user"><input id="pass"><button id="login">Login</button>');});

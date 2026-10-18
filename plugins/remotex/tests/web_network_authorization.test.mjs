@@ -8,6 +8,33 @@ const request=(body,url=origin+'/inter',type='application/json')=>({url:()=>url,
   postData:()=>body,headers:()=>({'content-type':type,'cookie':'never-export'}),resourceType:()=> 'xhr'});
 const asset=(path='/assets/app.js')=>({url:()=>origin+path,method:()=> 'GET',
   postData:()=>null,headers:()=>({}),resourceType:()=> 'script'});
+
+test('a cancelled browser request cannot consume a permit or mint denied metadata',async()=>{
+  let checked=0;
+  const policy=new network.NetworkPolicy({origin,requestPermit:async()=>{checked++;return true;}});
+  assert.equal(await policy.authorize({...asset(),failure:()=>({errorText:'net::ERR_ABORTED'})}),false);
+  assert.equal(checked,0);assert.equal(policy.list().length,0);
+});
+
+test('a browser request cancelled while awaiting its permit cannot forward afterward',async()=>{
+  let release,failed=false;
+  const policy=new network.NetworkPolicy({origin,requestPermit:()=>new Promise(resolve=>{release=resolve;})});
+  const pending=policy.authorize({...asset(),failure:()=>failed?{errorText:'net::ERR_ABORTED'}:null});
+  failed=true;release(true);
+  assert.equal(await pending,false);assert.equal(policy.list().length,0);
+});
+
+test('the private permit callback receives a fresh cancellation predicate outside the descriptor',async()=>{
+  let failed=false,check;
+  const policy=new network.NetworkPolicy({origin,requestPermit:async(value,options)=>{
+    assert.deepEqual(Object.keys(value).sort(),['attempt_id','descriptor','digest','phase']);
+    check=options?.isCancelled;assert.equal(typeof check,'function');
+    assert.equal(check(),false);failed=true;assert.equal(check(),true);return false;
+  }});
+  assert.equal(await policy.authorize({...asset(),failure:()=>failed?{errorText:'net::ERR_ABORTED'}:null}),false);
+  assert.equal(typeof check,'function');
+  assert.equal(policy.list().length,0);
+});
 async function withTime(run){
   let now=1000;const actual=Date.now;Date.now=()=>now;
   try {await run(delta=>{now+=delta;});}finally{Date.now=actual;}

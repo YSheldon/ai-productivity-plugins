@@ -3,6 +3,10 @@ import {createHash,randomUUID} from 'node:crypto';
 const authName=/^(?:password|passwd|pwd|token|access_token|refresh_token|session_id|sessionid|csrf|csrf_token|nonce|signature|ticket)$/i;
 const signature=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+export function requestCancelled(request){
+  try {return !!request.failure?.();}catch{return true;}
+}
+
 function parseJson(raw){
   try {
     const value=JSON.parse(raw);
@@ -119,7 +123,7 @@ export class NetworkPolicy {
   }
 
   async authorize(request){
-    if(this.phase==='fenced')return false;
+    if(this.phase==='fenced'||requestCancelled(request))return false;
     if(this.phase==='grant-active'&&(!this.activeAttempt||this.clock()>=this.dispatchDeadline))return false;
     const generation=this.generation;
     let descriptor;
@@ -127,9 +131,10 @@ export class NetworkPolicy {
     catch(error){this.lastFailure=error.message;return false;}
     const key=signature(descriptor);
     let allowed=false;
-    try {allowed=await this.requestPermit({phase:this.phase,attempt_id:this.activeAttempt,descriptor,digest:key})===true;}
+    try {allowed=await this.requestPermit({phase:this.phase,attempt_id:this.activeAttempt,descriptor,digest:key},
+      {isCancelled:()=>requestCancelled(request)})===true;}
     catch{return false;}
-    if(this.phase==='fenced'||this.generation!==generation||
+    if(this.phase==='fenced'||this.generation!==generation||requestCancelled(request)||
       (this.phase==='grant-active'&&this.clock()>=this.dispatchDeadline))return false;
     if(!allowed){
       const now=Date.now();

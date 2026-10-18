@@ -6,6 +6,7 @@ ordinary browser tab, share cookies, bypass host browser policy, or change the
 center's business code. SSH, VM profiles and stored credentials are unchanged.
 Use 0.6.2 or later for native batch-review controls; 0.6.1 fixed native window
 startup. Version 0.6.3 adds bounded startup scheduling and late-reply recovery.
+Version 0.6.4 adds non-authorizing native-window lifecycle receipts.
 For an interactive
 Windows regression, set `REMOTEX_TEST_NATIVE_APPROVAL=1` when running
 `plugins/remotex/tests/test_web_approval.py`. Its synthetic helper uses no saved
@@ -57,6 +58,36 @@ There is **no approve MCP method**, credential-value argument, arbitrary selecto
 script, browser-attach, cookie export, raw URL or raw HTTP API. The legacy
 `remotex_web_observe`, `remotex_web_navigate` and `remotex_web_read_result` entry
 points return `approval-required`; they are not bypasses.
+
+### Native Window Receipts
+
+In 0.6.4, request/status results include `approval_ui` for their own native
+helper. Action-time confirmation receipts also appear in the original attempt's
+execute/execution-status result. These fields are diagnostic only:
+
+| Field | Meaning |
+| --- | --- |
+| `state` | `starting`, `shown`, `closed` or `error` |
+| `shown` | Whether a valid native Shown receipt was received before termination |
+| `review_remaining_seconds` | Conservative remaining review time, capped by the original broker deadline; zero after a decision or terminal state |
+| `exit_reason` | Review expiry, operator rejection/revocation, window closure, helper exit, grant expiry, protocol error or server cleanup; null while no exit is reported |
+| `error_code` | A fixed diagnostic code, never raw exception text |
+| `helper_exit_code` | Observed process exit code, or null while unavailable; an intentional job termination can also be nonzero |
+
+`shown` records a Windows Forms event. It does not prove foreground, the
+operator's desktop visibility, human presence, approval or business completion.
+Do not describe `starting` or a process handle as a displayed window. On an
+unseen/closed window, inspect the receipt and actual remaining seconds instead
+of reopening requests in a loop or treating cancellation as operator rejection.
+
+Receipts travel on a separate inherited stderr pipe with request/nonce/digest
+binding and a strict small schema. Only eight bounded receipts are parsed;
+additional output is drained without retention. Raw stderr, payloads and binding
+secrets are not exported. Diagnostics never call the decision/revocation path,
+refresh a reference, extend a timer or grant permission. Stdout still accepts
+only the original decision/revocation frames. Immediate launch failures retain
+the existing `approval-ui-unavailable` error. Receipts are local to the original
+supervisor, not a new cross-session recovery or approval surface.
 
 ## Startup and Login Contracts
 

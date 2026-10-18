@@ -198,7 +198,8 @@ Confirm supported-browser access through the host before any web operation.
 | Config rejected after upgrade | Check every client reading the shared config for old runtimes |
 | Browser-control request-header policy error | Diagnose the host browser interface separately from site credentials |
 | Isolated Edge not in the browser list | Use RemoteX task tools in the process that started login; a session ID is not a generic tab ID |
-| Button/form interface absent | Upgrade/reconnect to 0.6.3, discover components, request a local human grant, then use typed execution |
+| Button/form interface absent | Upgrade/reconnect to 0.6.4, discover components, request a local human grant, then use typed execution |
+| Approval window missing or cancelled without a clear cause | Inspect the request's `approval_ui` lifecycle receipt, remaining review seconds, error code and exit reason in 0.6.4. A process ID is not proof of display; `shown` is not permission or proof of foreground. Do not repeatedly open new requests |
 | Startup stalls or closes after a large approved asset batch | Use 0.6.3 bounded startup scheduling; an explicit resume can wait up to 55 seconds. Inspect the original session state instead of replaying requests or retrying possibly submitted credentials |
 | `authorization-contract-required` | Inspect blocked descriptor refs, review exact startup/login contracts locally, then resume the same UI; never replay raw requests |
 | Page stays at 1280x720 when resizing Edge | Use a new window-sized session; inspect `remotex_web_components.geometry` to separate viewport behavior from site CSS |

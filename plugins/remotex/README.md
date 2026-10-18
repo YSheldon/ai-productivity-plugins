@@ -18,6 +18,12 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
+Version `0.6.4` adds diagnostic approval-window lifecycle receipts and remaining
+review time. Inspect `approval_ui` instead of inferring display or rejection
+from a process ID. Native `shown`, `closed` and fixed-code `error` messages use
+a separate private diagnostic pipe, never the approval channel. The original
+120-second review and all authority, credential and queue limits are unchanged.
+
 Version `0.6.3` stabilizes approved Edge startup with a bounded static-resource
 queue and safe handling of late private authorization replies. Startup document
 loading has one total 45-second budget; an explicit login resume can wait up to

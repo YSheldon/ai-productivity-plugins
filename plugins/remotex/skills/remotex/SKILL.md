@@ -70,6 +70,15 @@ for opaque blocked descriptor refs. Request exact `setup` contracts through
 `remotex_web_authorization_request` with inspected evidence, wait for the local
 human window, then explicitly call `remotex_web_login_resume`. This resumes UI,
 never replays an HTTP packet. Do not broaden origins, TLS, methods or endpoints.
+For 0.6.4 or later, inspect the request's `approval_ui` in request/status results.
+`starting` is not a shown window. A `shown` receipt records the native form event,
+not foreground, physical human presence or permission. Tell the operator the
+actual `review_remaining_seconds`; showing the form does not restart the
+original 120-second review. On `closed`/`error`, report the fixed `exit_reason`
+and `error_code` rather than calling every cancellation a rejection. If the
+operator cannot see it, stop repeated prompts and inspect the lifecycle; never
+manufacture a decision or weaken host/browser policy. Action-time confirmation
+receipts are also available through the original execution-status tool.
 Submit once. `needs-user-check` is not successful authentication; do not retry
 passwords or solve MFA/CAPTCHA automatically. Close the owned session, wait
 for closed state, and release its queue. Other requesters may wait but cannot

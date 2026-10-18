@@ -12,6 +12,25 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 import web_approval as approval
 
 
+def _run_harness(scenario):
+    script=Path(__file__).with_name('Test-WebApprovalUI.ps1')
+    try:
+        return subprocess.run([approval.credential_store._powershell_path(),'-NoLogo','-NoProfile','-NonInteractive','-STA',
+            '-File',str(script),'-Scenario',scenario],capture_output=True,text=True,encoding='utf-8',
+            timeout=20,env=approval.credential_store._setup_environment(),
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    except subprocess.TimeoutExpired as error:
+        details=error.stderr or b''
+        if isinstance(details,bytes):details=details.decode('utf-8',errors='replace')
+        raise AssertionError(f'Native UI harness timed out in {scenario}; diagnostic stages:\n{details[-4000:]}') from error
+
+
+@pytest.mark.skipif(os.name!='nt',reason='Windows PowerShell console behavior')
+def test_background_ui_harness_refuses_console_prompts():
+    result=_run_harness('console-input-probe')
+    assert result.returncode!=0,'The background harness accepted a console prompt'
+
+
 @pytest.mark.skipif(os.name!='nt',reason='Real Windows Forms controls')
 @pytest.mark.parametrize('scenario',[
     'select-all','clear-selection','apply-bootstrap','checked-only',
@@ -20,11 +39,7 @@ import web_approval as approval
     'known-effects','native-wiring',
 ])
 def test_native_batch_controls_preserve_explicit_authority(scenario):
-    script=Path(__file__).with_name('Test-WebApprovalUI.ps1')
-    result=subprocess.run([approval.credential_store._powershell_path(),'-NoLogo','-NoProfile','-STA',
-        '-File',str(script),'-Scenario',scenario],capture_output=True,text=True,encoding='utf-8',
-        timeout=20,env=approval.credential_store._setup_environment(),
-        creationflags=subprocess.CREATE_NO_WINDOW)
+    result=_run_harness(scenario)
     assert result.returncode==0,result.stdout+result.stderr
     report=json.loads(result.stdout)
     assert report.get('implemented') is True,'Native batch selection/classification UI is not implemented'

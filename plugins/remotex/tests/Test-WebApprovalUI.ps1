@@ -1,20 +1,27 @@
 param([Parameter(Mandatory=$true)][string]$Scenario)
 
 $ErrorActionPreference = 'Stop'
+[Console]::Error.WriteLine(('ui-stage: script-start;interactive={0};session={1}' -f [Environment]::UserInteractive,[Diagnostics.Process]::GetCurrentProcess().SessionId))
+if ($Scenario -eq 'console-input-probe') { $null = Read-Host 'Synthetic input probe'; exit 0 }
 $helper = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\web_approval_ui.ps1'
 if (-not (Test-Path -LiteralPath $helper)) {
     [Console]::WriteLine('{"implemented":false}')
     exit 0
 }
+[Console]::Error.WriteLine('ui-stage: add-type-begin')
 Add-Type -AssemblyName System.Windows.Forms
+[Console]::Error.WriteLine('ui-stage: add-type-end')
 . $helper
+[Console]::Error.WriteLine('ui-stage: helper-imported')
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
 
 function New-Fixture([string[]]$Kinds) {
+    [Console]::Error.WriteLine('ui-stage: controls-begin')
     $grid = New-Object Windows.Forms.DataGridView
+    [Console]::Error.WriteLine('ui-stage: grid-created')
     $grid.AllowUserToAddRows = $false
     $check = New-Object Windows.Forms.DataGridViewCheckBoxColumn
     $check.Name = 'Approve'; $null = $grid.Columns.Add($check)
@@ -24,6 +31,7 @@ function New-Fixture([string[]]$Kinds) {
     $effect.Name = 'Effect Review'
     $effect.Items.AddRange(@('Not applicable','Unreviewed','Read','Business Write','Bootstrap','Login'))
     $null = $grid.Columns.Add($effect)
+    [Console]::Error.WriteLine('ui-stage: columns-created')
     $items = @()
     for ($index = 0; $index -lt $Kinds.Count; $index++) {
         $kind = $Kinds[$index]
@@ -38,6 +46,7 @@ function New-Fixture([string[]]$Kinds) {
             effect=[pscustomobject]@{class='task-bounded';fields=@();digest=('b'*64)}
         }
     }
+    [Console]::Error.WriteLine('ui-stage: fixture-ready')
     return [pscustomobject]@{Grid=$grid;Items=$items}
 }
 
@@ -51,6 +60,7 @@ $fixture = $null
 $console = [Console]::Out
 $captured = New-Object IO.StringWriter
 try {
+    [Console]::Error.WriteLine('ui-stage: scenario-start')
     [Console]::SetOut($captured)
     switch ($Scenario) {
         'select-all' {
@@ -183,6 +193,7 @@ try {
         default { throw 'Unknown test scenario' }
     }
     Assert-True ($captured.ToString().Length -eq 0) 'Selection/classification emitted a decision or unsolicited console output'
+    [Console]::Error.WriteLine('ui-stage: scenario-end')
 } finally {
     [Console]::SetOut($console)
     $captured.Dispose()

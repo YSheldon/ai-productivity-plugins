@@ -60,8 +60,9 @@ flowchart LR
     D --> E[Acquire local FIFO lease]
     E --> F[Submit once in isolated Edge]
     F --> G[Verified or needs user check]
-    G --> H[Observe same page and passive result codes]
-    H --> I[Close session and release own lease]
+    G --> H[Request bounded local human task approval]
+    H --> J[Read or operate approved observed controls]
+    J --> I[Verify targets then close and release own lease]
 ```
 
 1. Inspect the login page to identify unique element-ID selectors.
@@ -69,8 +70,8 @@ flowchart LR
 3. Use normal system TLS trust. For a private endpoint, a user may explicitly approve its exact origin and a trusted-channel-verified leaf certificate SHA-256 pin.
 4. Run the credential-free probe. A wrong, expired, or not-yet-valid pinned certificate blocks HTTP transmission.
 5. Acquire the local queue for the authorized operation and submit once in isolated Edge.
-6. Distinguish `submitted`, `needs-user-check`, and `verified`. With current host browser permission, use `remotex_web_observe` and `remotex_web_read_result` in that same session.
-7. Validate the actual read-only business result separately. Close the session and release its queue.
+6. Review missing startup/login contracts before transmission. Distinguish `submitted`, `needs-user-check`, and `verified`; current host browser permission remains mandatory.
+7. Discover components and request a bounded local human task grant. Read or operate only its observed controls; show concrete target/change previews before real writes and verify actual target results separately. Close the session and release its queue.
 
 ```text
 Use RemoteX to preview a web-console profile for https://console.example:6868
@@ -92,8 +93,10 @@ Stop if the host's browser permission is denied or cannot be established.
 ```
 
 Same-session control does not register the isolated window as a generic browser
-tab. Navigation is restricted to fresh observed same-document fragment links;
-it never executes arbitrary link click handlers. Server-side effects of a site
+tab. RemoteX 0.6.0 supports human-approved observed buttons, exact field input and
+target-bound business submission, with independent finite request permissions.
+See [Task authorization](../plugins/remotex/docs/web-task-authorization.md).
+Server-side effects of a site
 route still require user authorization. Observation and passive result reading
 send no application request of their own.
 

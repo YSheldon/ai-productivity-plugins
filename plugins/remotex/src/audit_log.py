@@ -174,6 +174,11 @@ def _reference_summary(value: Any) -> dict[str, Any]:
 
 
 def summarize_arguments(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if tool.startswith('remotex_web_'):
+        # Task values, endpoint names and human preview data stay out of the ledger.
+        return {key+'Sha256':hashlib.sha256(str(arguments[key]).encode('utf-8')).hexdigest()
+            for key in ('profile','requester','session_id','request_id','grant_id','attempt_id','idempotency_key')
+            if key in arguments and isinstance(arguments[key],str)}
     summary: dict[str, Any] = {}
     for key in (
         "profile",

@@ -9,6 +9,7 @@ import path from 'node:path';
 import {execFileSync,spawn} from 'node:child_process';
 import {X509Certificate} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {fileURLToPath} from 'node:url';
 import {guardRoute, launchEdge} from '../scripts/web_login_worker.mjs';
 import * as worker from '../scripts/web_login_worker.mjs';
 import {readFrames} from '../scripts/web_control.mjs';
@@ -167,52 +168,127 @@ async function workerControlFixture(t, rejectTransport=false) {
       res.writeHead(200,{'content-type':'application/json'});res.end('{"nResult":0,"token":"not-for-export","total":2}');return;
     }
     res.writeHead(200,{'content-type':'text/html'});
-    res.end(`<input id="user"><input id="pass"><button id="login">Login</button><main id="main" hidden><h1>Fixture Center</h1><a href="#/assets">Assets</a></main><script>
-      document.getElementById('login').onclick=async()=>{await fetch('/login',{method:'POST',body:document.getElementById('pass').value});document.getElementById('pass').hidden=true;document.getElementById('main').hidden=false;setInterval(()=>fetch('/api?cmd=get_status'),300);};
-      ${rejectTransport ? "window.addEventListener('hashchange',()=>fetch('https://foreign.invalid/blocked').catch(()=>{}));" : ''}
+    res.end(`<input id="user"><input id="pass"><button id="login">Login</button><main id="main" hidden><h1>Fixture Center</h1><a href="#/assets">Assets</a><button id="refresh">Refresh</button></main><script>
+      document.getElementById('login').onclick=async()=>{await fetch('/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('pass').value})});document.getElementById('pass').hidden=true;document.getElementById('main').hidden=false;setInterval(()=>fetch('/api?cmd=get_status').catch(()=>{}),300);};
+      document.getElementById('refresh').onclick=()=>fetch('/api?cmd=get_status');
+      ${rejectTransport ? "window.addEventListener('hashchange',()=>{if(location.hash==='#/assets')fetch('https://foreign.invalid/blocked').catch(()=>{});});" : ''}
     </script>`);
   });
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'remotex-control-test-'));
-  const child=spawn(process.execPath,['--use-system-ca',path.resolve('scripts/web_login_worker.mjs'),directory,path.resolve('scripts/web-runtime/node_modules/playwright-core')],{stdio:['pipe','pipe','ignore'],windowsHide:true});
+  const child=spawn(process.execPath,['--use-system-ca',fileURLToPath(new URL('../scripts/web_login_worker.mjs',import.meta.url)),directory,
+    fileURLToPath(new URL('../scripts/web-runtime/node_modules/playwright-core',import.meta.url))],{stdio:['pipe','pipe','ignore'],windowsHide:true});
   const exited=once(child,'exit');
   t.after(async()=>{child.stdin.end();await Promise.race([exited,new Promise(r=>setTimeout(r,5000))]);if(child.exitCode===null)child.kill();await fs.rm(directory,{recursive:true,force:true});});
-  child.stdin.write(JSON.stringify({config:{origin:f.origin,url:f.origin+'/#/home',account:'operator',username_selector:'#user',password_selector:'#pass',submit_selector:'#login',success_selector:'#main',certificate_sha256:f.fingerprint},username:'operator',password:'synthetic-session-secret',deadline:Date.now()+30000})+'\n');
-  let state;
-  for(let n=0;n<150;n++){
-    try{state=JSON.parse(await fs.readFile(path.join(directory,'state.json'),'utf8'));}catch{}
-    if(state?.state==='verified'||state?.state==='failed')break;
-    await new Promise(r=>setTimeout(r,100));
-  }
-  assert.equal(state?.state,'verified');
-  const frames=readFrames(child.stdout);
+  const pending=new Map(),approvedActions=new Set(),trace=[];let rootApproved=false,loginApproved=false,allowBusiness=false;
+  const transport=(async()=>{
+    for await(const frame of readFrames(child.stdout)){
+      if(frame.event==='authorization-check'){
+        const value=frame.request,descriptor=value.descriptor;
+        let allowed=value.kind==='action'&&approvedActions.has(value.attempt_id);
+        if(value.kind==='network'){
+          allowed=!!(rootApproved&&['bootstrap','login-once'].includes(value.phase)&&descriptor.method==='GET'&&descriptor.path==='/'&&descriptor.body===null)||
+            !!(loginApproved&&value.phase==='login-once'&&descriptor.method==='POST'&&descriptor.path==='/login'&&descriptor.body?.password?.internalAuth===true)||
+            !!(allowBusiness&&value.phase==='grant-active'&&approvedActions.has(value.attempt_id)&&descriptor.method==='GET'&&descriptor.path==='/api'&&descriptor.query.cmd==='get_status');
+        }
+        if(trace.length<64)trace.push({kind:value.kind,phase:value.phase,path:descriptor?.path,allowed});
+        child.stdin.write(JSON.stringify({authorization_reply:frame.id,allowed})+'\n');
+      }else{
+        const resolve=pending.get(frame.id);assert.ok(resolve,'Unexpected worker response');pending.delete(frame.id);resolve(frame.result);
+      }
+    }
+  })();
+  child.stdin.write(JSON.stringify({config:{origin:f.origin,url:f.origin+'/#/home',account:'operator',username_selector:'#user',password_selector:'#pass',submit_selector:'#login',success_selector:'#main',certificate_sha256:f.fingerprint},username:'operator',password:'synthetic-session-secret',deadline:Date.now()+60000})+'\n');
+  let sequence=0;
   const call=async(operation,args={})=>{
-    child.stdin.write(JSON.stringify({id:'a'.repeat(32),operation,arguments:args})+'\n');
-    const response=(await frames.next()).value;assert.equal(response.id,'a'.repeat(32));return response.result;
+    const id=(++sequence).toString(16).padStart(32,'0');
+    const result=new Promise(resolve=>pending.set(id,resolve));
+    child.stdin.write(JSON.stringify({id,operation,arguments:args})+'\n');
+    let timeout;
+    try {return await Promise.race([result,new Promise((_,reject)=>{
+      timeout=setTimeout(async()=>{
+        let state='unavailable';try{state=await fs.readFile(path.join(directory,'state.json'),'utf8');}catch{}
+        reject(new Error(`Worker ${operation} timed out; receipt: ${state}; exit: ${child.exitCode}`));
+      },18000);
+    })]);}finally{clearTimeout(timeout);}
   };
-  const observation=await call('observe');
-  assert.match(observation.text,/Fixture Center/);
-  assert.equal(observation.geometry.mode,'window','the actual login worker must not restore a fixed viewport');
-  await new Promise(r=>setTimeout(r,700));
-  const business=await call('read-result');
-  assert.equal(business.newRequestSent,false);
+  const blocked=await call('network-status');
+  assert.equal(f.evidence.requests,0,'Unknown startup traffic must be blocked before any request is sent');
+  assert.ok(blocked.descriptors.some(row=>row.path==='/'));
+  rootApproved=true;
+  const firstResume=await call('resume-login');
+  assert.equal(firstResume.authenticationVerified,false);
+  assert.equal(loginCount,0,'An unapproved authentication request must not leave the worker');
+  let authenticationBlocked=false;
+  for(let attempt=0;attempt<50;attempt++){
+    const network=await call('network-status');
+    if(network.descriptors.some(row=>row.path==='/login')){authenticationBlocked=true;break;}
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  assert.ok(authenticationBlocked,JSON.stringify({message:'Authentication descriptor not captured',firstResume,trace,
+    receipt:JSON.parse(await fs.readFile(path.join(directory,'state.json'),'utf8')),loginCount,requestCount:f.evidence.requests}));
+  loginApproved=true;
+  const resumed=await call('resume-login');
+  const receipt=JSON.parse(await fs.readFile(path.join(directory,'state.json'),'utf8'));
+  assert.equal(resumed.authenticationVerified,true,JSON.stringify({resumed,receipt,loginCount}));
+  assert.equal((await call('observe')).failureCode,'approval-required');
+  assert.equal(businessCount,0,'Post-login polling must not inherit login permission');
+  const view=await call('components');
+  assert.equal(view.geometry.mode,'window','The production worker must retain a window-sized viewport');
+  const main=view.components.find(row=>row.id==='main'),refresh=view.components.find(row=>row.id==='refresh'),link=view.components.find(row=>row.href==='#/assets');
+  const resolve=async(item_id,capability,component)=>{
+    const response=await call('resolve-items',{items:[{item_id,capability,observation_id:view.observationId,component_ref:component.ref}]});
+    assert.equal(response.ok,true);return response.items[0];
+  };
+  const execute=async(scope,component)=>{
+    const attempt=(++sequence).toString(16).padStart(32,'0');approvedActions.add(attempt);
+    return call('execute',{attempt_id:attempt,scope,observation_id:view.observationId,component_ref:component.ref});
+  };
+  const observation=await execute(await resolve('read','web.read_region',main),main);
+  assert.match(observation.result.text,/Fixture Center/);
+  allowBusiness=true;
+  await execute(await resolve('refresh','web.page_step',refresh),refresh);
+  const business=(await execute(await resolve('results','web.read_result',main),main)).result;
   assert.ok(business.results.some(row=>row.command==='get_status'&&row.result.nResult===0));
-  const navigation={observation_id:observation.observationId,element_ref:observation.links[0].ref,confirm:true};
+  const navigation=await resolve('assets','web.navigate',link);
   if(rejectTransport){
-    child.stdin.write(JSON.stringify({id:'b'.repeat(32),operation:'navigate',arguments:navigation})+'\n');
+    void execute(navigation,link).catch(()=>{});
     await exited;
     const failed=JSON.parse(await fs.readFile(path.join(directory,'state.json'),'utf8'));
     assert.equal(failed.state,'failed');assert.equal(failed.failureCode,'origin-blocked');
     assert.equal(loginCount,1);return;
   }
-  const navigated=await call('navigate',navigation);
-  assert.equal(navigated.page.route,'#/assets');assert.equal(loginCount,1);assert.ok(businessCount>0);
+  const navigated=await execute(navigation,link);
+  assert.equal(navigated.result.page.route,'#/assets');assert.equal(loginCount,1);assert.ok(businessCount>0);
   for(const content of [JSON.stringify(observation),JSON.stringify(business),await fs.readFile(path.join(directory,'state.json'),'utf8')]){
     for(const forbidden of ['synthetic-session-secret','auth=fixture-only','not-for-export'])assert.ok(!content.includes(forbidden));
   }
   assert.deepEqual((await fs.readdir(directory)).filter(name=>!name.endsWith('.tmp')),['state.json']);
-  child.stdin.end();await exited;
+  child.stdin.end();await exited;await transport;
   assert.equal(child.exitCode,0);
 }
 
-test('worker pipe reuses authenticated Edge for page and passive business readback without content files', {timeout:45000},t=>workerControlFixture(t));
-test('post-login origin rejection closes the same worker and preserves a failed receipt', {timeout:45000},t=>workerControlFixture(t,true));
+test('worker pipe reuses authenticated Edge for approved page and business readback without content files', {timeout:65000},t=>workerControlFixture(t));
+test('post-login origin rejection closes the same approved worker and preserves a failed receipt', {timeout:65000},t=>workerControlFixture(t,true));
+
+test('bootstrap diagnosis distinguishes an allowed HTML response from committed page readiness', {timeout:40000},async t=>{
+  const f=await fixture(t,(_req,res)=>{res.writeHead(200,{'content-type':'text/html'});res.end('<input id="user"><input id="pass"><button id="login">Login</button>');});
+  const require=createRequire(import.meta.url),pw=require('../scripts/web-runtime/node_modules/playwright-core');
+  const {browser,deny}=await launchEdge(pw,true);
+  try {
+    for(let iteration=0;iteration<5;iteration++){
+      const context=await worker.createWebContext(browser);await context.setOffline(true);
+      let allowed=false;const failures=[];
+      await context.route('**/*',route=>guardRoute(route,f.origin,code=>failures.push(code),f.fingerprint,undefined,undefined,{authorize:async()=>allowed}));
+      const page=await context.newPage(),url=f.origin+'/#/home';
+      try{await page.goto(url,{waitUntil:'domcontentloaded',timeout:5000});}catch{}
+      allowed=true;
+      let navigationError=null;
+      try{await worker.loadConfiguredDocument(page,{url,origin:f.origin});}
+      catch(error){navigationError=String(error.message).split('\n')[0];}
+      const document=await page.evaluate(()=>({uri:document.documentURI,state:document.readyState,
+        title:document.title,user:!!document.getElementById('user')}));
+      assert.equal(document.user,true,JSON.stringify({iteration,navigationError,document,failures,requests:f.evidence.requests}));
+      await context.close();
+    }
+  }finally{await browser.close();deny.close();}
+});

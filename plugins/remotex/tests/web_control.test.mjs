@@ -82,3 +82,33 @@ test('session checks run before every operation',async()=>{
   const control=new SessionControl({isClosed:()=>false},cfg,{deadline:Date.now()+60000,secret:'x',check:()=>{throw Error('lease-invalid');}});
   for(const call of [()=>control.observe(),()=>control.readResult(),()=>control.navigate({})])await assert.rejects(call,/lease-invalid/);
 });
+
+test('separate navigation and content regions expose menus and visible current-page rows only', {timeout:30000},async()=>{
+  const require=createRequire(import.meta.url);
+  const {chromium}=require('../scripts/web-runtime/node_modules/playwright-core');
+  const {browser,deny}=await launchEdge({chromium},true);
+  try {
+    const context=await browser.newContext();await context.setOffline(true);
+    await context.route('**/*',r=>r.fulfill({contentType:'text/html',body:`<input id="pass" hidden>
+      <div id="main">Signed in</div><nav id="nav"><a href="#/assets">Assets</a>
+      <li id="terminalMenu">Terminals</li><button>Delete</button><a hidden href="#/hidden">Hidden</a></nav>
+      <section id="content"><table><thead><tr><th>Name</th><th>OS</th></tr></thead>
+      <tbody><tr><td>host-one</td><td>Linux<input value="private-input"><span hidden>private-hidden</span></td></tr>
+      <tr hidden><td>private-row</td></tr></tbody></table></section><p>outside-private</p>`}));
+    const page=await context.newPage();await page.goto(cfg.origin+'/#/home');
+    const control=new SessionControl(page,cfg,{deadline:Date.now()+60000,secret:'secret-canary',check:()=>{}});
+    const {Components}=await import('../scripts/web_components.mjs');
+    const registry=new Components(page,{admit:()=>control.admit(),redact:value=>control.redact(value)});
+    const view=await registry.scan();
+    assert.ok(view.components.some(x=>x.name==='Terminals'&&x.id==='terminalMenu'));
+    const table=view.components.find(x=>x.kind==='table');
+    const entry=await registry.resolve(view.observationId,table.ref);
+    const result=await registry.project(entry,'web.read_table',{rows:100,columns:30,bytes:98304});
+    assert.deepEqual(result.tables,[{headers:['Name','OS'],rows:[['host-one','Linux']],truncated:false}]);
+    for(const value of ['private-input','private-hidden','private-row','outside-private'])assert.ok(!JSON.stringify(result).includes(value));
+    await page.locator('#content').evaluate(el=>el.remove());
+    await assert.rejects(()=>registry.project(entry,'web.read_table',{rows:100,columns:30,bytes:98304}),/component-stale/);
+    await registry.dispose();
+    await control.dispose();
+  } finally {await browser.close();deny.close();}
+});

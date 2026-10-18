@@ -5,7 +5,12 @@ import {fileURLToPath} from 'node:url';
 import net from 'node:net';
 import dgram from 'node:dgram';
 import {pinnedResponse} from './web_tls.mjs';
-import {SessionControl, dispatch, projectResponse, readFrames} from './web_control.mjs';
+import {SessionControl, projectResponse, readFrames} from './web_control.mjs';
+import {Components} from './web_components.mjs';
+import {TaskControl} from './web_task_control.mjs';
+import {NetworkPolicy} from './web_network_authorization.mjs';
+import {WorkerAuthority} from './web_authorization_ipc.mjs';
+import {WorkerRuntime} from './web_worker_runtime.mjs';
 
 export async function launchEdge(pw, headless = false) {
   const deny = net.createServer(socket=>socket.destroy());
@@ -55,9 +60,37 @@ export function browserCancellation(context) {
   return cancellation;
 }
 
-export async function guardRoute(route, origin, failed, certificateSha256, signal, observed) {
+export async function loadConfiguredDocument(page,cfg){
+  if(!sameOrigin(cfg.url,cfg.origin))throw new Error('origin-blocked');
+  const documentUrl=new URL(cfg.url);documentUrl.hash='';
+  // A same-URL fragment navigation does not fetch the newly authorized document.
+  // Explicit GET navigation also avoids reload's possible POST-body replay.
+  await page.goto(documentUrl.href,{waitUntil:'domcontentloaded',timeout:15000});
+  if(documentUrl.href!==cfg.url){
+    if(!sameOrigin(page.url(),cfg.origin))throw new Error('origin-blocked');
+    await page.goto(cfg.url,{waitUntil:'domcontentloaded',timeout:15000});
+  }
+}
+
+export async function guardRoute(route, origin, failed, certificateSha256, signal, observed, policy, owner) {
   if (!sameOrigin(route.request().url(), origin)) { failed('origin-blocked'); await route.abort(); return; }
+  let completed;
   try {
+    const request=route.request();
+    if(owner&&request.frame().page()!==owner){await route.abort();return;}
+    if(policy && !await policy.authorize(request)){
+      if(request.isNavigationRequest?.()&&request.frame().parentFrame()===null){
+        // Keep a denied document in this page; Chromium's internal error-page
+        // navigation can otherwise race the next explicitly authorized load.
+        await route.fulfill({status:403,headers:{'content-type':'text/html; charset=utf-8',
+          'cache-control':'no-store','content-security-policy':"default-src 'none'; form-action 'none'; frame-ancestors 'none'; sandbox",
+          'referrer-policy':'no-referrer','x-content-type-options':'nosniff'},
+          body:'<!doctype html><meta charset="utf-8"><title>RemoteX request blocked</title><p>Request blocked pending local authorization.</p>'});
+      }else await route.abort();
+      return;
+    }
+    if(signal?.aborted){await route.abort();return;}
+    completed=policy?.beginForwarding?.(route.request());
     if (certificateSha256 !== undefined) {
       const response = await pinnedResponse(route.request(), origin, certificateSha256, signal);
       if (response.status >= 300 && response.status < 400 && response.status !== 304) {
@@ -80,7 +113,7 @@ export async function guardRoute(route, origin, failed, certificateSha256, signa
     const allowed = new Set(['invalid-job','origin-blocked','certificate-pin-mismatch','certificate-validity-failed','request-too-large','response-too-large']);
     failed(allowed.has(error?.message)?error.message:'tls-or-navigation-failed');
     await route.abort().catch(()=>{});
-  }
+  } finally {completed?.();}
 }
 
 export function validateJob(job) {
@@ -117,7 +150,8 @@ export async function submitLogin(page, cfg, username, password, check) {
 
 async function main() {
   const directory = process.argv[2], modulePath = process.argv[3];
-  let browser, deny, context, page, timer, stopTimer, job, cancellation, control, failure = null, state = {state:'starting',loginSubmitted:false,authenticationVerified:false,failureCode:null};
+  let browser, deny, context, page, timer, stopTimer, job, cancellation, control, registry, authority, network;
+  let failure = null, state = {state:'starting',loginSubmitted:false,authenticationVerified:false,failureCode:null};
   let writeSequence = Promise.resolve();
   const write = patch => {
     state = {...state,...patch,updatedAt:new Date().toISOString()};
@@ -129,6 +163,9 @@ async function main() {
   try {
     const frames=readFrames(process.stdin);
     job = (await frames.next()).value; const cfg = validateJob(job);
+    const emit=value=>process.stdout.write(JSON.stringify(value)+'\n');
+    authority=new WorkerAuthority({emit,onRevoke:()=>{network?.fence();cancellation?.abort();void context?.close().catch(()=>{});}});
+    network=new NetworkPolicy({origin:cfg.origin,secret:job.password,requestPermit:value=>authority.check({kind:'network',...value})});
     const require = createRequire(import.meta.url);
     const pw = require(modulePath);
     ({browser,deny}=await launchEdge(pw));
@@ -139,50 +176,76 @@ async function main() {
     await context.setOffline(true);
     const rejected=code=>{failure=code;cancellation.abort();void context.close().catch(()=>{});};
     await context.route('**/*', route=>guardRoute(route,cfg.origin,rejected,cfg.certificate_sha256,cancellation.signal,
-      summary=>{if(state.authenticationVerified)control?.record(summary);}));
+      summary=>{if(state.authenticationVerified)control?.record(summary);},network,page));
     await context.routeWebSocket('**/*', socket=>{
       rejected('unsupported-transport');socket.close();
     });
     page = await context.newPage();
     page.once('close',()=>cancellation.abort());
     context.on('page', extra=>{if(extra!==page) void extra.close();});
-    const close = () => {cancellation.abort();return context.close().catch(()=>{});};
+    const close = () => {network.fence();authority.dispose();cancellation.abort();return context.close().catch(()=>{});};
     timer = setTimeout(close, Math.max(1,job.deadline-Date.now()));
     stopTimer = setInterval(async()=>{try{await fs.access(path.join(directory,'close.request'));void close();}catch{}},500);
-    await write({state:'opening'});
-    await page.goto(cfg.url,{waitUntil:'domcontentloaded',timeout:30000});
-    for (const name of ['username_selector','password_selector','submit_selector']) await page.locator(cfg[name]).waitFor({state:'visible',timeout:10000});
-    check();
-    if (job.mode === 'probe') {await write({state:'ready'});return;}
-    control=new SessionControl(page,cfg,{deadline:job.deadline,secret:job.password,check});
-    const successVisibleBefore = cfg.success_selector ? await page.locator(cfg.success_selector).isVisible() : false;
-    await submitLogin(page,cfg,job.username,job.password,check);
-    job.password='';
-    await write({state:'submitted',loginSubmitted:true});
-    const secret = page.locator(cfg.password_selector);
-    try { await secret.waitFor({state:'hidden',timeout:20000}); } catch {}
-    check();
-    let verified = false;
-    if (cfg.success_selector && !successVisibleBefore && !await secret.isVisible()) {
-      verified = await page.locator(cfg.success_selector).isVisible() && sameOrigin(page.url(),cfg.origin);
-    }
-    if (await secret.isVisible()) await secret.fill('');
-    await write({state:verified?'verified':'needs-user-check',authenticationVerified:verified});
+    control=new SessionControl(page,cfg,{deadline:job.deadline,secret:job.password||'',check});
+    registry=new Components(page,{admit:()=>control.admit(),redact:value=>control.redact(value),geometryRoot:cfg.success_selector||'main'});
+    const task=new TaskControl({registry,authorize:value=>authority.check(value),readResult:()=>control.readResult(),network});
+    let successVisibleBefore=null;
+    const resume=async()=>{
+      check();
+      if(state.authenticationVerified)throw new Error('authentication-already-verified');
+      await write({state:'opening',failureCode:null});
+      try {await loadConfiguredDocument(page,cfg);}
+      catch {check();await write({state:'needs-user-check',failureCode:'authorization-contract-required'});return {ok:true,authenticationVerified:false,contractRequired:true};}
+      const secret=page.locator(cfg.password_selector);
+      if(state.loginSubmitted&&cfg.success_selector&&!await secret.isVisible()&&await page.locator(cfg.success_selector).isVisible()){
+        network.setPhase('discovery-only');job.password='';
+        await write({state:'verified',authenticationVerified:true,failureCode:null});
+        return {ok:true,authenticationVerified:true};
+      }
+      try {for(const name of ['username_selector','password_selector','submit_selector'])await page.locator(cfg[name]).waitFor({state:'visible',timeout:2000});}
+      catch {check();await write({state:'needs-user-check',failureCode:'authorization-contract-required'});return {ok:true,authenticationVerified:false,contractRequired:true};}
+      if(job.mode==='probe'){await write({state:'ready'});return {ok:true,authenticationVerified:false};}
+      if(state.loginSubmitted&&network.authenticationForwarded>0){
+        await write({state:'needs-user-check',failureCode:null});
+        return {ok:true,authenticationVerified:false,loginOutcomeUnknown:true,doNotResubmit:true};
+      }
+      if(successVisibleBefore===null)successVisibleBefore=cfg.success_selector?await page.locator(cfg.success_selector).isVisible():false;
+      if(network.phase==='bootstrap')network.setPhase('login-once');
+      await submitLogin(page,cfg,job.username,job.password,check);
+      await write({state:'submitted',loginSubmitted:true});
+      try {await secret.waitFor({state:'hidden',timeout:3000});}catch{}
+      check();
+      const verified=!!(cfg.success_selector&&!successVisibleBefore&&!await secret.isVisible()&&
+        await page.locator(cfg.success_selector).isVisible()&&sameOrigin(page.url(),cfg.origin));
+      if(verified){network.setPhase('discovery-only');job.password='';}
+      if(await secret.isVisible())await secret.fill('');
+      await write({state:verified?'verified':'needs-user-check',authenticationVerified:verified,
+        failureCode:!verified&&network.list().length?'authorization-contract-required':null});
+      return {ok:true,authenticationVerified:verified,contractRequired:!verified&&network.list().length>0};
+    };
+    const runtime=new WorkerRuntime({control,registry,task,network,resume});
+    let commandSequence=resume();
+    if(job.mode==='probe'){await commandSequence;return;}
+    let queued=0;
     const commands=async()=>{
       for await(const command of frames){
-        let result;
-        try {
-          if(!state.authenticationVerified)throw new Error('authentication-required');
-          result=await dispatch(control,command);
-        } catch(error) {
-          const allowed=new Set(['invalid-command','authentication-required','origin-blocked','stale-observation','session-unavailable']);
-          const code=allowed.has(error?.message)?error.message:'control-failed';
-          if(code==='authentication-required')await write({state:'needs-user-check',authenticationVerified:false});
-          result={ok:false,failureCode:code};
-        }
-        const id=typeof command?.id==='string' && /^[a-f0-9]{32}$/.test(command.id)?command.id:null;
-        await new Promise((resolve,reject)=>process.stdout.write(JSON.stringify({id,result})+'\n',error=>error?reject(error):resolve()));
+        if(authority.handle(command))continue;
+        if(++queued>4)throw new Error('invalid-command');
+        commandSequence=commandSequence.then(async()=>{
+          let result;
+          try {result=await runtime.dispatch(command);}
+          catch(error){
+            const allowed=new Set(['invalid-command','authentication-required','origin-blocked','session-unavailable',
+              'approval-required','request-invalid','request-too-large','component-stale','component-ambiguous','scope-mismatch',
+              'target-state-changed','request-contract-unavailable','capability-unsupported','precondition-unenforceable',
+              'grant-revoked','target-selection-unavailable','response-too-large','outcome-unknown','authentication-already-verified']);
+            result={ok:false,failureCode:allowed.has(error?.message)?error.message:'control-failed'};
+          }
+          const id=typeof command?.id==='string'&&/^[a-f0-9]{32}$/.test(command.id)?command.id:null;
+          emit({id,result});queued--;
+        });
       }
+      await commandSequence;
     };
     await Promise.race([commands(),new Promise(resolve=>{if(page.isClosed())resolve();else page.once('close',resolve);})]);
     check();
@@ -194,6 +257,7 @@ async function main() {
     await write({state:'failed',failureCode:code}).catch(()=>{});
   } finally {
     if(job)job.password=''; clearTimeout(timer);clearInterval(stopTimer);
+    authority?.dispose();network?.fence();await registry?.dispose();
     cancellation?.abort();
     await control?.dispose();
     await context?.close().catch(()=>{});await browser?.close().catch(()=>{});

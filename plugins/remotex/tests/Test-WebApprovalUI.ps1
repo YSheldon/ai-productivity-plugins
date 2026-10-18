@@ -2,7 +2,11 @@ param([Parameter(Mandatory=$true)][string]$Scenario)
 
 $ErrorActionPreference = 'Stop'
 [Console]::Error.WriteLine(('ui-stage: script-start;interactive={0};session={1}' -f [Environment]::UserInteractive,[Diagnostics.Process]::GetCurrentProcess().SessionId))
-if ($Scenario -eq 'console-input-probe') { $null = Read-Host 'Synthetic input probe'; exit 0 }
+if ($Scenario -eq 'console-input-probe') {
+    $line = [Console]::ReadLine()
+    [Console]::WriteLine((@{consoleInputObserved=($null -ne $line)} | ConvertTo-Json -Compress))
+    exit 0
+}
 $helper = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\web_approval_ui.ps1'
 if (-not (Test-Path -LiteralPath $helper)) {
     [Console]::WriteLine('{"implemented":false}')

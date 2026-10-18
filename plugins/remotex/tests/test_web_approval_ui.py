@@ -16,7 +16,7 @@ def _run_harness(scenario):
     script=Path(__file__).with_name('Test-WebApprovalUI.ps1')
     try:
         return subprocess.run([approval.credential_store._powershell_path(),'-NoLogo','-NoProfile','-NonInteractive','-STA',
-            '-File',str(script),'-Scenario',scenario],capture_output=True,text=True,encoding='utf-8',
+            '-File',str(script),'-Scenario',scenario],stdin=subprocess.DEVNULL,capture_output=True,text=True,encoding='utf-8',
             timeout=20,env=approval.credential_store._setup_environment(),
             creationflags=subprocess.CREATE_NO_WINDOW)
     except subprocess.TimeoutExpired as error:
@@ -26,9 +26,10 @@ def _run_harness(scenario):
 
 
 @pytest.mark.skipif(os.name!='nt',reason='Windows PowerShell console behavior')
-def test_background_ui_harness_refuses_console_prompts():
+def test_background_ui_harness_does_not_inherit_console_input():
     result=_run_harness('console-input-probe')
-    assert result.returncode!=0,'The background harness accepted a console prompt'
+    assert result.returncode==0,result.stdout+result.stderr
+    assert json.loads(result.stdout)=={'consoleInputObserved':False}
 
 
 @pytest.mark.skipif(os.name!='nt',reason='Real Windows Forms controls')

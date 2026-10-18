@@ -30,6 +30,7 @@ import web_task_service
 
 
 PLAYWRIGHT_VERSION = "1.62.1"
+MAX_SESSION_SECONDS = web_authorization.MAX_GRANT_SECONDS + 3600
 PLUGIN = Path(__file__).resolve().parents[1]
 STATE_FIELDS = {"state","loginSubmitted","authenticationVerified","failureCode","updatedAt"}
 STATES = {"starting","opening","ready","submitted","verified","needs-user-check","failed","closed"}
@@ -335,9 +336,9 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
         raise core.ToolError("Web login requires profile, requester and confirm=true; credential values are not accepted")
     if os.name != "nt":
         raise core.ToolError("Web credential login requires Windows")
-    seconds = args.get("session_seconds",900)
-    if type(seconds) is not int or not 60 <= seconds <= 1800:
-        raise core.ToolError("session_seconds must be between 60 and 1800")
+    seconds = args.get("session_seconds",MAX_SESSION_SECONDS)
+    if type(seconds) is not int or not 60 <= seconds <= MAX_SESSION_SECONDS:
+        raise core.ToolError(f"session_seconds must be between 60 and {MAX_SESSION_SECONDS}")
     name, raw, bundle = core.select_profile("web",args.get("profile"))
     reference = credential_store.resolve_profile_reference(bundle,name,raw,"web")
     web_policy.validate_binding(raw,reference.reference_dict())
@@ -354,7 +355,7 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
             raise core.ToolError("Web profile or certificate trust changed; probe the current configuration before login")
         lease = owner.get("lease") or {}
         if lease.get("remainingSeconds",0) < seconds + 45:
-            raise core.ToolError("Renew this task's web queue lease to cover session_seconds plus 45 seconds")
+            raise core.ToolError(f"Renew this task's web queue lease to cover session_seconds plus 45 seconds (at least {seconds+45} seconds)")
         secret = core.read_windows_generic_credential(reference.reference_dict()["target"])
         if secret.username != raw["account"] or not secret.password or len(secret.password) > 4096:
             raise core.ToolError("Stored web credential does not match the configured account")
@@ -578,7 +579,7 @@ TOOLS = {
             ["profile","url","account","credential_ref","username_selector","password_selector","submit_selector","confirm"]),"handler":setup},
     "remotex_web_runtime_setup":{"description":"Check or install the pinned Playwright Core runtime for existing Microsoft Edge; never changes browser security policy.","inputSchema":_schema({"confirm":{"type":"boolean"}},[]),"handler":runtime_setup},
     "remotex_web_login":{"description":"Start one bounded, visible Edge login using a stored origin/account-bound credential and the caller's queue lease. No passwords in arguments.",
-        "inputSchema":_schema({"profile":{"type":"string"},"requester":{"type":"string"},"confirm":{"type":"boolean"},"session_seconds":{"type":"integer","minimum":60,"maximum":1800}},["profile","requester","confirm"]),"handler":login},
+        "inputSchema":_schema({"profile":{"type":"string"},"requester":{"type":"string"},"confirm":{"type":"boolean"},"session_seconds":{"type":"integer","minimum":60,"maximum":MAX_SESSION_SECONDS,"default":MAX_SESSION_SECONDS,"description":"New session duration, default/maximum 46800 seconds (13 hours); queue lease must cover it plus 45 seconds."}},["profile","requester","confirm"]),"handler":login},
     "remotex_web_session_status":{"description":"Read sanitized Edge login state without exposing DOM, screenshots, cookies or credentials.","inputSchema":_schema({"session_id":{"type":"string"}},["session_id"]),"handler":session_status},
     "remotex_web_session_close":{"description":"Request closure of this requester's RemoteX-owned Edge session. Read back closed state before releasing its queue lease.","inputSchema":_schema({"session_id":{"type":"string"},"requester":{"type":"string"},"confirm":{"type":"boolean"}},["session_id","requester","confirm"]),"handler":close_session},
 }
@@ -623,7 +624,7 @@ _TASKS={
     'remotex_web_authorization_request':('request',{'items':{'type':'array','items':_ITEM,'minItems':1,'maxItems':32},
         'setup':_schema({'phase':{'type':'string','enum':['bootstrap','login-once']},'network_refs':_REFS,'evidence':_EVIDENCE,
             'max_uses':{'type':'integer','minimum':1,'maximum':10}},['phase','network_refs','evidence']),
-        'idempotency_key':_TEXT,'ttl_seconds':{'type':'integer','minimum':60,'maximum':900}},['idempotency_key'],
+        'idempotency_key':_TEXT,'ttl_seconds':{'type':'integer','minimum':60,'maximum':web_authorization.MAX_GRANT_SECONDS,'default':web_authorization.MAX_GRANT_SECONDS,'description':'Requested task grant lifetime, default/maximum 43200 seconds (12 hours); human may lower it, and the existing session deadline still caps it.'}},['idempotency_key'],
         'Request exact observed operations OR blocked startup contracts through the local human window. Inspect approval_ui and remaining review time; shown is diagnostic, not permission or foreground proof. Never self-approves. Network sub-items may be rejected separately. No credentials or raw requests.'),
     'remotex_web_authorization_status':('status',{'request_id':_ID},[],
         'Read decisions, expiry, quotas, blocked descriptors and approval_ui lifecycle/remaining review/exit diagnostics. Shown is not authority or proof of foreground. No approval or request transmission.'),

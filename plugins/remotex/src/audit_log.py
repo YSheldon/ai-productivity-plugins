@@ -132,18 +132,29 @@ def _verify_records(records: list[dict[str, Any]]) -> str | None:
 
 
 def append(event: dict[str, Any]) -> dict[str, Any]:
+    return append_many([event])[0]
+
+
+def append_many(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(events, list) or not 1 <= len(events) <= 2 or any(not isinstance(event, dict) for event in events):
+        raise core.ToolError("Audit batch must contain one or two object events")
+    events = [dict(event) for event in events]
     path = audit_path()
     with _PROCESS_LOCK, _locked_file(path) as handle:
         records = _records(handle)
         previous = _verify_records(records)
-        record = {
-            "schema": SCHEMA,
-            "timestamp": _utc_now(),
-            "sessionId": SESSION_ID,
-            **event,
-            "previousHash": previous,
-        }
-        record["entryHash"] = hashlib.sha256(_canonical(record)).hexdigest()
+        appended = []
+        for event in events:
+            record = {
+                "schema": SCHEMA,
+                "timestamp": _utc_now(),
+                "sessionId": SESSION_ID,
+                **event,
+                "previousHash": previous,
+            }
+            record["entryHash"] = hashlib.sha256(_canonical(record)).hexdigest()
+            previous = record["entryHash"]
+            appended.append(record)
         handle.seek(0, os.SEEK_END)
         if handle.tell() == 1:
             handle.seek(0)
@@ -151,10 +162,10 @@ def append(event: dict[str, Any]) -> dict[str, Any]:
                 handle.seek(0)
                 handle.truncate()
         handle.seek(0, os.SEEK_END)
-        handle.write(_canonical(record) + b"\n")
+        handle.write(b"".join(_canonical(record) + b"\n" for record in appended))
         handle.flush()
         os.fsync(handle.fileno())
-        return record
+        return appended
 
 
 def _reference_summary(value: Any) -> dict[str, Any]:

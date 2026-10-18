@@ -102,10 +102,25 @@ do not publish actual internal endpoint/fingerprint pairs in repository examples
 ## Login And Lifetime
 
 Acquire the derived web queue using the current task's requester. The lease
-must cover the requested `session_seconds` (60-1800, default 900) plus 45 seconds.
+must cover the requested `session_seconds` (60-46,800, default 46,800 in 0.6.5)
+plus 45 seconds. The default 13-hour session leaves initialization margin for
+the requested 12-hour task grants; it does not grant any operation by itself.
 Then call `remotex_web_login` with `profile`, `requester` and `confirm=true`.
 The result's `webSessionId` is the session identifier; it is distinct from the
 MCP audit `sessionId`.
+
+For the default long task, finish dependency/probe checks first, then acquire
+an explicit `lease_seconds` of 46,900 and start `session_seconds=46800` promptly.
+If an existing owned lease is shorter, use `remotex_vm_queue_renew`; acquisition
+does not silently extend it. Existing profile lease defaults are not rewritten.
+Short tasks can request a shorter session and matching lease instead.
+
+Task authorization requests default to and are capped at `ttl_seconds=43200`.
+The operator can reduce this in the local window. The actual grant is still
+capped by the original session deadline, covering acquisition and all scope/use
+checks. It is not a rolling 12-hour renewal and does not extend an older grant.
+The approval window remains 120 seconds; high-risk action-time tickets remain
+one use and at most 30 seconds. Server-side login expiry can still occur earlier.
 
 The helper receives credentials once through an anonymous stdin pipe. Secrets
 are not passed through argv, environment, stdout/stderr or receipt files. A

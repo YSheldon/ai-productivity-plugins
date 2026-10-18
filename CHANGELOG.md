@@ -14,6 +14,13 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.6.5
+
+- Task read/write grants now request up to 43,200 seconds (12 hours) by default. Operators can reduce the lifetime; the original session, queue acquisition, origin, account, trust, process and finite operation budgets still bound authority. Existing grants are not extended.
+- New Edge sessions default to and are capped at 46,800 seconds (13 hours), leaving initialization margin before a 12-hour grant. A queue lease must cover the complete session plus 45 seconds; existing profiles and leases are not rewritten or silently renewed. Callers can request shorter sessions.
+- A single startup JS/CSS GET/HEAD permit persists its original reserved/finished audit records as one bounded transaction. The complete existing chain is verified once under the existing locks, both records remain hash-linked, and fsync completes before permission returns. Corruption or persistence failure remains fail-closed; no prefix cache, audit deletion, or business-write persistence change.
+- Added concurrent-writer, partial-write, revoke-during-durability, long-lifetime and synthetic 97,000-record startup regressions. The 45-second startup, 55-second resume, 10-second issued-check, 120-second human review and 30-second high-risk action ticket remain unchanged. No Bootstrap POST exception or center business-code change.
+
 ## RemoteX 0.6.4
 
 - Added nonce/digest-bound `shown`, `closed` and fixed-code `error` receipts on the native helper's private stderr pipe. Diagnostic frames cannot approve, revoke, replay or extend authority; the stdout decision/revocation protocol is unchanged.

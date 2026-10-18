@@ -7,6 +7,7 @@ center's business code. SSH, VM profiles and stored credentials are unchanged.
 Use 0.6.2 or later for native batch-review controls; 0.6.1 fixed native window
 startup. Version 0.6.3 adds bounded startup scheduling and late-reply recovery.
 Version 0.6.4 adds non-authorizing native-window lifecycle receipts.
+Version 0.6.5 adds 12-hour task grants and durable startup audit event pairs.
 For an interactive
 Windows regression, set `REMOTEX_TEST_NATIVE_APPROVAL=1` when running
 `plugins/remotex/tests/test_web_approval.py`. Its synthetic helper uses no saved
@@ -22,10 +23,19 @@ Never preempt another task or copy its identifiers.
 
 - Requests contain 1-32 items, including separately approvable network sub-items,
   and at most 32 KiB of canonical scope data.
-- Requested TTL is 60-900 seconds, default 300; the human can lower it. The
-  session and lease cap every grant. No executable grant is persisted.
+- Requested TTL is 60-43,200 seconds, default 43,200 (12 hours), for exact
+  approved read and write scopes. The human can lower it. The existing session
+  and lease cap every grant; a short existing session is never extended.
+  No executable grant is persisted, recovered across MCP processes or renewed
+  automatically. Closing its active human window still revokes the grant.
+- The review window remains 120 seconds, not 12 hours. New Edge sessions default
+  to and are capped at 46,800 seconds (13 hours), with a covering queue lease
+  plus 45 seconds. Use a shorter explicit session for short tasks. See
+  [Login and lifetime](web-credentials.md#login-and-lifetime).
 - References expire after 30 seconds. Refresh component metadata after a page
   change or a stale reference; identity, uniqueness and before-state are checked.
+  Blocked startup descriptor refs retain their separate 120-second lifetime.
+  A long task grant does not lengthen either reference lifetime.
 - Reads are bounded to 100 rows, 30 columns, 16,000 text characters and 96 KiB,
   further reduced by the approved output budget. Hidden/editable/embedded content
   is not included in general projections. Field inspection needs its own item.
@@ -90,6 +100,21 @@ the existing `approval-ui-unavailable` error. Receipts are local to the original
 supervisor, not a new cross-session recovery or approval surface.
 
 ## Startup and Login Contracts
+
+### Startup Audit Persistence
+
+In 0.6.5, one non-writing startup JS/CSS GET/HEAD permission commits its original
+`execution-reserved` and `execution-finished` records together. The complete
+existing audit chain is still verified under the same process/file locks; both
+new records are hash-linked and flushed/fsynced before permission can return.
+There is no trusted-prefix cache, skipped audit event, automatic ledger cleanup
+or change to business-write recovery. Corruption, partial writes and failed
+durability deny permission. Revocation is rechecked after the commit.
+
+The startup deadline is still 45 seconds, the issued-check limit 10 seconds,
+and the outer resume wait 55 seconds. Increasing task TTL does not change these
+budgets or permit Bootstrap POST requests. Static/login grants are retired at
+authenticated discovery; they do not become business permissions.
 
 Network traffic is default-deny from worker startup: bootstrap, login-once,
 discovery-only, then task-grant traffic. A profile's origin is not a blanket

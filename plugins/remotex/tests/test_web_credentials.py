@@ -121,6 +121,53 @@ class WebCredentialTests(unittest.TestCase):
         with self.assertRaises(core.ToolError):
             profile_config.prepare({**self.args,"password_selector":"body"})
 
+    def test_long_session_requires_full_lease_before_reading_credentials(self):
+        import web_adapter, queue_leases
+        self.path.write_text(json.dumps(self.prepared().candidate))
+        @contextmanager
+        def short_lease(resource, requester):
+            yield {'lease': {'remainingSeconds': 46844}}
+        with (mock.patch.object(web_adapter, '_node', return_value='node'),
+              mock.patch.object(web_adapter, '_module_path', return_value=self.root),
+              mock.patch.object(queue_leases, 'leased_owner_operation', short_lease),
+              mock.patch.object(core, 'read_windows_generic_credential', side_effect=AssertionError('credential read before covering lease'))):
+            with self.assertRaisesRegex(core.ToolError, 'cover session_seconds plus 45'):
+                web_adapter.login({'profile': 'web-lab', 'requester': 'owner', 'confirm': True, 'session_seconds': 46800})
+
+    def test_default_long_session_packet_and_public_result_share_the_thirteen_hour_bound(self):
+        import web_adapter, queue_leases
+        self.path.write_text(json.dumps(self.prepared().candidate))
+        queue_leases.queue_acquire({'profile': 'web-lab', 'requester': 'owner', 'lease_seconds': 46900})
+        process = mock.Mock(pid=123, stdin=io.BytesIO())
+        process.poll.return_value = None
+        job = mock.Mock(assigned=True)
+        identifier = None
+        try:
+            with (mock.patch.object(web_adapter, '_node', return_value='node'),
+                  mock.patch.object(web_adapter, '_module_path', return_value=self.root),
+                  mock.patch.object(web_adapter.secure_paths, 'ensure_private_directory', side_effect=lambda p: p.mkdir(parents=True, exist_ok=True)),
+                  mock.patch.object(web_adapter.secure_paths, 'ensure_private_file', return_value=None),
+                  mock.patch.object(web_adapter.subprocess, 'Popen', return_value=process),
+                  mock.patch.object(web_adapter.execution, '_WindowsJob', return_value=job),
+                  mock.patch.object(web_adapter.threading.Thread, 'start', return_value=None),
+                  mock.patch.object(core, 'read_windows_generic_credential', return_value=core.CredentialValue('security', 'synthetic-long-session-canary'))):
+                before = int(time.time() * 1000)
+                result = json.loads(web_adapter.login({'profile': 'web-lab', 'requester': 'owner', 'confirm': True})['content'][0]['text'])
+                identifier = result['webSessionId']
+                packet = json.loads(process.stdin.getvalue())
+                self.assertEqual(result['sessionSeconds'], 46800)
+                self.assertGreaterEqual(packet['deadline'], before + 46800000)
+                self.assertLessEqual(packet['deadline'], int(time.time() * 1000) + 46800000)
+                for file in (self.root / 'web').rglob('*.json'):
+                    self.assertNotIn('synthetic-long-session-canary', file.read_text())
+        finally:
+            if identifier:
+                with web_adapter._CHANNELS_LOCK:
+                    channel = web_adapter._CHANNELS.pop(identifier, None)
+                if channel:
+                    channel.close()
+            job.close()
+
     def test_origin_or_account_changes_cannot_reuse_saved_target(self):
         p = self.prepared()
         candidate = p.candidate
@@ -259,7 +306,7 @@ class WebCredentialTests(unittest.TestCase):
             mock.patch.object(core,'read_windows_generic_credential',return_value=core.CredentialValue('security','synthetic-secret-canary')),
         ):
             with self.assertRaises(core.ToolError):
-                web_adapter.login({'profile':'web-lab','requester':'owner','confirm':True})
+                web_adapter.login({'profile':'web-lab','requester':'owner','confirm':True,'session_seconds':900})
         self.assertFalse(web_adapter._active_path(p.profile['queue_resource']).exists())
         self.assertTrue(job.close.called)
         for file in (self.root/'web').rglob('*.json'):

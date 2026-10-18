@@ -50,6 +50,7 @@ def test_native_helper_emits_no_frame_before_human_decision(item_count):
     reader=threading.Thread(target=lambda:observed.put(process.stdout.readline(32769)),daemon=True)
     diagnostic_reader=threading.Thread(target=lambda:diagnostics.put(process.stderr.readline(2049)),daemon=True)
     packet=manifest()
+    packet['ttl_seconds']=43200
     packet['items']=[{'item_id':f'asset.{index}','capability':'web.page_step',
         'fingerprint':'d'*64,'page':'#/','max_uses':2,'depends_on':[],'targets':[],
         'parameters':{'review_kind':'bootstrap'},'output':{'rows':0,'columns':0,'bytes':0},

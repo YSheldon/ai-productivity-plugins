@@ -30,6 +30,10 @@ class MemoryJournal:
     def append(self, event):
         self.events.append(copy.deepcopy(event))
 
+    def append_many(self, events):
+        for event in events:
+            self.append(event)
+
     def reserve(self, attempt, conflicts):
         if any(set(conflicts) & set(row) for row in self.pending.values()):
             raise auth.ScopeError('unresolved-prior-write')

@@ -85,6 +85,11 @@ client-side fragment; it never reloads a prior POST.
 At verified authentication, login authority cannot be re-entered. Background
 business polling is blocked unless separately covered by an active task step.
 Startup grants are retired after authentication; they do not become task grants.
+Blocked descriptor references expire after 120 seconds. An expired reference
+stays invalid; only a new denied UI request can produce a replacement. Listing
+status neither renews metadata nor grants permission, and expired entries cannot
+exhaust the unchanged 100-reference capacity. A metadata refresh never replays
+traffic or retries an authentication exchange that may already have been sent.
 MFA, CAPTCHA, unsupported request encodings and missing semantics remain operator
 prerequisites. An isolated credential-free probe may report a missing contract
 rather than opening an unrestricted page.

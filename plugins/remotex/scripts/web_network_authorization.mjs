@@ -131,8 +131,14 @@ export class NetworkPolicy {
     catch{return false;}
     if(this.phase==='fenced'||this.generation!==generation||
       (this.phase==='grant-active'&&this.clock()>=this.dispatchDeadline))return false;
-    if(!allowed&&!this.pending.has(key)&&this.pending.size<100){
-      this.pending.set(key,{ref:randomUUID().replaceAll('-',''),descriptor,at:Date.now()});
+    if(!allowed){
+      const now=Date.now();
+      for(const [pendingKey,row] of this.pending){
+        if(now-row.at>120000)this.pending.delete(pendingKey);
+      }
+      if(!this.pending.has(key)&&this.pending.size<100){
+        this.pending.set(key,{ref:randomUUID().replaceAll('-',''),descriptor,at:now});
+      }
     }
     return allowed;
   }

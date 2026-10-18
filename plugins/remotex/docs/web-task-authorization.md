@@ -209,3 +209,6 @@ transport check prevents buffered content being released after revocation or
 expiry; bytes already logically committed to the pipe cannot be recalled.
 Known credentials in URL paths, dynamic field names or other descriptor strings
 are rejected before they can enter pending-request metadata.
+Credential-bearing control metadata cannot mint action references, and tainted
+target identities/versions cannot become write-draft targets. Exported route
+metadata is redacted too; credential filtering is not limited to visible cells.

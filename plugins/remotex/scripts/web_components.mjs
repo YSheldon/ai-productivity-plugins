@@ -107,7 +107,7 @@ export class Components {
 
   pageInfo(){
     const url=new URL(this.page.url());
-    return {origin:url.origin,path:/^\/[A-Za-z0-9/_.~-]{0,511}$/.test(url.pathname)?url.pathname:'[omitted]',route:/^#\/[A-Za-z0-9/_-]{0,511}$/.test(url.hash)?url.hash:null};
+    return this.redact({origin:url.origin,path:/^\/[A-Za-z0-9/_.~-]{0,511}$/.test(url.pathname)?url.pathname:'[omitted]',route:/^#\/[A-Za-z0-9/_-]{0,511}$/.test(url.hash)?url.hash:null});
   }
 
   async clear(){
@@ -125,6 +125,7 @@ export class Components {
     const components=[];
     for(let index=0;index<metas.length;index++){
       const meta=metas[index],fingerprint=hash(meta),ref=token();
+      if(JSON.stringify(meta)!==JSON.stringify(this.redact(meta)))continue;
       const entry=await this.handle.getProperty(String(index));const node=await entry.getProperty('node');await entry.dispose();
       const ambiguous=counts.get(fingerprint)!==1;
       this.entries.set(ref,{node,meta,fingerprint,ref,url,ambiguous});
@@ -233,6 +234,7 @@ export class Components {
     }
     for(let index=0;index<identities.length;index++){
       const identity=identities[index];if(!identity)continue;
+      if(JSON.stringify(identity)!==JSON.stringify(this.redact(identity)))continue;
       if(identities.filter(value=>value?.identity===identity.identity).length!==1)continue;
       if(this.targets.size>=1000)throw new Error('response-too-large');
       const ref=token();this.targets.set(ref,{...identity,page:this.pageInfo(),table_fingerprint:entry.fingerprint,row:index});output.target_refs.push(ref);

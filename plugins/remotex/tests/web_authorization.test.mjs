@@ -169,3 +169,36 @@ test('reconciliation needs a fresh approved target readback, not a click or clai
   assert.equal(proof.state,'verified');
   assert.deepEqual(proof.targets,[{identity:'host-one',state:'verified'}]);
 }));
+
+async function protectFixtureMetadata(registry,page){
+  const {SessionControl}=await import('../scripts/web_control.mjs');
+  const control=new SessionControl(page,{origin:'https://console.example'},
+    {deadline:Date.now()+60000,secret:'metadata-canary-password',check:()=>{}});
+  registry.redact=value=>control.redact(value);
+}
+
+test('credential-bearing component metadata cannot mint action references',async()=>fixture(async({registry,page})=>{
+  await protectFixtureMetadata(registry,page);
+  await page.locator('#terminals').evaluate(node=>node.textContent='metadata-canary-password');
+  const view=await registry.scan();
+  assert.ok(!JSON.stringify(view).includes('metadata-canary-password'));
+  assert.ok(!view.components.some(component=>component.id==='terminals'));
+}));
+
+test('credential-bearing target identities and versions never enter action drafts',async()=>fixture(async({registry,page})=>{
+  await protectFixtureMetadata(registry,page);
+  await page.locator('tr[data-id="host-one"]').evaluate(node=>{
+    node.dataset.id='metadata-canary-password';node.dataset.version='metadata-canary-password';
+  });
+  const view=await registry.scan(),table=view.components.find(component=>component.kind==='table');
+  const result=await registry.project(await registry.resolve(view.observationId,table.ref),'web.read_table',{rows:100,columns:30,bytes:98304});
+  assert.equal(result.target_refs.length,0);
+  assert.equal(registry.targets.size,0);
+}));
+
+test('current-page route metadata never exports the configured credential',async()=>fixture(async({registry,page})=>{
+  await protectFixtureMetadata(registry,page);
+  await page.evaluate(()=>{location.hash='/metadata-canary-password';});
+  const view=await registry.scan();
+  assert.ok(!JSON.stringify(view.page).includes('metadata-canary-password'));
+}));

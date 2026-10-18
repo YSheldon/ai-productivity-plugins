@@ -176,9 +176,19 @@ def _reference_summary(value: Any) -> dict[str, Any]:
 def summarize_arguments(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if tool.startswith('remotex_web_'):
         # Task values, endpoint names and human preview data stay out of the ledger.
-        return {key+'Sha256':hashlib.sha256(str(arguments[key]).encode('utf-8')).hexdigest()
-            for key in ('profile','requester','session_id','request_id','grant_id','attempt_id','idempotency_key')
+        summary={key+'Sha256':hashlib.sha256(str(arguments[key]).encode('utf-8')).hexdigest()
+            for key in ('requester','session_id','request_id','grant_id','attempt_id','idempotency_key')
             if key in arguments and isinstance(arguments[key],str)}
+        profile=arguments.get('profile')
+        if isinstance(arguments.get('session_id'),str):
+            import web_adapter
+            with web_adapter._CHANNELS_LOCK:
+                channel=web_adapter._CHANNELS.get(arguments['session_id'])
+                if channel is not None:
+                    profile=getattr(channel,'profile',profile)
+        if isinstance(profile,str) and profile.strip():
+            summary['profileSha256']=hashlib.sha256(profile.strip().encode('utf-8')).hexdigest()
+        return summary
     summary: dict[str, Any] = {}
     for key in (
         "profile",

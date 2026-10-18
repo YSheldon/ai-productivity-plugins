@@ -55,3 +55,26 @@ def test_duplicate_json_fields_do_not_choose_an_ambiguous_authorization_scope():
     import remotex_mcp
     with pytest.raises(ValueError):
         remotex_mcp._parse_message('{"params":{"arguments":{"grant_id":"first","grant_id":"second"}}}')
+
+
+def test_private_web_profile_hash_still_supports_credential_usage_reporting():
+    import audit_log
+    import usage_report
+    from datetime import datetime,timezone
+    request=audit_log.summarize_arguments('remotex_web_login',{'profile':'web-lab'})
+    records=[{'timestamp':'2026-10-17T00:00:00Z','operationId':'op','event':'operation-start',
+        'tool':'remotex_web_login','request':request}]
+    operations=usage_report._operations(records,datetime(2026,10,18,tzinfo=timezone.utc),{},profile_names=['web-lab'])
+    assert operations[0]['profile']=='web-lab'
+    assert 'web-lab' not in json.dumps(request)
+
+
+def test_session_tool_audit_joins_only_the_bound_profile_hash(monkeypatch):
+    import audit_log
+    import hashlib
+    from types import SimpleNamespace
+    monkeypatch.setitem(web_adapter._CHANNELS,'a'*32,SimpleNamespace(profile='web-lab'))
+    request=audit_log.summarize_arguments('remotex_web_execute',{'session_id':'a'*32,
+        'changes':[{'value':'private-value'}]})
+    assert request['profileSha256']==hashlib.sha256(b'web-lab').hexdigest()
+    assert 'private-value' not in json.dumps(request)

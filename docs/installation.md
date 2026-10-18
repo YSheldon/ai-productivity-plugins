@@ -198,7 +198,7 @@ Confirm supported-browser access through the host before any web operation.
 | Config rejected after upgrade | Check every client reading the shared config for old runtimes |
 | Browser-control request-header policy error | Diagnose the host browser interface separately from site credentials |
 | Isolated Edge not in the browser list | Use RemoteX task tools in the process that started login; a session ID is not a generic tab ID |
-| Button/form interface absent | Upgrade/reconnect to 0.6.0, discover components, request a local human grant, then use typed execution |
+| Button/form interface absent | Upgrade/reconnect to 0.6.1, discover components, request a local human grant, then use typed execution |
 | `authorization-contract-required` | Inspect blocked descriptor refs, review exact startup/login contracts locally, then resume the same UI; never replay raw requests |
 | Page stays at 1280x720 when resizing Edge | Use a new window-sized session; inspect `remotex_web_components.geometry` to separate viewport behavior from site CSS |
 | Host browser access denied or unknown | Stop web operations; do not use RemoteX, CDP, or shell automation as an alternate route |

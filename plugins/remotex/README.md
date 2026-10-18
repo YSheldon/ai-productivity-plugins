@@ -18,7 +18,8 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
-Version `0.6.0` adds task-level web approval, including business writes. The local
+Version `0.6.1` fixes native approval-window startup; `0.6.0` added task-level web
+approval, including business writes. The local
 human window supports batches, partial approval, lower quotas/output limits,
 shorter lifetimes, and revocation. Typed operations can click observed controls,
 fill exact approved non-secret values, and submit a target-bound workflow.

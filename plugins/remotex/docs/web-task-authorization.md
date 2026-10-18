@@ -4,6 +4,10 @@ RemoteX 0.6.0 adds human-approved buttons, exact form input and scoped business
 submission in the **same RemoteX-owned Edge session**. It does not adopt an
 ordinary browser tab, share cookies, bypass host browser policy, or change the
 center's business code. SSH, VM profiles and stored credentials are unchanged.
+Use 0.6.1 or later for the native approval-window startup fix. For an interactive
+Windows regression, set `REMOTEX_TEST_NATIVE_APPROVAL=1` when running
+`plugins/remotex/tests/test_web_approval.py`. Its synthetic helper uses no saved
+credential, network request or approval, and closes only its own test window.
 
 ## Ownership and Limits
 

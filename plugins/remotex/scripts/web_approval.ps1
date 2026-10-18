@@ -43,9 +43,10 @@ try {
     $form.AcceptButton = $null
     $layout = New-Object Windows.Forms.TableLayoutPanel
     $layout.Dock = 'Fill'; $layout.ColumnCount = 2; $layout.RowCount = 4
-    $layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent, 70)))
-    $layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent, 30)))
-    foreach ($height in @(70, 210, 330, 70)) { $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute, $height))) }
+    # Standard output is reserved for decision and revocation frames.
+    $null = $layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent, 70)))
+    $null = $layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent, 30)))
+    foreach ($height in @(70, 210, 330, 70)) { $null = $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute, $height))) }
     $form.Controls.Add($layout)
     $heading = New-Object Windows.Forms.Label
     $heading.Dock = 'Fill'; $heading.Padding = New-Object Windows.Forms.Padding(12)

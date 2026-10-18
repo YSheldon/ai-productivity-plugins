@@ -37,15 +37,23 @@ def test_native_decision_transport_is_required():
 
 @pytest.mark.skipif(os.name!='nt' or os.environ.get('REMOTEX_TEST_NATIVE_APPROVAL')!='1',
                     reason='Opt-in interactive Windows helper smoke test')
-def test_native_helper_emits_no_frame_before_human_decision():
+@pytest.mark.parametrize('item_count',[0,15])
+def test_native_helper_emits_no_frame_before_human_decision(item_count):
     script=Path(__file__).resolve().parents[1]/'scripts'/'web_approval.ps1'
     process=subprocess.Popen([approval.credential_store._powershell_path(),'-NoLogo','-NoProfile','-STA',
         '-File',str(script)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
         env=approval.credential_store._setup_environment(),creationflags=subprocess.CREATE_NO_WINDOW)
     observed=queue.Queue()
     reader=threading.Thread(target=lambda:observed.put(process.stdout.readline(32769)),daemon=True)
+    packet=manifest()
+    packet['items']=[{'item_id':f'asset.{index}','capability':'web.page_step',
+        'fingerprint':'d'*64,'page':'#/','max_uses':2,'depends_on':[],'targets':[],
+        'parameters':{'review_kind':'bootstrap'},'output':{'rows':0,'columns':0,'bytes':0},
+        'display':{'label':f'Network: GET /assets/{index}.js','preview':'{}'},
+        'effect':{'class':'task-bounded','fields':[],'digest':'e'*64}}
+        for index in range(item_count)]
     try:
-        process.stdin.write(auth.canonical(manifest())+b'\n')
+        process.stdin.write(auth.canonical(packet)+b'\n')
         process.stdin.flush()
         reader.start()
         try:

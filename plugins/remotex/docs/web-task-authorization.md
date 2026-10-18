@@ -4,7 +4,8 @@ RemoteX 0.6.0 adds human-approved buttons, exact form input and scoped business
 submission in the **same RemoteX-owned Edge session**. It does not adopt an
 ordinary browser tab, share cookies, bypass host browser policy, or change the
 center's business code. SSH, VM profiles and stored credentials are unchanged.
-Use 0.6.1 or later for the native approval-window startup fix. For an interactive
+Use 0.6.2 or later for native batch-review controls; 0.6.1 fixed native window
+startup. For an interactive
 Windows regression, set `REMOTEX_TEST_NATIVE_APPROVAL=1` when running
 `plugins/remotex/tests/test_web_approval.py`. Its synthetic helper uses no saved
 credential, network request or approval, and closes only its own test window.
@@ -114,8 +115,17 @@ specific component's `ref` to `component_ref`. Request a batch such as:
 
 The human window starts with unchecked approval boxes. It shows the origin,
 account, request digest, requested operations and details. Select items/targets,
-lower uses/output/TTL as needed, and choose **Approve Selected**. Rejecting a
-prerequisite blocks its dependent items. The agent cannot approve itself.
+lower uses/output/TTL as needed, and choose **Approve Selected**. **Select All**
+and **Clear Selection** change only the approval checkboxes. To classify a
+compatible checked batch, explicitly choose an **Effect Review** value and use
+**Apply to Checked**. Mixed or unknown effects refuse the whole update; review
+those rows separately. Non-network rows stay Not applicable. Neither batch
+control grants authority or sends a decision; final approval is still separate.
+The read-only Scope column and its tooltip show the sanitized request label,
+while full details remain available. The countdown shows the existing
+120-second review deadline, not the separately bounded lifetime after approval.
+Rejecting a prerequisite blocks its dependent items. The agent cannot approve
+itself.
 
 Network effects start **Unreviewed**, not implicitly read-only because their
 parent is a navigation/query control. The operator must independently inspect

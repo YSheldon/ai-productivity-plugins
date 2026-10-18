@@ -14,6 +14,13 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.6.2
+
+- Added explicit Select All / Clear Selection and a human-chosen Effect Review dropdown with Apply to Checked in the native task-approval window. Neither selection nor classification emits a decision; Approve Selected remains a separate final action.
+- Batch classification changes only compatible checked network rows. Mixed or unknown effects refuse the entire update without relabelling writes as reads; unchecked and non-network rows remain unchanged.
+- Added read-only sanitized request scope labels, full label tooltips, checked-item counts and a pending-review countdown. Existing 120-second review expiry, grant lifetime bounds, partial approval, target limits, revocation and final business-write confirmation remain unchanged.
+- Added real WinForms state and production-form callback regressions, including a 15-item batch and final 14-item partial decision, plus actual silent startup checks. No center business code or shared profile/credential changes.
+
 ## RemoteX 0.6.1
 
 - Fixed native task-approval startup emitting WinForms collection indices into the private JSON decision pipe. The helper now stays pending until an actual human decision instead of cancelling on an unsolicited numeric frame.

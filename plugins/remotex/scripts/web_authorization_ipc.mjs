@@ -84,10 +84,10 @@ export class WorkerAuthority {
     if(this.closed||this.staticActive||this.pending.size>=16)return;
     while(this.staticQueue.length){
       const row=this.staticQueue.shift();
-      if(!this._current(row.context)){row.finish(false);continue;}
+      if(!this._current(row.context)||row.cancelled()){row.finish(false);continue;}
       this.staticActive=row;
       this._send(row.request,row.controller.signal).then(allowed=>{
-        row.finish(allowed&&this._current(row.context));
+        row.finish(allowed&&this._current(row.context)&&!row.cancelled());
       }).finally(()=>{
         if(this.staticActive===row)this.staticActive=null;
         this._pump();
@@ -96,8 +96,12 @@ export class WorkerAuthority {
     }
   }
 
-  check(request,{signal}={}){
-    if(this.closed||signal?.aborted)return Promise.resolve(false);
+  check(request,{signal,isCancelled}={}){
+    const cancelled=()=>{
+      try {return signal?.aborted===true||(isCancelled!==undefined&&isCancelled()!==false);}
+      catch{return true;}
+    };
+    if(this.closed||cancelled())return Promise.resolve(false);
     if(!this.startup||!this._isStatic(request))return this._send(request,signal);
     let context;
     try {context=this.startup();}catch{context=null;}
@@ -110,7 +114,7 @@ export class WorkerAuthority {
     // Queue before asking the broker; never cache or reuse a returned permission.
     return new Promise(resolve=>{
       let finished=false;
-      const row={context,request:snapshot,controller:new AbortController(),finish:value=>{
+      const row={context,request:snapshot,cancelled,controller:new AbortController(),finish:value=>{
         if(finished)return;finished=true;signal?.removeEventListener('abort',cancel);resolve(value);
       }};
       const cancel=()=>{

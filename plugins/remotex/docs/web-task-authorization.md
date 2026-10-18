@@ -105,8 +105,10 @@ All check types together retain the existing maximum of 16 emitted checks.
 
 Every emitted check still has at most 10 seconds. Queued checks keep the original
 startup operation's deadline and are denied on cancellation, phase/generation
-change or expiry; a later resume cannot renew an older request. Known expired
-reply IDs are deny-only metadata, bounded to 64 entries and 60 seconds. Their late
+change or expiry; a later resume cannot renew an older request.
+Queued routes are checked for cancellation again before broker emission;
+already-emitted checks can still consume quota even if forwarding is cancelled.
+Known expired reply IDs are deny-only metadata, bounded to 64 entries and 60 seconds. Their late
 reply is discarded once, never converted into permission or a command. Unknown
 or malformed protocol messages remain fail-closed.
 

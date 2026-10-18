@@ -23,6 +23,18 @@ test('a browser request cancelled while awaiting its permit cannot forward after
   failed=true;release(true);
   assert.equal(await pending,false);assert.equal(policy.list().length,0);
 });
+
+test('the private permit callback receives a fresh cancellation predicate outside the descriptor',async()=>{
+  let failed=false,check;
+  const policy=new network.NetworkPolicy({origin,requestPermit:async(value,options)=>{
+    assert.deepEqual(Object.keys(value).sort(),['attempt_id','descriptor','digest','phase']);
+    check=options?.isCancelled;assert.equal(typeof check,'function');
+    assert.equal(check(),false);failed=true;assert.equal(check(),true);return false;
+  }});
+  assert.equal(await policy.authorize({...asset(),failure:()=>failed?{errorText:'net::ERR_ABORTED'}:null}),false);
+  assert.equal(typeof check,'function');
+  assert.equal(policy.list().length,0);
+});
 async function withTime(run){
   let now=1000;const actual=Date.now;Date.now=()=>now;
   try {await run(delta=>{now+=delta;});}finally{Date.now=actual;}

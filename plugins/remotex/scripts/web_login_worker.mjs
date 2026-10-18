@@ -174,7 +174,8 @@ async function main() {
     const emit=value=>process.stdout.write(JSON.stringify(value)+'\n');
     authority=new WorkerAuthority({emit,startup:()=>startupContext,
       onRevoke:()=>{network?.fence();cancellation?.abort();void context?.close().catch(()=>{});}});
-    network=new NetworkPolicy({origin:cfg.origin,secret:job.password,requestPermit:value=>authority.check({kind:'network',...value})});
+    network=new NetworkPolicy({origin:cfg.origin,secret:job.password,
+      requestPermit:(value,options)=>authority.check({kind:'network',...value},options)});
     const require = createRequire(import.meta.url);
     const pw = require(modulePath);
     ({browser,deny}=await launchEdge(pw));

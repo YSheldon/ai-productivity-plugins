@@ -131,7 +131,8 @@ export class NetworkPolicy {
     catch(error){this.lastFailure=error.message;return false;}
     const key=signature(descriptor);
     let allowed=false;
-    try {allowed=await this.requestPermit({phase:this.phase,attempt_id:this.activeAttempt,descriptor,digest:key})===true;}
+    try {allowed=await this.requestPermit({phase:this.phase,attempt_id:this.activeAttempt,descriptor,digest:key},
+      {isCancelled:()=>requestCancelled(request)})===true;}
     catch{return false;}
     if(this.phase==='fenced'||this.generation!==generation||requestCancelled(request)||
       (this.phase==='grant-active'&&this.clock()>=this.dispatchDeadline))return false;

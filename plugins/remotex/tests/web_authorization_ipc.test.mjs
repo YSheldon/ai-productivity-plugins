@@ -241,3 +241,30 @@ test('cancelling one queued static request does not cancel its independent sibli
   f.authority.handle({authorization_reply:f.frames[1].id,allowed:true});
   assert.equal(await first,true);assert.equal(await third,true);await second;
 });
+
+test('the production policy drops a cancelled FIFO request before broker emission',async t=>{
+  const f=startupFixture(t);let cancelled=false;
+  f.policy.requestPermit=(value,options)=>f.authority.check({kind:'network',...value},options);
+  const asset=(path,failure=()=>null)=>({url:()=>f.policy.origin+path,method:()=>'GET',
+    postData:()=>null,headers:()=>({}),resourceType:()=>'script',failure});
+  const first=f.policy.authorize(asset('/first.js'));
+  const stale=f.policy.authorize(asset('/cancelled.js',()=>cancelled?{errorText:'net::ERR_ABORTED'}:null));
+  const live=f.policy.authorize(asset('/live.js'));
+  cancelled=true;
+  f.authority.handle({authorization_reply:f.frames[0].id,allowed:true});await flush();
+  assert.deepEqual(f.frames.map(frame=>frame.request.descriptor.path),['/first.js','/live.js']);
+  f.authority.handle({authorization_reply:f.frames[1].id,allowed:true});
+  assert.deepEqual(await Promise.all([first,stale,live]),[true,false,true]);
+  assert.equal(f.policy.list().length,0);
+});
+
+test('a queued cancellation predicate that throws is denied without blocking a live sibling',async t=>{
+  const f=startupFixture(t);let failed=false;
+  const first=f.authority.check(f.request(0));
+  const stale=f.authority.check(f.request(1),{isCancelled:()=>{if(failed)throw new Error('request-unavailable');return false;}});
+  const live=f.authority.check(f.request(2));failed=true;
+  f.authority.handle({authorization_reply:f.frames[0].id,allowed:true});await flush();
+  assert.deepEqual(f.frames.map(frame=>frame.request.descriptor.path),['/assets/0.js','/assets/2.js']);
+  f.authority.handle({authorization_reply:f.frames[1].id,allowed:true});
+  assert.deepEqual(await Promise.all([first,stale,live]),[true,false,true]);
+});

@@ -12,18 +12,25 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 import web_approval as approval
 
 
-def _run_harness(scenario, preload_modules=False):
+def _run_harness(scenario):
     script=Path(__file__).with_name('Test-WebApprovalUI.ps1')
-    arguments=['-PreloadModules'] if preload_modules else []
     try:
         return subprocess.run([approval.credential_store._powershell_path(),'-NoLogo','-NoProfile','-NonInteractive','-STA',
-            '-File',str(script),'-Scenario',scenario,*arguments],stdin=subprocess.DEVNULL,capture_output=True,text=True,encoding='utf-8',
+            '-File',str(script),'-Scenario',scenario],stdin=subprocess.DEVNULL,capture_output=True,text=True,encoding='utf-8',
             timeout=20,env=approval.credential_store._setup_environment(),
             creationflags=subprocess.CREATE_NO_WINDOW)
     except subprocess.TimeoutExpired as error:
         details=error.stderr or b''
         if isinstance(details,bytes):details=details.decode('utf-8',errors='replace')
         raise AssertionError(f'Native UI harness timed out in {scenario}; diagnostic stages:\n{details[-4000:]}') from error
+
+
+@pytest.mark.skipif(os.name!='nt',reason='Windows PowerShell host prerequisites')
+def test_native_host_prerequisites():
+    result=_run_harness('host-prerequisite')
+    assert result.returncode==0,result.stdout+result.stderr
+    assert json.loads(result.stdout)=={'prerequisite':True}
+    assert 'host-stage: control-end;' in result.stderr
 
 
 @pytest.mark.skipif(os.name!='nt',reason='Windows PowerShell console behavior')
@@ -49,15 +56,12 @@ def test_native_batch_controls_preserve_explicit_authority(scenario):
 
 
 if __name__=='__main__':
-    passed=True
-    for label,preload in [('autoload',False),('explicit-system-modules',True)]:
-        print(f'Native host prerequisite loading: {label}',flush=True)
-        try:
-            result=_run_harness('host-prerequisite',preload)
-            print(result.stderr,flush=True)
-            print(result.stdout,flush=True)
-            passed=passed and result.returncode==0 and json.loads(result.stdout)=={'prerequisite':True}
-        except (AssertionError,ValueError) as error:
-            print(str(error),flush=True)
-            passed=False
+    try:
+        result=_run_harness('host-prerequisite')
+        print(result.stderr,flush=True)
+        print(result.stdout,flush=True)
+        passed=result.returncode==0 and json.loads(result.stdout)=={'prerequisite':True}
+    except (AssertionError,ValueError) as error:
+        print(str(error),flush=True)
+        passed=False
     raise SystemExit(0 if passed else 1)

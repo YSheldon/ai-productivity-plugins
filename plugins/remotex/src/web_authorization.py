@@ -10,6 +10,9 @@ import time
 from typing import Any, Callable
 
 
+MAX_GRANT_SECONDS = 43200
+
+
 CAPABILITIES = frozenset({'web.navigate', 'web.read_region', 'web.read_table',
     'web.query_input', 'web.page_step', 'web.read_result', 'web.inspect_action',
     'web.business_action'})
@@ -150,6 +153,7 @@ class Broker:
         self.journal, self.check, self.close, self.clock = journal, check, close, clock
         self.lock = threading.RLock()
         self.output_lock = threading.RLock()
+        self._audit_transaction = threading.local()
         self.fenced = threading.Event()
         self._close_once=threading.Lock()
         self.requests, self.request_keys, self.grants = {}, {}, {}
@@ -167,16 +171,56 @@ class Broker:
 
     def _event(self, event, **fields):
         try:
-            self.journal.append({'event':event, 'binding_digest':self.binding_digest, **fields})
+            value={'event':event, 'binding_digest':self.binding_digest, **fields}
+            pending=getattr(self._audit_transaction,'events',None)
+            if pending is None:
+                self.journal.append(value)
+            elif len(pending)<2:
+                pending.append(value)
+            else:
+                raise ScopeError('audit-incomplete')
         except Exception as exc:
             self.emergency_revoke()
             raise ScopeError('audit-incomplete') from exc
         if self.fenced.is_set():
             raise ScopeError('grant-revoked')
 
-    def request(self, items, *, idempotency_key, ttl_seconds=300):
+    def _persist_pair(self, events):
+        if not events:
+            return
+        try:
+            self.journal.append_many(events)
+        except Exception as exc:
+            self.emergency_revoke()
+            raise ScopeError('audit-incomplete') from exc
+        if self.fenced.is_set():
+            raise ScopeError('grant-revoked')
+
+    def consume_static_network(self, grant_id, item_id, parameters):
+        with self.lock:
+            _,row=self._grant(grant_id,item_id)
+            if row['capability']!='web.page_step' or row['effect']['class']!='task-bounded' or row['targets']:
+                raise ScopeError('capability-unsupported')
+            if getattr(self._audit_transaction,'events',None) is not None:
+                raise ScopeError('audit-incomplete')
+            # The permit cannot leave this thread before both audit events are durable.
+            events=[]
+            self._audit_transaction.events=events
+            try:
+                permit=self.reserve(grant_id,item_id,'network-'+secrets.token_hex(16),parameters)
+                self.finish(permit['attempt_id'],state='verified',summary={'count':1})
+            except Exception:
+                self._persist_pair(events)
+                raise
+            else:
+                self._persist_pair(events)
+                self._grant(grant_id,item_id)
+            finally:
+                del self._audit_transaction.events
+
+    def request(self, items, *, idempotency_key, ttl_seconds=MAX_GRANT_SECONDS):
         key = identifier(idempotency_key)
-        integer(ttl_seconds, 60, 900)
+        integer(ttl_seconds, 60, MAX_GRANT_SECONDS)
         rows = validate_items(items)
         submitted = digest({'items':rows,'ttl':ttl_seconds})
         with self.lock:

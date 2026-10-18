@@ -133,7 +133,7 @@ export function validateJob(job) {
   }
   if (c.success_selector && !/^#[A-Za-z][A-Za-z0-9_-]{0,95}$/.test(c.success_selector)) throw new Error('invalid-job');
   if ('certificate_sha256' in c && (typeof c.certificate_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(c.certificate_sha256))) throw new Error('invalid-job');
-  if (!Number.isFinite(job.deadline) || job.deadline <= Date.now() || job.deadline > Date.now()+3600000) throw new Error('invalid-job');
+  if (!Number.isFinite(job.deadline) || job.deadline <= Date.now() || job.deadline > Date.now()+46800000) throw new Error('invalid-job');
   return c;
 }
 

@@ -119,3 +119,10 @@ class Journal:
         if not isinstance(event,dict) or set(event)-EVENT_FIELDS or not isinstance(event.get('event'),str):
             raise ScopeError('audit-incomplete')
         audit_log.append({'event':'web-authorization','authorization':event})
+
+    def append_many(self, events):
+        if not isinstance(events,list) or not 1<=len(events)<=2 or any(
+            not isinstance(event,dict) or set(event)-EVENT_FIELDS or not isinstance(event.get('event'),str)
+            for event in events):
+            raise ScopeError('audit-incomplete')
+        audit_log.append_many([{'event':'web-authorization','authorization':event} for event in events])

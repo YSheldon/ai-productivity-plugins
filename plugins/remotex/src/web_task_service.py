@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import copy
+import re
 import secrets
 import threading
 import time
 
-from web_authorization import Broker, ScopeError, canonical, digest
+from web_authorization import Broker, ScopeError, MAX_GRANT_SECONDS, canonical, digest
 from web_approval import ApprovalPrompt
 
 
@@ -85,7 +86,7 @@ class Service:
         resolved = self._worker('resolve-setup' if 'setup' in args else 'resolve-items',
             {'setup':args['setup']} if 'setup' in args else {'items':args['items']})
         result = self.broker.request(resolved.get('items'), idempotency_key=args.get('idempotency_key'),
-                                     ttl_seconds=args.get('ttl_seconds',300))
+                                     ttl_seconds=args.get('ttl_seconds',MAX_GRANT_SECONDS))
         request_id = result['request_id']
         if request_id in self.contexts:
             return self._ui_result(result,request_id)
@@ -241,10 +242,19 @@ class Service:
                     continue
                 try:
                     _, scope = self.broker._grant(grant_id,item_id)
-                    permit = self.broker.reserve(grant_id,item_id,'network-'+secrets.token_hex(16),scope['parameters'])
-                    if action and classification=='write':
-                        self.broker.authorize_attempt(attempt_id,consume=True)
-                    self.broker.finish(permit['attempt_id'],state='verified',summary={'count':1})
+                    descriptor=message['descriptor']
+                    static=(phase in {'bootstrap','login-once'} and classification in {'bootstrap','login'} and
+                        descriptor.get('method') in {'GET','HEAD'} and descriptor.get('body') is None and
+                        descriptor.get('query')=={} and descriptor.get('resourceType') in {'script','stylesheet'} and
+                        isinstance(descriptor.get('path'),str) and
+                        re.fullmatch(r'/[A-Za-z0-9/_.~-]{0,511}\.(?:js|css)',descriptor['path'],re.IGNORECASE))
+                    if static:
+                        self.broker.consume_static_network(grant_id,item_id,scope['parameters'])
+                    else:
+                        permit = self.broker.reserve(grant_id,item_id,'network-'+secrets.token_hex(16),scope['parameters'])
+                        if action and classification=='write':
+                            self.broker.authorize_attempt(attempt_id,consume=True)
+                        self.broker.finish(permit['attempt_id'],state='verified',summary={'count':1})
                     self.broker._valid()
                     if action:
                         self.dispatched.add(attempt_id)

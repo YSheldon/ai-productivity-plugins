@@ -18,6 +18,16 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
+Version `0.6.5` defaults task read/write grant requests to 12 hours, with new
+Edge sessions bounded to 13 hours and a covering queue lease. The operator may
+lower the TTL; revocation, fresh references, exact targets/values and finite
+counts still apply. The review window remains 120 seconds and high-risk actions
+still need a separate 30-second, one-use confirmation. Existing grants, profiles
+and leases are not extended. Startup static permits retain both audit events
+while verifying the full existing chain once per durable pair; the original
+45-second startup budget is unchanged. See [Task authorization](docs/web-task-authorization.md)
+and [Login and lifetime](docs/web-credentials.md#login-and-lifetime).
+
 Version `0.6.4` adds diagnostic approval-window lifecycle receipts and remaining
 review time. Inspect `approval_ui` instead of inferring display or rejection
 from a process ID. Native `shown`, `closed` and fixed-code `error` messages use

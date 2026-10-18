@@ -31,6 +31,13 @@ test('job cannot change stored account or supply broad selectors',()=>{
   assert.throws(()=>validateJob({...job,username:'other'}));
   assert.throws(()=>validateJob({...job,config:{...cfg,password_selector:'body'}}));
 });
+
+test('long task job accepts thirteen hours but not a longer or expired lifetime',t=>{
+  t.mock.method(Date,'now',()=>1000);
+  const job={config:cfg,username:'security',password:'synthetic-long-job',deadline:1000+46800000};
+  assert.equal(validateJob(job),cfg);
+  for(const deadline of [1000,1000+46800001,Infinity,'46800000'])assert.throws(()=>validateJob({...job,deadline}),/invalid-job/);
+});
 test('masking precedes typing and submit happens once',async()=>{
   const actions=[];
   const page={url:()=>cfg.url,locator:id=>({count:async()=>1,fill:async()=>actions.push('user'),click:async()=>actions.push(id==='\x23login'?'submit':'focus'),evaluate:async fn=>{const e={tagName:'INPUT',type:'text'};fn(e);assert.equal(e.type,'password');actions.push('mask');},getAttribute:async()=> 'password',pressSequentially:async()=>actions.push('type')})};

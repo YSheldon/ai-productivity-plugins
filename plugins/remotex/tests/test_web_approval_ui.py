@@ -12,12 +12,13 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 import web_approval as approval
 
 
-def _run_harness(scenario, environment=None):
+def _run_harness(scenario, preload_modules=False):
     script=Path(__file__).with_name('Test-WebApprovalUI.ps1')
+    arguments=['-PreloadModules'] if preload_modules else []
     try:
         return subprocess.run([approval.credential_store._powershell_path(),'-NoLogo','-NoProfile','-NonInteractive','-STA',
-            '-File',str(script),'-Scenario',scenario],stdin=subprocess.DEVNULL,capture_output=True,text=True,encoding='utf-8',
-            timeout=20,env=environment if environment is not None else approval.credential_store._setup_environment(),
+            '-File',str(script),'-Scenario',scenario,*arguments],stdin=subprocess.DEVNULL,capture_output=True,text=True,encoding='utf-8',
+            timeout=20,env=approval.credential_store._setup_environment(),
             creationflags=subprocess.CREATE_NO_WINDOW)
     except subprocess.TimeoutExpired as error:
         details=error.stderr or b''
@@ -48,16 +49,11 @@ def test_native_batch_controls_preserve_explicit_authority(scenario):
 
 
 if __name__=='__main__':
-    baseline=approval.credential_store._setup_environment()
-    standard=dict(baseline)
-    for key,value in os.environ.items():
-        if key.upper() in {'SYSTEMDRIVE','PROGRAMDATA','ALLUSERSPROFILE'}:
-            standard[key]=value
     passed=True
-    for label,environment in [('sanitized',baseline),('standard-windows',standard)]:
-        print(f'Native host prerequisite environment: {label}',flush=True)
+    for label,preload in [('autoload',False),('explicit-system-modules',True)]:
+        print(f'Native host prerequisite loading: {label}',flush=True)
         try:
-            result=_run_harness('host-prerequisite',environment)
+            result=_run_harness('host-prerequisite',preload)
             print(result.stderr,flush=True)
             print(result.stdout,flush=True)
             passed=passed and result.returncode==0 and json.loads(result.stdout)=={'prerequisite':True}

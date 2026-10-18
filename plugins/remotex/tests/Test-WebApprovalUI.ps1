@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Scenario)
+param([Parameter(Mandatory=$true)][string]$Scenario, [switch]$PreloadModules)
 
 $ErrorActionPreference = 'Stop'
 [Console]::Error.WriteLine(('ui-stage: script-start;interactive={0};session={1}' -f [Environment]::UserInteractive,[Diagnostics.Process]::GetCurrentProcess().SessionId))
@@ -10,6 +10,14 @@ if ($Scenario -eq 'host-prerequisite') {
     [Console]::Error.WriteLine(('host: ps={0};clr={1};x64={2};apartment={3};stdinRedirected={4}' -f
         $PSVersionTable.PSVersion,[Environment]::Version,[Environment]::Is64BitProcess,
         [Threading.Thread]::CurrentThread.GetApartmentState(),[Console]::IsInputRedirected))
+    if ($PreloadModules) {
+        foreach ($name in @('Microsoft.PowerShell.Management','Microsoft.PowerShell.Utility')) {
+            Write-Stage ('explicit-module-begin:' + $name)
+            $module = [IO.Path]::Combine($PSHOME,'Modules',$name,($name + '.psd1'))
+            Import-Module -Name $module -ErrorAction Stop
+            Write-Stage ('explicit-module-end:' + $name)
+        }
+    }
     Write-Stage 'eof-begin'
     $line = [Console]::ReadLine()
     Write-Stage 'eof-end'

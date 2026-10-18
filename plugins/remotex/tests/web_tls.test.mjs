@@ -23,7 +23,7 @@ async function fixture(t, handler, handshakeGate) {
   execFileSync(process.env.REMOTEX_TEST_OPENSSL || 'openssl', [
     'req','-x509','-newkey','rsa:2048','-nodes','-keyout',keyPath,'-out',certPath,
     '-days','2','-subj','/CN=remotex-test.invalid','-config',configPath,
-  ], {stdio:['ignore','pipe','pipe'],timeout:15000});
+  ], {stdio:['ignore','pipe','pipe'],timeout:60000});
   const key = await fs.readFile(keyPath), cert = await fs.readFile(certPath);
   const fingerprint = new X509Certificate(cert).fingerprint256.replaceAll(':','').toLowerCase();
   const evidence = {applicationBytes:0,requests:0,bodies:[]};

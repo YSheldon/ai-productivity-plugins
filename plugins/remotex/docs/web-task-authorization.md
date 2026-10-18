@@ -4,7 +4,8 @@ RemoteX 0.6.0 adds human-approved buttons, exact form input and scoped business
 submission in the **same RemoteX-owned Edge session**. It does not adopt an
 ordinary browser tab, share cookies, bypass host browser policy, or change the
 center's business code. SSH, VM profiles and stored credentials are unchanged.
-Use 0.6.1 or later for the native approval-window startup fix. For an interactive
+Use 0.6.2 or later for native batch-review controls; 0.6.1 fixed native window
+startup. For an interactive
 Windows regression, set `REMOTEX_TEST_NATIVE_APPROVAL=1` when running
 `plugins/remotex/tests/test_web_approval.py`. Its synthetic helper uses no saved
 credential, network request or approval, and closes only its own test window.
@@ -84,6 +85,11 @@ client-side fragment; it never reloads a prior POST.
 At verified authentication, login authority cannot be re-entered. Background
 business polling is blocked unless separately covered by an active task step.
 Startup grants are retired after authentication; they do not become task grants.
+Blocked descriptor references expire after 120 seconds. An expired reference
+stays invalid; only a new denied UI request can produce a replacement. Listing
+status neither renews metadata nor grants permission, and expired entries cannot
+exhaust the unchanged 100-reference capacity. A metadata refresh never replays
+traffic or retries an authentication exchange that may already have been sent.
 MFA, CAPTCHA, unsupported request encodings and missing semantics remain operator
 prerequisites. An isolated credential-free probe may report a missing contract
 rather than opening an unrestricted page.
@@ -114,8 +120,17 @@ specific component's `ref` to `component_ref`. Request a batch such as:
 
 The human window starts with unchecked approval boxes. It shows the origin,
 account, request digest, requested operations and details. Select items/targets,
-lower uses/output/TTL as needed, and choose **Approve Selected**. Rejecting a
-prerequisite blocks its dependent items. The agent cannot approve itself.
+lower uses/output/TTL as needed, and choose **Approve Selected**. **Select All**
+and **Clear Selection** change only the approval checkboxes. To classify a
+compatible checked batch, explicitly choose an **Effect Review** value and use
+**Apply to Checked**. Mixed or unknown effects refuse the whole update; review
+those rows separately. Non-network rows stay Not applicable. Neither batch
+control grants authority or sends a decision; final approval is still separate.
+The read-only Scope column and its tooltip show the sanitized request label,
+while full details remain available. The countdown shows the existing
+120-second review deadline, not the separately bounded lifetime after approval.
+Rejecting a prerequisite blocks its dependent items. The agent cannot approve
+itself.
 
 Network effects start **Unreviewed**, not implicitly read-only because their
 parent is a navigation/query control. The operator must independently inspect

@@ -6,6 +6,12 @@ try {network=await import('../scripts/web_network_authorization.mjs');}catch(err
 const origin='https://console.example:6868';
 const request=(body,url=origin+'/inter',type='application/json')=>({url:()=>url,method:()=> 'POST',
   postData:()=>body,headers:()=>({'content-type':type,'cookie':'never-export'}),resourceType:()=> 'xhr'});
+const asset=(path='/assets/app.js')=>({url:()=>origin+path,method:()=> 'GET',
+  postData:()=>null,headers:()=>({}),resourceType:()=> 'script'});
+async function withTime(run){
+  let now=1000;const actual=Date.now;Date.now=()=>now;
+  try {await run(delta=>{now+=delta;});}finally{Date.now=actual;}
+}
 
 test('request contracts use structured exact payloads and internal auth slots',()=>{
   assert.ok(network,'The network authorization gate has not been implemented');
@@ -84,3 +90,82 @@ test('loading a login document is not evidence that credentials were transmitted
   policy.beginForwarding(request('{"password":"canary"}'))();
   assert.equal(policy.authenticationForwarded,1);
 });
+
+test('a newly denied request replaces its expired reference without authorizing traffic',()=>withTime(async advance=>{
+  const policy=new network.NetworkPolicy({origin,requestPermit:async()=>false});
+  assert.equal(await policy.authorize(asset()),false);
+  const original=policy.list()[0].ref;
+  advance(120001);
+  assert.deepEqual(policy.list(),[]);
+  assert.throws(()=>policy.resolve(original),/request-contract-unavailable/);
+  assert.equal(await policy.authorize(asset()),false);
+  const current=policy.list();
+  assert.equal(current.length,1);
+  assert.notEqual(current[0].ref,original);
+  assert.deepEqual(policy.resolve(current[0].ref),{method:'GET',path:'/assets/app.js',query:{},contentType:'',body:null,resourceType:'script'});
+  assert.throws(()=>policy.resolve(original),/request-contract-unavailable/);
+  assert.equal(policy.authenticationForwarded,0);
+}));
+
+test('unexpired repeated denials keep the same reference and the original expiry',()=>withTime(async advance=>{
+  const policy=new network.NetworkPolicy({origin,requestPermit:async()=>false});
+  await policy.authorize(asset());const original=policy.list()[0].ref;
+  advance(60000);assert.equal(await policy.authorize(asset()),false);
+  assert.equal(policy.list()[0].ref,original);
+  advance(60000);assert.equal(policy.list()[0].ref,original);
+  advance(1);assert.deepEqual(policy.list(),[]);
+  assert.throws(()=>policy.resolve(original),/request-contract-unavailable/);
+}));
+
+test('listing expired metadata neither refreshes a reference nor requests a permit',()=>withTime(async advance=>{
+  let calls=0;
+  const policy=new network.NetworkPolicy({origin,requestPermit:async()=>{calls++;return false;}});
+  await policy.authorize(asset());const original=policy.list()[0].ref;
+  advance(120001);
+  for(let at=0;at<3;at++)assert.deepEqual(policy.list(),[]);
+  assert.throws(()=>policy.resolve(original),/request-contract-unavailable/);
+  assert.equal(calls,1);
+}));
+
+test('expired cache entries cannot exhaust the unchanged 100-reference capacity',()=>withTime(async advance=>{
+  const policy=new network.NetworkPolicy({origin,requestPermit:async()=>false});
+  for(let at=0;at<101;at++)assert.equal(await policy.authorize(asset(`/assets/${at}.js`)),false);
+  assert.equal(policy.list().length,100);
+  const original=policy.list()[0].ref;
+  advance(120001);
+  assert.equal(await policy.authorize(asset('/assets/100.js')),false);
+  assert.equal(policy.list().length,1);
+  assert.equal(policy.resolve(policy.list()[0].ref).path,'/assets/100.js');
+  assert.throws(()=>policy.resolve(original),/request-contract-unavailable/);
+}));
+
+test('refreshed descriptors retain internal auth slots and never export credential values',()=>withTime(async advance=>{
+  const policy=new network.NetworkPolicy({origin,secret:'private-pass',requestPermit:async()=>false});
+  const login=request('{"password":"private-pass","token":"token-value"}');
+  await policy.authorize(login);advance(120001);
+  assert.equal(await policy.authorize(login),false);
+  assert.equal(policy.list().length,1);
+  const value=policy.resolve(policy.list()[0].ref);
+  assert.deepEqual(value.body,{password:{internalAuth:true},token:{internalAuth:true}});
+  assert.ok(!JSON.stringify([policy.list(),value]).includes('private-pass'));
+  assert.ok(!JSON.stringify([policy.list(),value]).includes('token-value'));
+}));
+
+test('reference recovery does not mint metadata for invalid requests or fenced sessions',()=>withTime(async advance=>{
+  let calls=0;
+  const policy=new network.NetworkPolicy({origin,secret:'private-pass',requestPermit:async()=>{calls++;return false;}});
+  await policy.authorize(asset());advance(120001);
+  assert.equal(await policy.authorize(request('{}','https://other.example/inter')),false);
+  assert.equal(await policy.authorize(request('{"unknown":"private-pass"}')),false);
+  assert.deepEqual(policy.list(),[]);assert.equal(calls,1);
+  policy.fence();assert.equal(await policy.authorize(asset()),false);
+  assert.deepEqual(policy.list(),[]);assert.equal(calls,1);
+}));
+
+test('permitted traffic does not receive a new denied-request reference',()=>withTime(async advance=>{
+  let allowed=false;
+  const policy=new network.NetworkPolicy({origin,requestPermit:async()=>allowed});
+  await policy.authorize(asset());advance(120001);allowed=true;
+  assert.equal(await policy.authorize(asset()),true);
+  assert.deepEqual(policy.list(),[]);
+}));

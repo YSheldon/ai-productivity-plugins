@@ -25,7 +25,7 @@ import web_adapter
 
 
 SERVER_NAME = "remotex"
-SERVER_VERSION = "0.6.1"
+SERVER_VERSION = "0.6.2"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 queue_leases.install_hooks()
 

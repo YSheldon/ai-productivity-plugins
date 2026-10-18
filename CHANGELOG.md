@@ -14,6 +14,15 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.6.3
+
+- Expired or cancelled private authorization checks remain denied. A bounded, deny-only ID cache consumes their one late reply instead of treating it as a UI command; unknown and malformed traffic still fails closed.
+- Added single-flight scheduling for pre-authentication, exact-origin JS/CSS GET checks with no query or body fields. The queue is capped at 64 checks including its in-flight check; the overall emitted-check limit remains 16. Scheduling never grants permission or caches a permit.
+- Queued checks retain an immutable operation deadline and are denied on cancellation, phase/generation change, expiry or disposal. The emitted-check timeout remains 10 seconds; login POSTs and business checks do not inherit static-resource queue waiting.
+- The explicit startup document load now shares one total 45-second budget. Only resume-login has a 55-second outer response budget, capped by the existing session; business operations retain their 30-second behavior. Human review expiry, grant TTL/quotas, certificate checks, queue ownership and no-replay rules are unchanged.
+- Pre-authentication contract mismatches are rejected before repeated grant lookups, while preserving fresh request-entry binding checks and all matching grant/quota/audit checks. Requests cancelled before checking do not consume permits; cancellation while awaiting a reply prevents forwarding without refunding a possibly consumed quota.
+- Added delayed-broker real-Edge regressions for 15 approved assets with same-session login/readback and 47 competing checks with unknown traffic denied. No center business code, shared profile or stored credential changes.
+
 ## RemoteX 0.6.2
 
 - Added explicit Select All / Clear Selection and a human-chosen Effect Review dropdown with Apply to Checked in the native task-approval window. Neither selection nor classification emits a decision; Approve Selected remains a separate final action.

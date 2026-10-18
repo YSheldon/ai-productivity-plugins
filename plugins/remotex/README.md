@@ -18,6 +18,13 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
+Version `0.6.3` stabilizes approved Edge startup with a bounded static-resource
+queue and safe handling of late private authorization replies. Startup document
+loading has one total 45-second budget; an explicit login resume can wait up to
+55 seconds. These are waiting limits, not longer grants. Human review expiry,
+credential isolation, exact request permissions and business-write rules remain
+unchanged. Expired replies never revive authority or replay traffic.
+
 Version `0.6.2` adds native batch selection/classification and a review countdown.
 Version `0.6.1` fixed native approval-window startup; `0.6.0` added task-level web
 approval, including business writes. The local

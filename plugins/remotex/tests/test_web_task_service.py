@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -19,9 +20,10 @@ def prepared():
     prompts = []
     class Channel:
         available = True
+        deadline = int(time.time() * 1000) + 900000
         def close(self):
             self.available = False
-        def request(self, operation, args):
+        def request(self, operation, args, timeout=30):
             if operation == 'resolve-items':
                 return {'ok':True, 'items':[item()], 'contracts':{}}
             if operation == 'execute':
@@ -53,6 +55,91 @@ def approve(service, prompts):
     return callbacks['on_decision']({'nonce':manifest['nonce'], 'request_digest':manifest['request_digest'],
         'choices':choices,
         'ttl_seconds':60})
+
+
+def test_only_resume_login_uses_the_reviewed_55_second_budget(monkeypatch):
+    import web_task_service
+    service,channel,_=prepared()
+    monkeypatch.setattr(web_task_service.time,'time',lambda:1000.0)
+    channel.deadline=1_100_000
+    calls=[]
+    def worker(operation,args,timeout=30):
+        calls.append((operation,timeout))
+        return {'ok':True,'authenticationVerified':False}
+    channel.request=worker
+    service._worker('resume-login',{})
+    service._worker('components',{})
+    assert calls==[('resume-login',55),('components',30)]
+
+
+def test_resume_wait_is_capped_by_the_existing_session_deadline(monkeypatch):
+    import web_task_service
+    service,channel,_=prepared()
+    monkeypatch.setattr(web_task_service.time,'time',lambda:1000.0)
+    channel.deadline=1_002_000
+    calls=[]
+    channel.request=lambda operation,args,timeout=30:calls.append(timeout) or {'ok':True}
+    service._worker('resume-login',{})
+    assert calls==[2.0]
+
+
+def test_expired_session_cannot_emit_a_new_resume_command(monkeypatch):
+    import web_task_service
+    service,channel,_=prepared()
+    monkeypatch.setattr(web_task_service.time,'time',lambda:1000.0)
+    channel.deadline=999_000
+    calls=[]
+    channel.request=lambda *args,**kwargs:calls.append(args) or {'ok':True}
+    with pytest.raises(ValueError,match='session-unavailable'):
+        service._worker('resume-login',{})
+    assert calls==[]
+
+
+def static_prepared():
+    service,channel,prompts=prepared()
+    descriptors=[{'method':'GET','path':f'/assets/{index}.js','query':{},'contentType':'',
+        'body':None,'resourceType':'script'} for index in range(15)]
+    rows=[{**item(f'static.{index}'),'capability':'web.page_step',
+        'parameters':{'network_ref':f'static.{index}','review_kind':'bootstrap'},
+        'output':{'rows':0,'columns':0,'bytes':0}} for index in range(15)]
+    contracts={f'static.{index}':{'phase':'bootstrap','semantics':'bootstrap',
+        'descriptor':descriptor,'targets':[]} for index,descriptor in enumerate(descriptors)}
+    original=channel.request
+    channel.request=lambda operation,args:({'ok':True,'items':rows,'contracts':contracts}
+        if operation=='resolve-items' else original(operation,args))
+    service.request({'items':[{}],'idempotency_key':'static-many'})
+    grant=approve(service,prompts)
+    return service,channel,descriptors,grant
+
+
+def test_competing_startup_descriptors_do_not_spend_the_budget_rechecking_unmatched_grants():
+    service,_,descriptors,_=static_prepared()
+    now=[100.0]
+    service.broker.clock=lambda:now[0]
+    original=service.broker.check
+    def binding_read():
+        now[0]+=0.1
+        return original()
+    service.broker.check=binding_read
+    def permit(descriptor):
+        return service.channel.authorize({'kind':'network','phase':'bootstrap','attempt_id':None,
+            'descriptor':descriptor,'digest':'e'*64})
+    unknown=[{**descriptors[0],'path':f'/unapproved/{index}.js'} for index in range(32)]
+    assert [permit(descriptor) for descriptor in unknown]==[False]*32
+    results=[permit(descriptor) if now[0]-100<45 else False for descriptor in descriptors]
+    assert results==[True]*15,'unmatched contracts must not consume the finite startup waiting budget'
+    assert sum(row['event']=='execution-finished' for row in service.broker.journal.events)==15
+
+
+@pytest.mark.parametrize('matching',[False,True])
+def test_startup_descriptor_filter_still_checks_current_binding_before_any_decision(matching):
+    service,channel,descriptors,_=static_prepared()
+    original=service.broker.check
+    service.broker.check=lambda:{**original(),'account':'changed-account'}
+    descriptor=descriptors[0] if matching else {**descriptors[0],'path':'/unapproved.js'}
+    assert channel.authorize({'kind':'network','phase':'bootstrap','attempt_id':None,
+        'descriptor':descriptor,'digest':'e'*64}) is False
+    assert channel.available is False
 
 
 def test_no_approve_api_and_no_execution_before_native_decision():

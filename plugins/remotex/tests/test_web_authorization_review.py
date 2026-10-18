@@ -134,12 +134,12 @@ def test_verified_login_retires_only_startup_grants_before_task_requests():
     service,channel,prompts=service_prepared()
     row=item('startup');row['parameters']={'network_ref':'startup','review_kind':'bootstrap'}
     original=channel.request
-    def worker(operation,args):
+    def worker(operation,args,timeout=30):
         if operation=='resolve-setup':
             return {'ok':True,'items':[row],'contracts':{'startup':{'phase':'bootstrap'}}}
         if operation=='resume-login':
             return {'ok':True,'authenticationVerified':True}
-        return original(operation,args)
+        return original(operation,args,timeout=timeout)
     channel.request=worker
     service.request({'setup':{},'idempotency_key':'startup'})
     grant=service_approve(service,prompts)

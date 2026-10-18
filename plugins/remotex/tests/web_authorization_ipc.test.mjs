@@ -119,15 +119,16 @@ test('ordinary checks retain the 16-emitted-check limit',async t=>{
   assert.deepEqual(await Promise.all(pending),Array(16).fill(false));
 });
 
-test('15 pre-auth static checks are sent one at a time in FIFO order',async t=>{
+test('15 pre-auth static checks retain FIFO order across the initial check and queued batch',async t=>{
   const f=startupFixture(t);
   const pending=Array.from({length:15},(_,index)=>f.authority.check(f.request(index)));
   assert.equal(f.frames.length,1,'startup fan-in must not create 15 simultaneous reply deadlines');
-  for(let index=0;index<15;index++){
-    assert.equal(f.frames[index].request.descriptor.path,`/assets/${index}.js`);
-    t.mock.timers.tick(1500);
-    f.authority.handle({authorization_reply:f.frames[index].id,allowed:true});await flush();
-  }
+  assert.equal(f.frames[0].request.descriptor.path,'/assets/0.js');
+  t.mock.timers.tick(1500);
+  f.authority.handle({authorization_reply:f.frames[0].id,allowed:true});await flush();
+  assert.deepEqual(f.frames[1].checks.map(row=>row.request.descriptor.path),
+    Array.from({length:14},(_,index)=>`/assets/${index+1}.js`));
+  t.mock.timers.tick(1500);f.authority.handle(batchReply(f.frames[1]));await flush();
   assert.deepEqual(await Promise.all(pending),Array(15).fill(true));
 });
 
@@ -135,11 +136,14 @@ test('47 competing static checks cannot starve the 15 approved core assets',asyn
   const f=startupFixture(t);
   const pending=Array.from({length:47},(_,index)=>f.authority.check(f.request(index)));
   assert.equal(f.frames.length,1);
-  for(let index=0;index<47;index++){
-    assert.equal(f.frames[index].request.descriptor.path,`/assets/${index}.js`);
-    if(index>=32)t.mock.timers.tick(1500);
-    f.authority.handle({authorization_reply:f.frames[index].id,allowed:index>=32});await flush();
+  f.authority.handle({authorization_reply:f.frames[0].id,allowed:false});await flush();
+  const paths=['/assets/0.js'];
+  for(let group=1;group<=3;group++){
+    const frame=f.frames[group];paths.push(...frame.checks.map(row=>row.request.descriptor.path));
+    t.mock.timers.tick(1500);
+    f.authority.handle(batchReply(frame,index=>Number(frame.checks[index].request.descriptor.path.match(/(\d+)\.js$/)[1])>=32));await flush();
   }
+  assert.deepEqual(paths,Array.from({length:47},(_,index)=>`/assets/${index}.js`));
   assert.deepEqual(await Promise.all(pending),[...Array(32).fill(false),...Array(15).fill(true)]);
 });
 
@@ -267,4 +271,94 @@ test('a queued cancellation predicate that throws is denied without blocking a l
   assert.deepEqual(f.frames.map(frame=>frame.request.descriptor.path),['/assets/0.js','/assets/2.js']);
   f.authority.handle({authorization_reply:f.frames[1].id,allowed:true});
   assert.deepEqual(await Promise.all([first,stale,live]),[true,false,true]);
+});
+
+async function issuedBatch(t,count=5,options=()=>({})){
+  const f=startupFixture(t);
+  const pending=Array.from({length:count},(_,index)=>f.authority.check(f.request(index),options(index)));
+  f.authority.handle({authorization_reply:f.frames[0].id,allowed:true});await flush();
+  assert.equal(f.frames[1].event,'authorization-check-batch','queued static checks must share a bounded transaction');
+  return {...f,pending,batch:f.frames[1]};
+}
+
+const batchReply=(frame,allow=()=>true)=>({authorization_batch_reply:frame.checks.map((check,index)=>({
+  authorization_reply:check.id,allowed:allow(index)}))});
+
+test('queued static checks share at most16 issued deadlines and retain FIFO order',async t=>{
+  const f=await issuedBatch(t,48);
+  for(let group=1;group<=3;group++){
+    const frame=f.frames[group];
+    assert.equal(frame.event,'authorization-check-batch');
+    assert.equal(frame.checks.length,group===3?15:16);
+    assert.ok(Buffer.byteLength(JSON.stringify(frame)+'\n')<=32768);
+    assert.deepEqual(frame.checks.map(row=>row.request.descriptor.path),
+      Array.from({length:frame.checks.length},(_,index)=>`/assets/${1+(group-1)*16+index}.js`));
+    f.authority.handle(batchReply(frame));await flush();
+  }
+  assert.deepEqual(await Promise.all(f.pending),Array(48).fill(true));
+  assert.equal(f.frames.length,4);
+});
+
+test('a batch reply must contain every unique member before any permission resolves',async t=>{
+  const f=await issuedBatch(t),results=[];
+  f.pending[1].then(value=>results.push(value));
+  const reply=batchReply(f.batch);
+  assert.equal(f.authority.handle({authorization_batch_reply:reply.authorization_batch_reply.slice(1)}),false);
+  assert.equal(f.authority.handle({authorization_batch_reply:[reply.authorization_batch_reply[0],...reply.authorization_batch_reply.slice(0,-1)]}),false);
+  assert.equal(f.authority.handle({...reply,extra:true}),false);
+  assert.equal(f.authority.handle({authorization_reply:f.batch.checks[0].id,allowed:true}),false);
+  await flush();assert.deepEqual(results,[]);
+  assert.equal(f.authority.handle(reply),true);
+  assert.deepEqual(await Promise.all(f.pending),Array(5).fill(true));
+  assert.equal(f.authority.handle(reply),false);
+});
+
+test('one cancelled emitted batch member cannot revoke or authorize its siblings',async t=>{
+  const controller=new AbortController();
+  const f=await issuedBatch(t,5,index=>index===2?{signal:controller.signal}:{});
+  controller.abort();await flush();
+  assert.equal(f.authority.handle(batchReply(f.batch)),true);
+  assert.deepEqual(await Promise.all(f.pending),[true,true,false,true,true]);
+});
+
+test('each issued batch member still expires after10 seconds and one late frame is diagnostic only',async t=>{
+  const f=await issuedBatch(t);
+  t.mock.timers.tick(10001);await flush();
+  assert.deepEqual(await Promise.all(f.pending),[true,false,false,false,false]);
+  assert.equal(f.authority.handle(batchReply(f.batch)),true);
+  assert.equal(f.authority.handle(batchReply(f.batch)),false);
+});
+
+test('revocation denies an entire active batch and its queued work before late permission',async t=>{
+  const f=await issuedBatch(t,30);
+  f.authority.handle({control_event:'revoke',generation:1});await flush();
+  assert.deepEqual(await Promise.all(f.pending),[true,...Array(29).fill(false)]);
+  assert.equal(f.frames.length,2);
+  assert.equal(f.authority.handle(batchReply(f.batch)),true);
+});
+
+test('a phase change invalidates an active batch even when every broker result is true',async t=>{
+  const f=await issuedBatch(t);
+  f.policy.setPhase('login-once');
+  f.authority.handle(batchReply(f.batch));await flush();
+  assert.deepEqual(await Promise.all(f.pending),[true,false,false,false,false]);
+});
+
+test('oversized static descriptors use the single-check path without truncation',async t=>{
+  const f=startupFixture(t);
+  const large=f.request(1);large.descriptor.contentType='x'.repeat(32768);
+  const pending=[f.authority.check(f.request(0)),f.authority.check(large),f.authority.check(f.request(2))];
+  f.authority.handle({authorization_reply:f.frames[0].id,allowed:true});await flush();
+  assert.equal(f.frames[1].event,'authorization-check');
+  assert.equal(f.frames[1].request.descriptor.contentType.length,32768);
+  f.authority.handle({authorization_reply:f.frames[1].id,allowed:true});await flush();
+  f.authority.handle({authorization_reply:f.frames[2].id,allowed:true});
+  assert.deepEqual(await Promise.all(pending),[true,true,true]);
+});
+
+test('an overdue batch reply cannot beat a delayed10-second timer callback',async t=>{
+  const f=await issuedBatch(t);
+  t.mock.method(Date,'now',()=>11001);
+  assert.equal(f.authority.handle(batchReply(f.batch)),true);
+  assert.deepEqual(await Promise.all(f.pending),[true,false,false,false,false]);
 });

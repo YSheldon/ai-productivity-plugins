@@ -198,25 +198,36 @@ async function workerControlFixture(t, rejectTransport=false, {slowStatic=false,
   child.stdin.on('error',fail);
   const transport=(async()=>{
     for await(const frame of readFrames(child.stdout)){
-      if(frame.event==='authorization-check'){
-        const value=frame.request,descriptor=value.descriptor;
-        const staticCheck=value.kind==='network'&&descriptor.method==='GET'&&/\.(js|css)$/.test(descriptor.path);
-        if(staticCheck){staticOutstanding++;maxStaticOutstanding=Math.max(maxStaticOutstanding,staticOutstanding);}
+      if(frame.event==='authorization-check'||frame.event==='authorization-check-batch'){
+        const checks=frame.event==='authorization-check'?[{id:frame.id,request:frame.request}]:frame.checks;
+        if(frame.event==='authorization-check-batch'){
+          assert.ok(checks.length>=2&&checks.length<=16);
+          assert.ok(Buffer.byteLength(JSON.stringify(frame)+'\n')<=32768);
+        }
+        const staticCount=checks.filter(({request:value})=>value.kind==='network'&&
+          value.descriptor.method==='GET'&&/\.(js|css)$/.test(value.descriptor.path)).length;
+        staticOutstanding+=staticCount;maxStaticOutstanding=Math.max(maxStaticOutstanding,staticOutstanding);
         decisions=decisions.then(async()=>{
           if(stopped.signal.aborted)return;
-          let allowed=value.kind==='action'&&approvedActions.has(value.attempt_id);
-          if(value.kind==='network'){
+          const replies=checks.map(check=>{
+            const value=check.request,descriptor=value.descriptor;
+            let allowed=value.kind==='action'&&approvedActions.has(value.attempt_id);
+            if(value.kind==='network'){
             const root=value.phase==='bootstrap'?rootApproved:value.phase==='login-once'&&loginRootApproved;
             const core=value.phase==='bootstrap'?coreApproved:value.phase==='login-once'&&loginCoreApproved;
             allowed=!!(root&&descriptor.method==='GET'&&descriptor.path==='/'&&descriptor.body===null)||
               !!(core&&descriptor.method==='GET'&&/^\/assets\/(?:[0-9]|1[0-4])\.js$/.test(descriptor.path)&&descriptor.body===null&&Object.keys(descriptor.query).length===0)||
               !!(loginApproved&&value.phase==='login-once'&&descriptor.method==='POST'&&descriptor.path==='/login'&&descriptor.body?.password?.internalAuth===true)||
               !!(allowBusiness&&value.phase==='grant-active'&&approvedActions.has(value.attempt_id)&&descriptor.method==='GET'&&descriptor.path==='/api'&&descriptor.query.cmd==='get_status');
-          }
-          if(slowStatic&&staticCheck&&allowed)await sleep(1400,undefined,{signal:stopped.signal});
-          if(trace.length<(slowStatic?256:64))trace.push({kind:value.kind,phase:value.phase,path:descriptor?.path,allowed});
-          if(!stopped.signal.aborted)child.stdin.write(JSON.stringify({authorization_reply:frame.id,allowed})+'\n');
-          if(staticCheck)staticOutstanding--;
+            }
+            if(trace.length<(slowStatic?256:64))trace.push({kind:value.kind,phase:value.phase,path:descriptor?.path,allowed});
+            return {authorization_reply:check.id,allowed};
+          });
+          // One durable transaction delay, whether it contains one or16 static checks.
+          if(slowStatic&&staticCount&&replies.some(row=>row.allowed))await sleep(1400,undefined,{signal:stopped.signal});
+          if(!stopped.signal.aborted)child.stdin.write(JSON.stringify(frame.event==='authorization-check'?replies[0]:
+            {authorization_batch_reply:replies})+'\n');
+          staticOutstanding-=staticCount;
         }).catch(fail);
       }else{
         const entry=pending.get(frame.id);assert.ok(entry,'Unexpected worker response');pending.delete(frame.id);entry.resolve(frame.result);
@@ -254,7 +265,7 @@ async function workerControlFixture(t, rejectTransport=false, {slowStatic=false,
     await call('resume-login');
     const ready=await call('network-status');
     assert.equal(ready.phase,'login-once','15 granted assets must commit the login controls despite serial broker latency');
-    assert.equal(maxStaticOutstanding,1,'the real worker must wire bounded single-flight startup checks');
+    assert.ok(maxStaticOutstanding>=2&&maxStaticOutstanding<=16,'the real worker must wire bounded startup transactions');
     assert.equal(unapprovedStaticCount,0,'competing unknown assets must never reach the server');
     if(bootstrapOnly){
       assert.equal(loginCount,0);assert.equal(child.exitCode,null);
@@ -283,7 +294,7 @@ async function workerControlFixture(t, rejectTransport=false, {slowStatic=false,
   const resumed=await call('resume-login');
   const receipt=JSON.parse(await fs.readFile(path.join(directory,'state.json'),'utf8'));
   assert.equal(resumed.authenticationVerified,true,JSON.stringify({resumed,receipt,loginCount}));
-  if(slowStatic){assert.equal(maxStaticOutstanding,1);assert.equal(unapprovedStaticCount,0);}
+  if(slowStatic){assert.ok(maxStaticOutstanding>=2&&maxStaticOutstanding<=16);assert.equal(unapprovedStaticCount,0);}
   assert.equal((await call('observe')).failureCode,'approval-required');
   assert.equal(businessCount,0,'Post-login polling must not inherit login permission');
   const view=await call('components');

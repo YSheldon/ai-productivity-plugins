@@ -99,6 +99,35 @@ class WebControlTests(unittest.TestCase):
 
 
 class WebChannelTests(unittest.TestCase):
+    def test_static_batch_callback_returns_one_independent_private_reply_per_id(self):
+        import web_channel
+        checks=[{'id':'a'*32,'request':{'kind':'network'}},{'id':'b'*32,'request':{'kind':'network'}}]
+        event={'event':'authorization-check-batch','checks':checks}
+        process=mock.Mock(stdin=io.BytesIO(),stdout=io.BytesIO((json.dumps(event)+'\n').encode()),poll=lambda:None)
+        channel=web_channel.Channel(process,mock.Mock(),profile='p',requester='r',resource='q',deadline=1,config={})
+        received=[]
+        channel.authorize_batch=lambda values:received.extend(values) or [True,False]
+        with channel._lock:
+            channel._read()
+        self.assertEqual(received,[{'kind':'network'},{'kind':'network'}])
+        frames=[json.loads(line) for line in process.stdin.getvalue().splitlines()]
+        self.assertEqual(frames,[{'authorization_batch_reply':[
+            {'authorization_reply':'a'*32,'allowed':True},{'authorization_reply':'b'*32,'allowed':False}]}])
+
+    def test_invalid_batch_cardinality_ids_or_bytes_close_without_authority(self):
+        import web_channel
+        for checks in ([],[{'id':'a'*32,'request':{}}]*2,
+                [{'id':format(n,'032x'),'request':{}} for n in range(17)],
+                [{'id':'a'*32,'request':{'padding':'x'*32768}},{'id':'b'*32,'request':{}}]):
+            event={'event':'authorization-check-batch','checks':checks}
+            process=mock.Mock(stdin=io.BytesIO(),stdout=io.BytesIO((json.dumps(event)+'\n').encode()),poll=lambda:None)
+            channel=web_channel.Channel(process,mock.Mock(),profile='p',requester='r',resource='q',deadline=1,config={})
+            received=[];channel.authorize_batch=lambda values:received.append(values) or [True]*len(values)
+            channel._read()
+            self.assertEqual(received,[])
+            self.assertEqual(process.stdin.getvalue(),b'')
+            self.assertFalse(channel.available)
+
     def test_authorization_events_are_serviced_without_entering_the_command_lock(self):
         import web_channel
         request={'phase':'discovery-only','attempt_id':None,'descriptor':{'method':'POST','path':'/inter'},'digest':'c'*64}

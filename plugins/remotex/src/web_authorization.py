@@ -175,7 +175,7 @@ class Broker:
             pending=getattr(self._audit_transaction,'events',None)
             if pending is None:
                 self.journal.append(value)
-            elif len(pending)<2:
+            elif len(pending)<getattr(self._audit_transaction,'limit',2):
                 pending.append(value)
             else:
                 raise ScopeError('audit-incomplete')
@@ -217,6 +217,64 @@ class Broker:
                 self._grant(grant_id,item_id)
             finally:
                 del self._audit_transaction.events
+
+    def consume_static_network_batch(self, rows):
+        if not isinstance(rows,list) or not 1<=len(rows)<=16:
+            raise ScopeError('request-invalid')
+        with self.lock:
+            self._valid()
+            if getattr(self._audit_transaction,'events',None) is not None:
+                raise ScopeError('audit-incomplete')
+            events=[]
+            self._audit_transaction.events=events
+            self._audit_transaction.limit=32
+            allowed=[False]*len(rows)
+            selected=[None]*len(rows)
+            attempted=False
+            def persist():
+                nonlocal attempted
+                if not events:
+                    return
+                attempted=True
+                try:
+                    self.journal.append_startup_batch(events)
+                except Exception as exc:
+                    self.emergency_revoke()
+                    raise ScopeError('audit-incomplete') from exc
+                if self.fenced.is_set():
+                    raise ScopeError('grant-revoked')
+            try:
+                for index,candidates in enumerate(rows):
+                    for entry in candidates:
+                        grant_id,item_id,parameters=entry
+                        try:
+                            _,row=self._grant(grant_id,item_id)
+                            if row['capability']!='web.page_step' or row['effect']['class']!='task-bounded' or row['targets']:
+                                continue
+                            permit=self.reserve(grant_id,item_id,'network-'+secrets.token_hex(16),parameters)
+                            self.finish(permit['attempt_id'],state='verified',summary={'count':1})
+                            allowed[index]=True
+                            selected[index]=entry
+                            break
+                        except ScopeError:
+                            if self.fenced.is_set():
+                                raise
+                persist()
+                # Each sibling is independently revocable even during the shared fsync.
+                for index,entry in enumerate(selected):
+                    if allowed[index]:
+                        try:
+                            self._grant(entry[0],entry[1])
+                        except ScopeError:
+                            allowed[index]=False
+                return allowed
+            except Exception:
+                if not attempted:
+                    persist()
+                raise
+            finally:
+                del self._audit_transaction.events
+                del self._audit_transaction.limit
 
     def request(self, items, *, idempotency_key, ttl_seconds=MAX_GRANT_SECONDS):
         key = identifier(idempotency_key)

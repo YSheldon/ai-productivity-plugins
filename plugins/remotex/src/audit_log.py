@@ -138,6 +138,20 @@ def append(event: dict[str, Any]) -> dict[str, Any]:
 def append_many(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not isinstance(events, list) or not 1 <= len(events) <= 2 or any(not isinstance(event, dict) for event in events):
         raise core.ToolError("Audit batch must contain one or two object events")
+    return _append_transaction(events)
+
+
+def append_startup_batch(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(events, list) or not 1 <= len(events) <= 32 or any(
+        not isinstance(event, dict) or event.get('event') != 'web-authorization' or
+        not isinstance(event.get('authorization'), dict) or
+        event['authorization'].get('event') not in {'execution-reserved', 'execution-finished'}
+        for event in events):
+        raise core.ToolError('Invalid bounded startup audit transaction')
+    return _append_transaction(events)
+
+
+def _append_transaction(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     events = [dict(event) for event in events]
     path = audit_path()
     with _PROCESS_LOCK, _locked_file(path) as handle:

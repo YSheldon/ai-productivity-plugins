@@ -126,3 +126,10 @@ class Journal:
             for event in events):
             raise ScopeError('audit-incomplete')
         audit_log.append_many([{'event':'web-authorization','authorization':event} for event in events])
+
+    def append_startup_batch(self, events):
+        if not isinstance(events,list) or not 1<=len(events)<=32 or any(
+            not isinstance(event,dict) or set(event)-EVENT_FIELDS or
+            event.get('event') not in {'execution-reserved','execution-finished'} for event in events):
+            raise ScopeError('audit-incomplete')
+        audit_log.append_startup_batch([{'event':'web-authorization','authorization':dict(event)} for event in events])

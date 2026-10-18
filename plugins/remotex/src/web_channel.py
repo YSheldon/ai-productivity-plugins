@@ -24,6 +24,7 @@ class Channel:
         self._responses: queue.Queue = queue.Queue(maxsize=2)
         self._closed = threading.Event()
         self.authorize = None
+        self.authorize_batch = None
         self.on_close = None
 
     def start(self):
@@ -36,6 +37,25 @@ class Channel:
                 if not line or len(line) > 131072 or not line.endswith(b'\n'):
                     break
                 value = json.loads(line)
+                if isinstance(value,dict) and set(value)=={'event','checks'} and value['event']=='authorization-check-batch':
+                    checks=value['checks']
+                    if (len(line)>32768 or not isinstance(checks,list) or not 2<=len(checks)<=16 or any(
+                        not isinstance(row,dict) or set(row)!={'id','request'} or
+                        not isinstance(row['id'],str) or re.fullmatch(r'[a-f0-9]{32}',row['id']) is None or
+                        not isinstance(row['request'],dict) for row in checks) or
+                        len({row['id'] for row in checks})!=len(checks)):
+                        break
+                    results=[False]*len(checks)
+                    if callable(self.authorize_batch):
+                        try:
+                            reply=self.authorize_batch([row['request'] for row in checks])
+                            if isinstance(reply,list) and len(reply)==len(checks) and all(type(v) is bool for v in reply):
+                                results=reply
+                        except Exception:
+                            pass
+                    self._send({'authorization_batch_reply':[{'authorization_reply':row['id'],'allowed':allowed}
+                        for row,allowed in zip(checks,results)]})
+                    continue
                 if isinstance(value,dict) and set(value)=={'event','id','request'} and value['event']=='authorization-check':
                     if not isinstance(value['id'],str) or re.fullmatch(r'[a-f0-9]{32}',value['id']) is None or not isinstance(value['request'],dict):
                         break

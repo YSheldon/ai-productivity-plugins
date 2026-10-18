@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -31,6 +33,34 @@ def frame(**updates):
 def test_native_decision_transport_is_required():
     assert approval is not None,'The native approval transport has not been implemented'
     assert approval.decode_frame(json.dumps(frame()).encode()+b'\n',manifest())['event']=='decision'
+
+
+@pytest.mark.skipif(os.name!='nt' or os.environ.get('REMOTEX_TEST_NATIVE_APPROVAL')!='1',
+                    reason='Opt-in interactive Windows helper smoke test')
+def test_native_helper_emits_no_frame_before_human_decision():
+    script=Path(__file__).resolve().parents[1]/'scripts'/'web_approval.ps1'
+    process=subprocess.Popen([approval.credential_store._powershell_path(),'-NoLogo','-NoProfile','-STA',
+        '-File',str(script)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+        env=approval.credential_store._setup_environment(),creationflags=subprocess.CREATE_NO_WINDOW)
+    observed=queue.Queue()
+    reader=threading.Thread(target=lambda:observed.put(process.stdout.readline(32769)),daemon=True)
+    try:
+        process.stdin.write(auth.canonical(manifest())+b'\n')
+        process.stdin.flush()
+        reader.start()
+        try:
+            raw=observed.get(timeout=4)
+        except queue.Empty:
+            raw=None
+        assert raw is None, f'Native helper emitted unsolicited protocol output: {raw!r}'
+        assert process.poll() is None, 'Native helper exited before a human decision'
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=10)
+        reader.join(timeout=2)
+        for stream in (process.stdin,process.stdout):
+            stream.close()
 
 
 @pytest.mark.parametrize('update',[{'nonce':'wrong'},{'request_digest':'d'*64},

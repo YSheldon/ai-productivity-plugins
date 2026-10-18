@@ -14,6 +14,11 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.6.1
+
+- Fixed native task-approval startup emitting WinForms collection indices into the private JSON decision pipe. The helper now stays pending until an actual human decision instead of cancelling on an unsolicited numeric frame.
+- Added an opt-in interactive Windows regression that starts the actual credential-free helper, verifies silent startup, and closes only that test process. The strict decision decoder, human classification, expiry, revocation, credential isolation, and queue policy are unchanged.
+
 ## RemoteX 0.6.0
 
 - Added metadata-only component discovery, immutable action preparation, local batch/subset approval, typed execution, execution status/readback, and revocation tools. No model-facing approve API exists.

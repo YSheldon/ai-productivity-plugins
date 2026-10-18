@@ -2,6 +2,44 @@ param([Parameter(Mandatory=$true)][string]$Scenario)
 
 $ErrorActionPreference = 'Stop'
 [Console]::Error.WriteLine(('ui-stage: script-start;interactive={0};session={1}' -f [Environment]::UserInteractive,[Diagnostics.Process]::GetCurrentProcess().SessionId))
+if ($Scenario -eq 'host-prerequisite') {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    function Write-Stage([string]$Name) {
+        [Console]::Error.WriteLine(('host-stage: {0};elapsedMs={1}' -f $Name,$watch.ElapsedMilliseconds))
+    }
+    [Console]::Error.WriteLine(('host: ps={0};clr={1};x64={2};apartment={3};stdinRedirected={4}' -f
+        $PSVersionTable.PSVersion,[Environment]::Version,[Environment]::Is64BitProcess,
+        [Threading.Thread]::CurrentThread.GetApartmentState(),[Console]::IsInputRedirected))
+    Write-Stage 'eof-begin'
+    $line = [Console]::ReadLine()
+    Write-Stage 'eof-end'
+    if ($null -ne $line) { throw 'Prerequisite inherited console input' }
+    Write-Stage 'split-path-begin'
+    $parent = Split-Path $PSScriptRoot -Parent
+    Write-Stage 'split-path-end'
+    Write-Stage 'join-path-begin'
+    $path = Join-Path $parent 'scripts\web_approval_ui.ps1'
+    Write-Stage 'join-path-end'
+    Write-Stage 'test-path-begin'
+    $exists = Test-Path -LiteralPath $path
+    Write-Stage 'test-path-end'
+    if (-not $exists) { throw 'Prerequisite helper is missing' }
+    Write-Stage 'json-begin'
+    $report = @{prerequisite=$true} | ConvertTo-Json -Compress
+    Write-Stage 'json-end'
+    Write-Stage 'modules-begin'
+    Import-Module Microsoft.PowerShell.Management,Microsoft.PowerShell.Utility -ErrorAction Stop
+    Write-Stage 'modules-end'
+    Write-Stage 'forms-begin'
+    Add-Type -AssemblyName System.Windows.Forms
+    Write-Stage 'forms-end'
+    Write-Stage 'control-begin'
+    $control = New-Object Windows.Forms.DataGridView
+    $control.Dispose()
+    Write-Stage 'control-end'
+    [Console]::WriteLine($report)
+    exit 0
+}
 if ($Scenario -eq 'console-input-probe') {
     $line = [Console]::ReadLine()
     [Console]::WriteLine((@{consoleInputObserved=($null -ne $line)} | ConvertTo-Json -Compress))

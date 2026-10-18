@@ -106,6 +106,9 @@ jobs:
       - name: Install pinned browser test runtime
         run: npm ci --prefix plugins/remotex/scripts/web-runtime --ignore-scripts --no-audit --no-fund
 
+      - name: Probe native approval host prerequisites
+        run: python plugins/remotex/tests/test_web_approval_ui.py
+
       - name: Compile release workflow sources
         run: >-
           python -m compileall -q

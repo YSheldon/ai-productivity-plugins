@@ -16,7 +16,7 @@ function networkItem(id,descriptor,{phase,parent,semantics,proof,uses,targets=[]
   const preview=JSON.stringify({phase,semantics,descriptor,evidence:proof,targets});
   if(Buffer.byteLength(preview)>4096)throw new Error('request-too-large');
   return {row:{item_id:id,capability:'web.page_step',fingerprint:hash({descriptor,phase}),page:'#/',
-    max_uses:uses,depends_on:[],targets:[],parameters:{network_ref:id},output:{rows:0,columns:0,bytes:0},
+    max_uses:uses,depends_on:[],targets:[],parameters:{network_ref:id,review_kind:semantics},output:{rows:0,columns:0,bytes:0},
     display:{label:`Network: ${descriptor.method} ${descriptor.path}`,preview},
     effect:{class:'task-bounded',fields:[],digest:hash({descriptor,semantics,proof,targets})}},
     contract:{phase,parent_id:parent,semantics,descriptor:structuredClone(descriptor),targets:structuredClone(targets)}};
@@ -56,7 +56,7 @@ export function taskContracts(scopes,declarations,network,drafts){
     const proof=evidence(draft?draft.effect.evidence:declaration.network_evidence);
     for(let at=0;at<refs.length;at++){
       const descriptor=network.resolve(refs[at]);
-      const semantics=draft?'write':'read';
+      const semantics=draft?'write':'unclassified';
       const id=`${scope.item_id}.network.${at+1}`;
       const resolved=networkItem(id,descriptor,{phase:'grant-active',parent:scope.item_id,semantics,proof,
         uses:draft?1:scope.max_uses,targets:draft?scope.targets:[]});

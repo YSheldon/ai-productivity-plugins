@@ -113,6 +113,15 @@ account, request digest, requested operations and details. Select items/targets,
 lower uses/output/TTL as needed, and choose **Approve Selected**. Rejecting a
 prerequisite blocks its dependent items. The agent cannot approve itself.
 
+Network effects start **Unreviewed**, not implicitly read-only because their
+parent is a navigation/query control. The operator must independently inspect
+the effect/evidence and select the matching **Effect Review** classification.
+A proposed business write cannot be classified as a read to avoid its draft,
+targets, uncertainty journal or final confirmation. Unknown effects stay denied;
+selecting Business Write for a non-business proposal requires a new matching
+target/change draft, not a broader endpoint permission. The classification is
+bound into the effective scope digest and has no model-facing approval field.
+
 After status returns the effective grant, execute the selected item with its
 `grant_id`, `item_id`, fresh references and a stable execution idempotency key.
 `web.navigate`/`web.page_step` click the exact observed control; `web.query_input`
@@ -173,12 +182,18 @@ success flag or fabricated result body. Unsupported job/deletion/global-result
 reconciliation remains unknown and is not silently treated as successful.
 
 Potentially dispatched writes create a protected, keyed deny-only local fence.
+Until canonical server effect maps are available, that fence covers the entire
+target object rather than caller-supplied field labels. This conservatively
+blocks even different-field writes to an unresolved target; renaming a label
+cannot bypass it.
 Changing the idempotency key, grant, value or session cannot bypass an unresolved
 overlapping write. After restart, grants are gone and uncertainty remains; there
 is no automatic retry or model-facing force-clear. Investigate the original
 outcome and use reviewed reconciliation/compensation, not a second click.
 
-Closing an active human authorization window stops its authority. API revocation
+Closing an active human authorization window stops its own grant, not unrelated
+readback grants. Rejection, pending cancellation and normal expiry are scoped
+too; a late decision cannot restore fenced authority. API revocation
 supports an own pending request, grant/item subset, or `end_task=true`. Revocation
 during an active operation fences/closes the owned worker; unavailable audit
 storage cannot keep forwarding alive. Already accepted remote work cannot be
@@ -189,3 +204,8 @@ Audit records retain hashes, IDs, bounds, counters and outcome metadata, not pag
 text, form values, headers or credentials. The host may retain approved tool
 outputs in conversation history. Runtime/fixture/CI, installed version, actual
 authentication and real business acceptance are distinct evidence.
+Authorization context survives the outer MCP audit and serialization. A final
+transport check prevents buffered content being released after revocation or
+expiry; bytes already logically committed to the pipe cannot be recalled.
+Known credentials in URL paths, dynamic field names or other descriptor strings
+are rejected before they can enter pending-request metadata.

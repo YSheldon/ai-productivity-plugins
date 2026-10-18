@@ -19,6 +19,7 @@ class Service:
         self.contexts, self.grant_contexts, self.prompts = {}, {}, {}
         self.executing, self.dispatched = set(), set()
         self.retired=set()
+        self.receipt_authorities={}
         self.execute_lock = threading.Lock()
         self.channel.authorize = self._authorize
         self.channel.on_close = self.broker.emergency_revoke
@@ -46,12 +47,15 @@ class Service:
             if not isinstance(code, str) or len(code)>64:
                 code = 'control-failed'
             raise ScopeError(code)
+        if operation=='resume-login' and result.get('authenticationVerified') is True:
+            self._retire_startup()
         return result
 
     def components(self):
         return self._worker('components', {})
 
     def prepare(self, args):
+        self._check_receipts(args)
         return self._worker('prepare-action', args)
 
     def request(self, args):
@@ -75,9 +79,9 @@ class Service:
             self.prompts[request_id] = self.prompt.start(manifest,
                 on_decision=lambda frame:self._decision(request_id,frame),
                 on_revoke=lambda:self._prompt_revoked(request_id),
-                on_cancel=lambda:self.broker.cancel(request_id))
+                on_cancel=lambda:self._prompt_revoked(request_id))
         except Exception:
-            self.broker.cancel(request_id)
+            self._prompt_revoked(request_id)
             raise ScopeError('approval-ui-unavailable') from None
         return result
 
@@ -89,8 +93,41 @@ class Service:
         return result
 
     def _prompt_revoked(self, request_id):
-        if request_id not in self.retired:
+        if request_id in self.retired:
+            return
+        self.broker.revoke_request(request_id)
+        if any(self.broker.grants[self.broker.attempts[attempt]['grant_id']]['request_id']==request_id
+               for attempt in list(self.executing)):
             self.broker.emergency_revoke()
+
+    def _action_revoked(self, attempt_id):
+        attempt=self.broker.attempts.get(attempt_id)
+        if not attempt:
+            return
+        attempt['fence'].set()
+        if attempt_id in self.executing:
+            self.broker.emergency_revoke()
+        elif attempt_id not in self.dispatched and attempt['state'] in {'reserved','awaiting-action-confirmation'}:
+            self.broker.finish(attempt_id,state='failed-before-dispatch',summary={})
+
+    def _check_receipts(self, args):
+        refs=list(args.get('read_receipts',[]))+[change.get('receipt_ref') for change in args.get('changes',[])]
+        for ref in refs:
+            grant=self.receipt_authorities.get(ref)
+            if not grant:
+                raise ScopeError('readback-required')
+            self.broker._grant(*grant)
+
+    def guard_output(self, operation, args, result):
+        if operation=='execute':
+            grant_id,item_id=args['grant_id'],args['item_id']
+            return lambda:self.broker._grant(grant_id,item_id)
+        if operation=='prepare':
+            snapshot=copy.deepcopy(args)
+            return lambda:(self.broker._valid(),self._check_receipts(snapshot))
+        if operation=='components':
+            return self.broker._valid
+        return None
 
     def _retire_startup(self):
         for request_id,request in list(self.broker.requests.items()):
@@ -149,8 +186,16 @@ class Service:
                     continue
                 if action and contract.get('parent_id')!=action['item_id']:
                     continue
+                try:
+                    _, scope=self.broker._grant(grant_id,item_id)
+                except ScopeError:
+                    continue
+                classification=scope['parameters'].get('approved_semantics')
+                expected_class='read' if contract.get('semantics')=='unclassified' else contract.get('semantics')
+                if classification!=expected_class or classification not in {'read','write','bootstrap','login'}:
+                    continue
                 expected=copy.deepcopy(contract.get('descriptor'))
-                if contract.get('semantics')=='write':
+                if classification=='write':
                     if not action or not action['write']:
                         continue
                     selected=action['scope']['targets']
@@ -176,7 +221,7 @@ class Service:
                 try:
                     _, scope = self.broker._grant(grant_id,item_id)
                     permit = self.broker.reserve(grant_id,item_id,'network-'+secrets.token_hex(16),scope['parameters'])
-                    if action and contract.get('semantics')=='write':
+                    if action and classification=='write':
                         self.broker.authorize_attempt(attempt_id,consume=True)
                     self.broker.finish(permit['attempt_id'],state='verified',summary={'count':1})
                     self.broker._valid()
@@ -202,8 +247,8 @@ class Service:
                     manifest=self.broker.confirmation_manifest(attempt_id)
                     self.prompts[attempt_id]=self.prompt.start(manifest,
                         on_decision=lambda frame:self._action_decision(attempt_id,frame),
-                        on_revoke=self.broker.emergency_revoke,
-                        on_cancel=lambda:self.broker.finish(attempt_id,state='failed-before-dispatch',summary={}))
+                        on_revoke=lambda:self._action_revoked(attempt_id),
+                        on_cancel=lambda:self._action_revoked(attempt_id))
                 return self.broker.execution_status(attempt_id)
             if attempt['state']!='reserved':
                 return self.broker.execution_status(attempt_id)
@@ -219,6 +264,9 @@ class Service:
                 if scope['capability']=='web.business_action' and output.get('forwarded')==0 and attempt_id not in self.dispatched:
                     state='failed-before-dispatch'
                 status=self.broker.finish(attempt_id,state=state,summary=output.get('summary',{}))
+                receipt=output.get('result',{}).get('receipt_ref')
+                if isinstance(receipt,str):
+                    self.receipt_authorities[receipt]=(args['grant_id'],args['item_id'])
                 return {**status,'result':self.broker.release_output(attempt_id,output.get('result',{}))}
             except Exception as exc:
                 state='outcome-unknown' if attempt_id in self.dispatched else 'failed-before-dispatch'
@@ -250,11 +298,22 @@ class Service:
         if set(args)=={'request_id'}:
             return self.broker.cancel(args['request_id'])
         if set(args) in ({'grant_id'},{'grant_id','items'}):
-            if self.executing:
+            def affected(attempt_id):
+                attempt=self.broker.attempts[attempt_id]
+                if attempt['grant_id']!=args['grant_id']:
+                    return False
+                if 'items' not in args:
+                    return True
+                grant=self.broker.grants[args['grant_id']]
+                names=set(args['items'])
+                def depends(name):
+                    return name in names or any(depends(parent) for parent in grant['items'][name]['depends_on'])
+                return depends(attempt['item_id'])
+            if any(affected(attempt) for attempt in list(self.executing)):
                 return self._fence()
             result=self.broker.revoke(args['grant_id'],args.get('items'))
             # A concurrent action cannot retain a permit after revocation.
-            if self.executing:
+            if any(affected(attempt) for attempt in list(self.executing)):
                 self.broker.emergency_revoke()
                 result['session_closed']=True
             return result

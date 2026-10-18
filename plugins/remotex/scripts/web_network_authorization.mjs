@@ -37,6 +37,7 @@ function safeValue(value,secrets,key='',depth=0){
   if(value&&typeof value==='object'){
     const entries=Object.entries(value);
     if(entries.length>100||entries.some(([name])=>name.length>128||['__proto__','constructor','prototype'].includes(name)))throw new Error('request-contract-unavailable');
+    if(entries.some(([name])=>secrets.some(secret=>secret&&name.includes(secret))))throw new Error('credential-in-unsupported-field');
     return Object.fromEntries(entries.map(([name,part])=>[name,safeValue(part,secrets,name,depth+1)]));
   }
   if(value===null||typeof value==='boolean'||Number.isSafeInteger(value))return value;
@@ -62,6 +63,8 @@ export function describeRequest(request,origin,secrets){
   }
   const result={method,path:url.pathname,query:safeValue(pairs(url.searchParams),secrets),
     contentType,body:safeValue(body,secrets),resourceType:request.resourceType()};
+  const exportedStrings=value=>typeof value==='string'?[value]:value&&typeof value==='object'?Object.values(value).flatMap(exportedStrings):[];
+  if(exportedStrings(result).some(value=>secrets.some(secret=>secret&&value.includes(secret))))throw new Error('credential-in-unsupported-field');
   if(!['document','stylesheet','script','image','font','xhr','fetch','other'].includes(result.resourceType))throw new Error('request-contract-unavailable');
   if(Buffer.byteLength(JSON.stringify(result),'utf8')>32768)throw new Error('request-too-large');
   return result;

@@ -273,7 +273,7 @@ def _call_tool(
         SERVER_VERSION,
         started,
     )
-    return audit_log.attach_metadata(result, operation_id)
+    return web_adapter.checked_output(audit_log.attach_metadata(result, operation_id))
 
 
 def handle_request(message: dict[str, Any]) -> dict[str, Any] | None:
@@ -324,7 +324,15 @@ def handle_request(message: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def send_message(message: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
+    encoded=json.dumps(message,ensure_ascii=False,separators=(",",":"))
+    # Serialization and outer audit may block. This is the final logical release
+    # point; already committed pipe bytes cannot be recalled by later revocation.
+    original=message.get('result')
+    checked=web_adapter.checked_output(original)
+    if checked is not original:
+        message={**message,'result':checked}
+        encoded=json.dumps(message,ensure_ascii=False,separators=(",",":"))
+    sys.stdout.write(encoded + "\n")
     sys.stdout.flush()
 
 

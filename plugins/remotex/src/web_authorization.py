@@ -26,6 +26,14 @@ class ScopeError(ValueError):
         super().__init__(code)
 
 
+class GuardedResult(dict):
+    """Transport-only authority context; the callback is never JSON content."""
+
+    def __init__(self, value, check):
+        super().__init__(value)
+        self.check_authority=check
+
+
 def canonical(value: Any) -> bytes:
     try:
         return json.dumps(value, sort_keys=True, ensure_ascii=True,
@@ -143,9 +151,9 @@ class Broker:
         self.lock = threading.RLock()
         self.output_lock = threading.RLock()
         self.fenced = threading.Event()
+        self._close_once=threading.Lock()
         self.requests, self.request_keys, self.grants = {}, {}, {}
         self.attempts, self.attempt_keys = {}, {}
-        self.total_write_reservations = 0
 
     def _valid(self):
         if self.fenced.is_set():
@@ -178,9 +186,9 @@ class Broker:
                 if previous['submitted'] != submitted:
                     raise ScopeError('request-conflict')
                 return self.status(previous['id'])
-            if any(r['state']=='pending' and r['review_deadline']>self.clock() for r in self.requests.values()):
+            if any(r['state']=='pending' and not r['fence'].is_set() and r['review_deadline']>self.clock() for r in self.requests.values()):
                 raise ScopeError('approval-already-pending')
-            if sum(g['state']=='active' and g['deadline']>self.clock() for g in self.grants.values()) >= 4:
+            if sum(g['state']=='active' and not self.requests[g['request_id']]['fence'].is_set() and g['deadline']>self.clock() for g in self.grants.values()) >= 4:
                 raise ScopeError('grant-limit-exceeded')
             if self.binding['deadline'] - self.clock() < 60:
                 raise ScopeError('lifetime-insufficient')
@@ -189,7 +197,7 @@ class Broker:
                 'submitted':submitted,'digest':digest({'binding':self.binding,'scope':rows,'ttl':ttl_seconds}),
                 'items':rows,'ttl':ttl_seconds,'state':'pending','created':self.clock(),
                 'review_deadline':min(self.clock()+120,self.binding['deadline']),
-                'grant_id':None,'item_states':{row['item_id']:'pending' for row in rows}}
+                'grant_id':None,'fence':threading.Event(),'item_states':{row['item_id']:'pending' for row in rows}}
             self._event('request-created',request_id=identifier_value,request_digest=request['digest'],count=len(rows))
             self.requests[identifier_value] = request
             self.request_keys[key] = identifier_value
@@ -199,7 +207,7 @@ class Broker:
         with self.lock:
             self._valid()
             request = self.requests.get(request_id)
-            if not request or request['state'] != 'pending':
+            if not request or request['state'] != 'pending' or request['fence'].is_set():
                 raise ScopeError('decision-consumed')
             return {'request_id':request_id,'nonce':request['nonce'],'request_digest':request['digest'],
                 'binding':copy.deepcopy(self.binding),'items':copy.deepcopy(request['items']),
@@ -209,7 +217,7 @@ class Broker:
         with self.lock:
             self._valid()
             request = self.requests.get(request_id)
-            if not request or request['state'] != 'pending':
+            if not request or request['state'] != 'pending' or request['fence'].is_set():
                 raise ScopeError('decision-consumed')
             if self.clock() >= request['review_deadline']:
                 request['state']='expired'
@@ -223,7 +231,7 @@ class Broker:
                 originals = {row['item_id']:row for row in request['items']}
                 selected = {}
                 for choice in choices:
-                    if not isinstance(choice,dict) or not {'item_id','max_uses','targets'}<=set(choice) or set(choice)-{'item_id','max_uses','targets','output'}:
+                    if not isinstance(choice,dict) or not {'item_id','max_uses','targets'}<=set(choice) or set(choice)-{'item_id','max_uses','targets','output','semantic_classification'}:
                         raise ScopeError('decision-invalid')
                     name = choice['item_id']
                     if name not in originals or name in selected:
@@ -243,6 +251,14 @@ class Broker:
                     for key,maximum in original['output'].items():
                         integer(output[key],0,maximum)
                     selected[name] = {**copy.deepcopy(original),'max_uses':uses,'targets':list(targets),'output':copy.deepcopy(output)}
+                    review=original['parameters'].get('review_kind')
+                    if review is not None:
+                        expected='read' if review=='unclassified' else review
+                        if expected not in {'read','write','bootstrap','login'} or choice.get('semantic_classification')!=expected:
+                            raise ScopeError('decision-invalid')
+                        selected[name]['parameters']['approved_semantics']=expected
+                    elif 'semantic_classification' in choice:
+                        raise ScopeError('decision-invalid')
             except (ScopeError,TypeError,KeyError) as exc:
                 raise ScopeError('decision-invalid') from exc
             states = {name:('approved' if name in selected else 'rejected') for name in originals}
@@ -257,15 +273,24 @@ class Broker:
             scope_digest = globals()['digest']({'items':selected,'deadline':deadline,'request':request['digest']})
             self._event('decision-recorded',request_id=request_id,approved_scope_digest=scope_digest,
                         approved_items=list(selected),ttl_seconds=ttl_seconds)
+            if request['fence'].is_set():
+                raise ScopeError('grant-revoked')
             request['nonce']=''
             request['item_states']=states
-            full = len(selected)==len(originals) and all(selected[n]==originals[n] for n in selected)
+            def unchanged(name):
+                original=copy.deepcopy(originals[name])
+                if 'approved_semantics' in selected[name]['parameters']:
+                    original['parameters']['approved_semantics']=selected[name]['parameters']['approved_semantics']
+                return selected[name]==original
+            full = len(selected)==len(originals) and all(unchanged(n) for n in selected)
             request['state']='approved' if full else 'partially-approved' if selected else 'rejected'
             if selected:
                 grant_id=secrets.token_hex(16)
                 self._event('grant-issued',grant_id=grant_id,request_id=request_id,approved_scope_digest=scope_digest)
+                if request['fence'].is_set():
+                    raise ScopeError('grant-revoked')
                 self.grants[grant_id]={'state':'active','items':selected,'deadline':deadline,'scope_digest':scope_digest,
-                    'remaining':{n:r['max_uses'] for n,r in selected.items()},'verified':set(),'revoked_items':set(),'write_reservations':0}
+                    'remaining':{n:r['max_uses'] for n,r in selected.items()},'verified':set(),'revoked_items':set(),'write_reservations':0,'request_id':request_id}
                 request['grant_id']=grant_id
             return self.status(request_id)
 
@@ -276,18 +301,26 @@ class Broker:
                 raise ScopeError('request-invalid')
             if request['state']=='pending' and self.clock()>=request['review_deadline']:
                 request['state']='expired'
+            if request['state']=='pending' and request['fence'].is_set():
+                request['state']='cancelled'
             grant=self.grants.get(request['grant_id'])
+            grant_state=('revoked' if self.fenced.is_set() or request['fence'].is_set() else
+                'expired' if grant and self.clock()>=grant['deadline'] else grant['state']) if grant else None
+            allowed=[n for n in grant['items'] if not self._dependency_revoked(grant,n)] if grant_state=='active' else []
             return {'request_id':request_id,'state':request['state'],'request_digest':request['digest'],
-                'grant_id':request['grant_id'],'allowed_items':[n for n in grant['items'] if n not in grant['revoked_items']] if grant else [],
+                'grant_id':request['grant_id'],'allowed_items':allowed,
                 'item_states':copy.deepcopy(request['item_states']),
-                'grant_state':('revoked' if self.fenced.is_set() else grant['state']) if grant else None,
+                'grant_state':grant_state,
                 'remaining':copy.deepcopy(grant['remaining']) if grant else {},
                 'effective_limits':{n:{'max_uses':r['max_uses'],'targets':copy.deepcopy(r['targets']),
-                    'output':copy.deepcopy(r['output'])} for n,r in grant['items'].items() if n not in grant['revoked_items']} if grant else {},
+                    'output':copy.deepcopy(r['output'])} for n,r in grant['items'].items() if n in allowed} if grant else {},
                 'expires_in_seconds':max(0,int(grant['deadline']-self.clock())) if grant else 0,
                 'approved_scope_digest':grant['scope_digest'] if grant else None}
 
     def cancel(self, request_id):
+        request=self.requests.get(request_id)
+        if request and request['state']=='pending':
+            request['fence'].set()
         with self.lock:
             request=self.requests.get(request_id)
             if not request or request['state']!='pending':
@@ -297,17 +330,46 @@ class Broker:
             self._event('request-cancelled',request_id=request_id)
             return self.status(request_id)
 
+    def revoke_request(self, request_id):
+        request=self.requests.get(request_id)
+        if not request:
+            raise ScopeError('request-invalid')
+        # Set before any audit/authorization lock; a late decision cannot revive it.
+        if request['fence'].is_set():
+            return
+        request['fence'].set()
+        def record():
+            try:
+                with self.lock:
+                    request['nonce']=''
+                    if not request.get('grant_id') and request['state'] not in {'rejected','expired'}:
+                        request['state']='cancelled'
+                    grant=self.grants.get(request.get('grant_id'))
+                    if grant:
+                        grant['state']='revoked'
+                    self._event('request-revoked',request_id=request_id)
+            except ScopeError:
+                pass
+        threading.Thread(target=record,daemon=True).start()
+
+    def _dependency_revoked(self, grant, item_id):
+        if item_id in grant['revoked_items']:
+            return True
+        return any(self._dependency_revoked(grant,parent) for parent in grant['items'][item_id]['depends_on'])
+
     def _grant(self, grant_id, item_id):
         self._valid()
         grant=self.grants.get(grant_id)
         if not grant:
             raise ScopeError('approval-required')
-        if grant['state']!='active' or item_id in grant['revoked_items']:
+        if grant['state']!='active' or self.requests[grant['request_id']]['fence'].is_set() or item_id in grant['revoked_items']:
             raise ScopeError('grant-revoked')
         if self.clock()>=grant['deadline']:
             raise ScopeError('grant-expired')
         if item_id not in grant['items']:
             raise ScopeError('scope-mismatch')
+        if self._dependency_revoked(grant,item_id):
+            raise ScopeError('dependency-blocked')
         return grant,grant['items'][item_id]
 
     def reserve(self, grant_id, item_id, idempotency_key, parameters):
@@ -333,13 +395,15 @@ class Broker:
             if write:
                 if grant['write_reservations']+len(row['targets'])>200:
                     raise ScopeError('impact-limit-exceeded')
-                conflicts=[digest([self.binding['origin'],target,field]) for target in row['targets'] for field in row['effect']['fields']]
+                # Model-provided field labels are not resource identities. Until
+                # a canonical server mapping exists, fence the entire object.
+                conflicts=[digest([self.binding['origin'],target]) for target in row['targets']]
                 self.journal.reserve(identifier_value,conflicts)
                 grant['write_reservations']+=len(row['targets'])
             grant['remaining'][item_id]-=1
             attempt={'id':identifier_value,'grant_id':grant_id,'item_id':item_id,'submitted':submitted,
                 'scope':copy.deepcopy(row),'state':'awaiting-action-confirmation' if confirmation else 'reserved',
-                'write':write,'summary':{},'ticket_used':False}
+                'write':write,'summary':{},'ticket_used':False,'fence':threading.Event()}
             if confirmation:
                 attempt.update({'nonce':secrets.token_hex(32),
                     'confirmation_digest':digest({'attempt':identifier_value,'scope':row,'binding':self.binding}),
@@ -354,7 +418,7 @@ class Broker:
     def confirmation_manifest(self, attempt_id):
         with self.lock:
             attempt=self.attempts.get(attempt_id)
-            if not attempt or attempt['state']!='awaiting-action-confirmation':
+            if not attempt or attempt['state']!='awaiting-action-confirmation' or attempt['fence'].is_set():
                 raise ScopeError('decision-consumed')
             grant,_=self._grant(attempt['grant_id'],attempt['item_id'])
             return {'request_id':attempt_id,'nonce':attempt['nonce'],
@@ -366,7 +430,7 @@ class Broker:
     def accept_action_decision(self, attempt_id, *, nonce, digest, choices, ttl_seconds):
         with self.lock:
             attempt=self.attempts.get(attempt_id)
-            if not attempt or attempt['state']!='awaiting-action-confirmation':
+            if not attempt or attempt['state']!='awaiting-action-confirmation' or attempt['fence'].is_set():
                 raise ScopeError('decision-consumed')
             grant,row=self._grant(attempt['grant_id'],attempt['item_id'])
             if self.clock()>=attempt['review_deadline']:
@@ -393,6 +457,8 @@ class Broker:
             attempt=self.attempts.get(attempt_id)
             if not attempt:
                 raise ScopeError('request-invalid')
+            if attempt['fence'].is_set():
+                raise ScopeError('grant-revoked')
             self._grant(attempt['grant_id'],attempt['item_id'])
             if attempt['state']!='reserved':
                 raise ScopeError('action-confirmation-required' if attempt['state']=='awaiting-action-confirmation' else 'outcome-unknown')
@@ -453,27 +519,35 @@ class Broker:
                 return content
 
     def revoke(self, grant_id, items=None):
-        if not self.lock.acquire(timeout=0.05):
-            self.emergency_revoke()
-            return {'state':'revoked','session_closed':True}
-        try:
-            grant=self.grants.get(grant_id)
-            if not grant:
-                raise ScopeError('request-invalid')
-            if items is None:
-                grant['state']='revoked'
-            elif not isinstance(items,list) or not set(items)<=set(grant['items']):
-                raise ScopeError('request-invalid')
-            else:
-                grant['revoked_items'].update(items)
-            self._event('grant-revoked',grant_id=grant_id,item_ids=items or [])
-            return {'state':'revoked','session_closed':False}
-        finally:
-            self.lock.release()
+        grant=self.grants.get(grant_id)
+        if not grant:
+            raise ScopeError('request-invalid')
+        if items is not None and (not isinstance(items,list) or any(not isinstance(n,str) for n in items)
+                or not set(items)<=set(grant['items'])):
+            raise ScopeError('request-invalid')
+        already=grant['state']=='revoked' or (items is not None and set(items)<=grant['revoked_items'])
+        if items is None:
+            grant['state']='revoked'
+        else:
+            grant['revoked_items'].update(items)
+        if already:
+            return {'state':'revoked','session_closed':self.fenced.is_set(),'auditPending':grant.get('revocation_pending',False)}
+        # Authority is fenced first; unrelated slow audit work must not turn
+        # a scoped revocation into a whole-session termination.
+        completed=threading.Event();grant['revocation_pending']=True
+        def record():
+            try:
+                with self.lock:
+                    self._event('grant-revoked',grant_id=grant_id,item_ids=items or [])
+            except ScopeError:
+                pass
+            finally:
+                grant['revocation_pending']=False;completed.set()
+        threading.Thread(target=record,daemon=True).start()
+        completed.wait(timeout=0.01)
+        return {'state':'revoked','session_closed':self.fenced.is_set(),'auditPending':not completed.is_set()}
 
     def emergency_revoke(self):
-        with self.output_lock:
-            first=not self.fenced.is_set()
-            self.fenced.set()
-        if first:
+        self.fenced.set()
+        if self._close_once.acquire(blocking=False):
             self.close()

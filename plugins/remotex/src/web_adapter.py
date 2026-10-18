@@ -510,7 +510,21 @@ def _task_call(args, operation, required=(), optional=()):
             result=service._worker('resume-login',{})
         else:
             raise web_authorization.ScopeError('request-invalid')
-        return core.tool_result({'ok':True,**result,'webSessionId':args['session_id']})
+        output=core.tool_result({'ok':True,**result,'webSessionId':args['session_id']})
+        guard=service.guard_output(operation,payload,result)
+        return web_authorization.GuardedResult(output,guard) if guard is not None else output
+    except web_authorization.ScopeError as exc:
+        return {**core.tool_result({'ok':False,'failureCode':exc.code}),'isError':True}
+    except Exception:
+        return {**core.tool_result({'ok':False,'failureCode':'session-unavailable'}),'isError':True}
+
+
+def checked_output(result):
+    if not isinstance(result,web_authorization.GuardedResult):
+        return result
+    try:
+        result.check_authority()
+        return result
     except web_authorization.ScopeError as exc:
         return {**core.tool_result({'ok':False,'failureCode':exc.code}),'isError':True}
     except Exception:

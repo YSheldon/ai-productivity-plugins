@@ -63,9 +63,17 @@ try {
         $column.Name = $columnName; $column.ReadOnly = ($columnName -in @('Item', 'Capability'))
         $null = $grid.Columns.Add($column)
     }
+    $semanticColumn = New-Object Windows.Forms.DataGridViewComboBoxColumn
+    $semanticColumn.Name = 'Effect Review'; $semanticColumn.FillWeight = 170
+    $semanticColumn.Items.AddRange(@('Not applicable', 'Unreviewed', 'Read', 'Business Write', 'Bootstrap', 'Login'))
+    $null = $grid.Columns.Add($semanticColumn)
+    foreach ($name in @('Uses', 'Rows', 'Columns', 'Bytes')) { $grid.Columns[$name].FillWeight = 45 }
+    $grid.Columns['Item'].FillWeight = 120; $grid.Columns['Capability'].FillWeight = 140
     foreach ($item in @($manifest.items)) {
-        $null = $grid.Rows.Add($false, [string]$item.item_id, [string]$item.capability, [string]$item.max_uses,
-            [string]$item.output.rows, [string]$item.output.columns, [string]$item.output.bytes)
+        $effectReview = if ($item.parameters.review_kind) { 'Unreviewed' } else { 'Not applicable' }
+        $rowIndex = $grid.Rows.Add($false, [string]$item.item_id, [string]$item.capability, [string]$item.max_uses,
+            [string]$item.output.rows, [string]$item.output.columns, [string]$item.output.bytes, $effectReview)
+        if (-not $item.parameters.review_kind) { $grid.Rows[$rowIndex].Cells['Effect Review'].ReadOnly = $true }
         $script:targetSelections[[string]$item.item_id] = @($item.targets)
     }
     $layout.Controls.Add($grid, 0, 1); $layout.SetColumnSpan($grid, 2)
@@ -124,7 +132,16 @@ try {
                 }
                 $output[$key] = $number
             }
-            $choices += @{ item_id = $itemId; max_uses = $uses; targets = @($script:targetSelections[$itemId]); output = $output }
+            $choice = @{ item_id = $itemId; max_uses = $uses; targets = @($script:targetSelections[$itemId]); output = $output }
+            if ($source.parameters.review_kind) {
+                $kind = [string]$source.parameters.review_kind
+                $expected = switch ($kind) { 'unclassified' { 'Read' }; 'write' { 'Business Write' }; 'bootstrap' { 'Bootstrap' }; 'login' { 'Login' }; default { '' } }
+                if (-not $expected -or [string]$row.Cells['Effect Review'].Value -ne $expected) {
+                    $null = [Windows.Forms.MessageBox]::Show('Independently review this request effect and evidence. A business write needs a matching target/change draft, not a read label.', 'RemoteX'); return
+                }
+                $choice.semantic_classification = if ($kind -eq 'unclassified') { 'read' } else { $kind }
+            }
+            $choices += $choice
         }
         if ($choices.Count -eq 0) { return }
         Send-Frame 'decision' $choices ([int]$ttl.Value)

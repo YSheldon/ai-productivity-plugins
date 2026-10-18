@@ -43,8 +43,15 @@ def prepared():
 
 def approve(service, prompts):
     manifest, callbacks = prompts[-1]
+    choices=[]
+    for row in manifest['items']:
+        choice={'item_id':row['item_id'],'max_uses':row['max_uses'],'targets':row['targets']}
+        review=row['parameters'].get('review_kind')
+        if review:
+            choice['semantic_classification']='read' if review=='unclassified' else review
+        choices.append(choice)
     return callbacks['on_decision']({'nonce':manifest['nonce'], 'request_digest':manifest['request_digest'],
-        'choices':[{'item_id':row['item_id'], 'max_uses':row['max_uses'], 'targets':row['targets']} for row in manifest['items']],
+        'choices':choices,
         'ttl_seconds':60})
 
 
@@ -63,13 +70,15 @@ def test_no_approve_api_and_no_execution_before_native_decision():
     assert not hasattr(service, 'approve')
 
 
-def test_closing_native_grant_window_revokes_owned_session():
+def test_closing_native_grant_window_revokes_only_its_grant_when_idle():
     service, channel, prompts = prepared()
     service.request({'items':[{}], 'idempotency_key':'first'})
-    approve(service, prompts)
+    grant=approve(service, prompts)
     prompts[-1][1]['on_revoke']()
-    assert service.broker.fenced.is_set()
-    assert not channel.available
+    assert not service.broker.fenced.is_set()
+    assert channel.available
+    with pytest.raises(ValueError,match='grant-revoked'):
+        service.broker.reserve(grant['grant_id'],'read','revoked',{})
 
 
 def test_unknown_network_and_old_attempt_cannot_forward():
@@ -99,13 +108,13 @@ def test_duplicate_execute_returns_receipt_without_replaying_worker():
 def test_network_subitem_requires_own_approval_exact_payload_and_active_parent():
     service, channel, prompts = prepared()
     descriptor={'method':'POST','path':'/query','body':{'cmd':'inventory'},'query':{},'contentType':'application/json'}
-    net={**item('read.network.1'),'capability':'web.page_step','parameters':{'network_ref':'read.network.1'}}
+    net={**item('read.network.1'),'capability':'web.page_step','parameters':{'network_ref':'read.network.1','review_kind':'unclassified'}}
     original=channel.request
     seen=[]
     def worker(operation,args):
         if operation=='resolve-items':
             return {'ok':True,'items':[item(),net], 'contracts':{'read.network.1':{
-                'parent_id':'read','phase':'grant-active','semantics':'read','descriptor':descriptor,'targets':[]}}}
+                'parent_id':'read','phase':'grant-active','semantics':'unclassified','descriptor':descriptor,'targets':[]}}}
         if operation=='execute':
             request={'kind':'network','phase':'grant-active','attempt_id':args['attempt_id'],
                 'descriptor':descriptor,'digest':'e'*64}
@@ -127,7 +136,7 @@ def test_network_subitem_requires_own_approval_exact_payload_and_active_parent()
 def test_partial_targets_narrow_the_real_request_and_block_unapproved_objects():
     service,channel,prompts=prepared()
     write=item('move',write=True,targets=['host-one','host-two'])
-    net={**item('move.network.1'),'capability':'web.page_step','parameters':{'network_ref':'move.network.1'}}
+    net={**item('move.network.1'),'capability':'web.page_step','parameters':{'network_ref':'move.network.1','review_kind':'write'}}
     descriptor={'method':'POST','path':'/dispatch','query':{},'contentType':'application/json',
         'body':{'cmd':'move','ids':['host-one','host-two'],'group':'New Group'}}
     seen=[]
@@ -148,7 +157,7 @@ def test_partial_targets_narrow_the_real_request_and_block_unapproved_objects():
     manifest,callbacks=prompts[-1]
     grant=callbacks['on_decision']({'nonce':manifest['nonce'],'request_digest':manifest['request_digest'],
         'choices':[{'item_id':'move','max_uses':1,'targets':['host-one']},
-                   {'item_id':'move.network.1','max_uses':1,'targets':[]}],'ttl_seconds':60})
+                   {'item_id':'move.network.1','max_uses':1,'targets':[],'semantic_classification':'write'}],'ttl_seconds':60})
     service.execute({'grant_id':grant['grant_id'],'item_id':'move','idempotency_key':'move-once',
         'observation_id':'d'*32,'component_ref':'e'*32})
     assert seen==[False,True,False]

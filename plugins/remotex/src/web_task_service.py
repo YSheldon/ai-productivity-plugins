@@ -23,6 +23,7 @@ class Service:
         self.receipt_authorities={}
         self.execute_lock = threading.Lock()
         self.channel.authorize = self._authorize
+        self.channel.authorize_batch = self._authorize_batch
         self.channel.on_close = self.broker.emergency_revoke
 
     def _close(self):
@@ -262,6 +263,47 @@ class Service:
                 except ScopeError:
                     continue
         return False
+
+    def _authorize_batch(self, messages):
+        if not isinstance(messages,list):
+            return []
+        denied=[False]*len(messages)
+        try:
+            if not 1<=len(messages)<=16 or len(canonical(messages))>32768:
+                return denied
+            messages=copy.deepcopy(messages)
+            self.broker._valid()
+            matches=[]
+            for message in messages:
+                candidates=[]
+                if (isinstance(message,dict) and set(message)=={'kind','phase','attempt_id','descriptor','digest'} and
+                    message['kind']=='network' and message['phase'] in {'bootstrap','login-once'} and
+                    message['attempt_id'] is None and isinstance(message['digest'],str) and
+                    re.fullmatch(r'[a-f0-9]{64}',message['digest'])):
+                    descriptor=message['descriptor']
+                    if (isinstance(descriptor,dict) and descriptor.get('method')=='GET' and
+                        descriptor.get('body') is None and descriptor.get('query')=={} and
+                        descriptor.get('resourceType') in {'script','stylesheet'} and
+                        isinstance(descriptor.get('path'),str) and
+                        re.fullmatch(r'/[A-Za-z0-9/_.~-]{0,511}\.(?:js|css)',descriptor['path'],re.IGNORECASE)):
+                        for grant_id,contracts in list(self.grant_contexts.items()):
+                            for item_id,contract in contracts.items():
+                                semantics=contract.get('semantics')
+                                if (contract.get('phase')!=message['phase'] or semantics not in {'bootstrap','login'} or
+                                    canonical(contract.get('descriptor'))!=canonical(descriptor)):
+                                    continue
+                                try:
+                                    _,scope=self.broker._grant(grant_id,item_id)
+                                except ScopeError:
+                                    continue
+                                if scope['parameters'].get('approved_semantics')==semantics:
+                                    candidates.append((grant_id,item_id,scope['parameters']))
+                matches.append(candidates)
+            result=self.broker.consume_static_network_batch(matches)
+            self.broker._valid()
+            return result
+        except Exception:
+            return denied
 
     def execute(self, args):
         expected={'grant_id','item_id','idempotency_key','observation_id','component_ref'}

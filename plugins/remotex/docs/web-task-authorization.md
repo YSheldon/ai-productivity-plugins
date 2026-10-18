@@ -8,6 +8,8 @@ Use 0.6.2 or later for native batch-review controls; 0.6.1 fixed native window
 startup. Version 0.6.3 adds bounded startup scheduling and late-reply recovery.
 Version 0.6.4 adds non-authorizing native-window lifecycle receipts.
 Version 0.6.5 adds 12-hour task grants and durable startup audit event pairs.
+Version 0.6.6 groups already queued static checks into bounded private audit
+transactions; it does not combine or bypass their human-approved scopes.
 For an interactive
 Windows regression, set `REMOTEX_TEST_NATIVE_APPROVAL=1` when running
 `plugins/remotex/tests/test_web_approval.py`. Its synthetic helper uses no saved
@@ -107,6 +109,19 @@ In 0.6.5, one non-writing startup JS/CSS GET/HEAD permission commits its origina
 `execution-reserved` and `execution-finished` records together. The complete
 existing audit chain is still verified under the same process/file locks; both
 new records are hash-linked and flushed/fsynced before permission can return.
+Since 0.6.6, already queued startup JS/CSS GET checks can share one transaction,
+up to 16 checks and a complete 32-KiB private request. There is no collection
+delay. Oversized single descriptors keep the old single-check path rather than
+being truncated. Each request independently matches its original active human
+contract, classification and count; no unapproved sibling inherits permission.
+A transaction retains two records per permitted request, at most 32 records,
+and verifies the complete old chain once. All records must be flushed/fsynced
+before any true result; authority is rechecked per item after durability.
+Private replies must contain every unique member. Cancellation, revocation,
+generation changes and expired checks remain denied without replay. Root
+documents, images, XHR/fetch, POSTs and business operations use the existing
+single-check path. This internal scheduling does not change human review batches.
+
 There is no trusted-prefix cache, skipped audit event, automatic ledger cleanup
 or change to business-write recovery. Corruption, partial writes and failed
 durability deny permission. Revocation is rechecked after the commit.

@@ -14,6 +14,13 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.6.6
+
+- Already queued startup JS/CSS GET checks use bounded private transactions of at most 16 checks and 32 KiB, without waiting to fill a batch. Each request still needs its own exact active human-approved contract, remaining count and original session/trust/queue binding. Root documents, images, login exchanges and business operations retain their existing paths.
+- Every permitted static request retains its reserved/finished audit records. A transaction verifies the complete old chain once, writes at most 32 hash-linked records and flushes/fsyncs before any permission returns; each authority is then rechecked independently. No prefix cache, permission reuse, audit deletion or broader network grant.
+- Private replies require complete, unique batch membership. Individual cancellation, revocation, generation changes and overdue or malformed replies cannot revive authority. Issued checks still expire after 10 seconds, including when their timer callback is delayed.
+- Added a 51-request, four-grant mixed startup regression over a synthetic 97,000-record ledger using the real private worker/supervisor transport, plus corruption, durability and mixed-grant regressions. The 45-second startup, 55-second resume, 120-second review, 30-second high-risk confirmation, 12-hour task grants and 13-hour new sessions are unchanged. No Bootstrap POST exception or center business-code change.
+
 ## RemoteX 0.6.5
 
 - Task read/write grants now request up to 43,200 seconds (12 hours) by default. Operators can reduce the lifetime; the original session, queue acquisition, origin, account, trust, process and finite operation budgets still bound authority. Existing grants are not extended.

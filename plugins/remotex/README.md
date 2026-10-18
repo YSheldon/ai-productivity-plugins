@@ -18,6 +18,14 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
+Version `0.6.6` groups already queued startup JS/CSS GET checks into private
+transactions of at most 16 checks and 32 KiB. Each request still needs its own
+active human-approved scope and count. The complete old audit chain is verified
+once per transaction; every original event is durable before permission returns,
+with independent revocation and deadline checks. Root documents, images, POSTs
+and business operations keep their previous paths. No timeout or authority is
+extended, and no permission or audit-prefix cache is introduced.
+
 Version `0.6.5` defaults task read/write grant requests to 12 hours, with new
 Edge sessions bounded to 13 hours and a covering queue lease. The operator may
 lower the TTL; revocation, fresh references, exact targets/values and finite

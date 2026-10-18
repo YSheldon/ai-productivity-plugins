@@ -198,10 +198,10 @@ Confirm supported-browser access through the host before any web operation.
 | Config rejected after upgrade | Check every client reading the shared config for old runtimes |
 | Browser-control request-header policy error | Diagnose the host browser interface separately from site credentials |
 | Isolated Edge not in the browser list | Use RemoteX task tools in the process that started login; a session ID is not a generic tab ID |
-| Button/form interface absent | Upgrade/reconnect to 0.6.5, discover components, request a local human grant, then use typed execution |
+| Button/form interface absent | Upgrade/reconnect to 0.6.6, discover components, request a local human grant, then use typed execution |
 | Approval window missing or cancelled without a clear cause | Inspect the request's `approval_ui` lifecycle receipt, remaining review seconds, error code and exit reason in 0.6.4. A process ID is not proof of display; `shown` is not permission or proof of foreground. Do not repeatedly open new requests |
-| Startup stalls or closes after a large approved asset batch | Use 0.6.5 durable static audit pairs with the existing 45-second startup / 55-second resume limits. Inspect the original session state instead of replaying requests or retrying possibly submitted credentials |
-| Long task authorization still ends early | In 0.6.5 request up to 43,200 seconds and start a new covering session (default/max 46,800) with a lease at least 45 seconds longer. Old sessions/grants and profile lease defaults are not extended; counts, revocation and server-side login expiry still apply |
+| Startup stalls or closes after a large approved asset batch | Use 0.6.6 bounded static transactions, retaining every audit event and the existing 45-second startup / 55-second resume limits. Inspect the original session state instead of replaying requests or retrying possibly submitted credentials |
+| Long task authorization still ends early | In 0.6.5 or later request up to 43,200 seconds and start a new covering session (default/max 46,800) with a lease at least 45 seconds longer. Old sessions/grants and profile lease defaults are not extended; counts, revocation and server-side login expiry still apply |
 | `authorization-contract-required` | Inspect blocked descriptor refs, review exact startup/login contracts locally, then resume the same UI; never replay raw requests |
 | Page stays at 1280x720 when resizing Edge | Use a new window-sized session; inspect `remotex_web_components.geometry` to separate viewport behavior from site CSS |
 | Host browser access denied or unknown | Stop web operations; do not use RemoteX, CDP, or shell automation as an alternate route |

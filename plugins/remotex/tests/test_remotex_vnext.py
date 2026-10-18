@@ -1224,7 +1224,7 @@ class HostKeyAndTaskTests(unittest.TestCase):
                         {"task_id": task_id, "cleanup": True}
                     )
                 )
-        self.assertEqual(collected["state"], "completed")
+        self.assertEqual(collected["state"], "completed", collected.get("error"))
         self.assertIn("worker-completed", collected["stdout"])
         self.assertTrue(collected["taskArtifactsRemoved"])
         self.assertFalse(task_dir.exists())

@@ -8,6 +8,7 @@ Named profiles for remote operations, local credential management, and evidence-
 | --- | --- |
 | Systems, architecture evidence, calls, queues, and last use by credential | [Usage reports](docs/usage-reports.md) |
 | HTTPS console sign-in through isolated Edge and local secure input | [Web credentials](docs/web-credentials.md) |
+| Human-approved buttons, exact form values, and scoped business writes | [Task authorization](docs/web-task-authorization.md) |
 | Read the authenticated page and passive result codes without copying cookies | [Same-session control](docs/web-credentials.md#same-session-controlled-operations) |
 | Profile setup, missing aliases, rotation, and deletion | [Credential lifecycle](docs/credential-lifecycle.md) |
 | Authorized tasks without preemption | [Shared VM queue](#shared-vm-queue) |
@@ -16,6 +17,16 @@ Named profiles for remote operations, local credential management, and evidence-
 [View a synthetic report preview and credential workflow](https://github.com/YSheldon/ai-productivity-plugins/blob/main/docs/remotex-showcase.md).
 
 ## Recent Versions
+
+Version `0.6.0` adds task-level web approval, including business writes. The local
+human window supports batches, partial approval, lower quotas/output limits,
+shorter lifetimes, and revocation. Typed operations can click observed controls,
+fill exact approved non-secret values, and submit a target-bound workflow.
+Network contracts are finite and default-deny from startup; blocked requests are
+not replayed. Actual resource before/after values and separately approved reads
+support target verification. Legacy content/navigation APIs now return
+`approval-required`. See [Task authorization](docs/web-task-authorization.md)
+for setup prerequisites, supported control shapes, and uncertainty handling.
 
 Version `0.5.12` makes visible Edge login/probe pages follow the actual window
 size instead of a fixed 1280x720 viewport. Same-session observations include

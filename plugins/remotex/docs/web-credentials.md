@@ -1,6 +1,6 @@
 # Web Credentials
 
-RemoteX 0.5.12 provides Windows-only credential management for one HTTPS web origin
+RemoteX 0.6.0 provides Windows-only credential management for one HTTPS web origin
 and account. It uses the existing Windows Credential Manager and visible
 Get-Credential window, plus an isolated Microsoft Edge session. It does not
 read Edge's password database or attach to the user's existing tabs.
@@ -145,7 +145,8 @@ available width and height. It does not change browser zoom, display scaling,
 site CSS, TLS verification, or the isolated-session security boundaries.
 The internal synthetic network canary retains its own deterministic viewport.
 
-`remotex_web_observe` includes bounded read-only `geometry` fields in CSS pixels:
+`remotex_web_components` includes bounded metadata-only `geometry` fields in CSS pixels
+(versions 0.5.11/0.5.12 exposed these through `remotex_web_observe`):
 `viewport` is the current inner width/height, `window` is the outer width/height,
 and `content` measures the configured success region. `mode` is `window` or
 `emulated`, derived from the actual Playwright page configuration. These fields
@@ -159,20 +160,19 @@ start a new owned session after reconnecting the updated MCP process.
 
 ## Same-Session Controlled Operations
 
-After `authenticationVerified=true`, use the following tools with the original
-`session_id` and `requester` in the MCP process that started login:
+After `authenticationVerified=true`, use metadata-only
+`remotex_web_components`, request a local human grant, and call
+`remotex_web_execute` with fresh observed references. Grants cover bounded
+reads, observed navigation/buttons, exact non-secret form values, and scoped
+business workflows. References expire after 30 seconds; nodes, targets, values,
+lease acquisition and request contracts are rechecked. Legacy observation,
+navigation and passive-result tools now return `approval-required`.
 
-| Tool | Output or operation | Boundary |
-| --- | --- | --- |
-| `remotex_web_observe` | Visible text, current route, fresh link references | Success region only; 16,000 text characters, 100 candidate links, no editable/hidden/embedded/canvas content |
-| `remotex_web_navigate` | Preview with `confirm=false`, navigate with `confirm=true` | Fresh observed same-document fragment link only; no caller URL, arbitrary click handler, form, script, or raw HTTP |
-| `remotex_web_read_result` | Passive result-code summaries with timestamps | Last 20 of at most 64 retained responses, never sends a request |
-
-Observation references expire after 30 seconds, are invalidated when the page
-changes, and are consumed by navigation. The DOM node and destination are
-rechecked. Navigation still needs authorization for the destination: a site's
-router can have effects, so this is not a blanket read-only guarantee.
-Read-only acceptance can use observation and passive results without navigation.
+See [Task authorization](web-task-authorization.md) for the tool inventory,
+startup/login contract review, partial approval, write previews, revocation,
+outcome reconciliation, and unsupported cases. A site's label or HTTP method
+does not prove that a control is read-only. Every necessary network sub-item
+also needs its own human approval.
 
 The response projection accepts only root-level `nResult`, `code`, `status`,
 `success`, `total`, and `count` numeric/boolean values from bounded JSON XHR/fetch
@@ -199,7 +199,9 @@ This does not register the isolated window in Codex's supported browser list.
 `webSessionId` is not a browser `tabId`. Existing sessions cannot be adopted by
 another process or version; finish them normally and start a new session after
 reconnecting the affected idle MCP client. Existing profiles, pins, SSH/VM
-configuration and credential references require no migration.
+configuration and credential references require no migration. New sessions add
+finite reviewed startup/login contracts; missing contracts are blocked before
+credential submission, not temporarily allowed for discovery.
 
 This design uses Microsoft's documented
 [Playwright Edge support](https://learn.microsoft.com/en-us/microsoft-edge/playwright/).

@@ -14,6 +14,19 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.6.0
+
+- Added metadata-only component discovery, immutable action preparation, local batch/subset approval, typed execution, execution status/readback, and revocation tools. No model-facing approve API exists.
+- Approved operations can click observed buttons, fill/select/check exact non-secret values, and submit scoped business workflows. Write drafts include stable object identities, observed versions, actual resource before/after values, effect evidence, and bounded request contracts.
+- Added independent network sub-items, target-subset request narrowing, finite request budgets, a short armed dispatch window, and default-deny startup/login/task phases. Unknown requests are aborted, described without credentials, and never replayed.
+- Denied owned top-level documents receive an inert local 403 with restrictive CSP and zero remote transmission. Explicit same-document GET navigation restores the configured fragment without Chromium error-page races or POST reload/replay.
+- Added one-use action-time confirmation for destructive or declared high-risk operations, durable deny-only uncertainty fences, metadata-only authorization audit events, and separately approved table readback. A click or HTTP success is not reported as business completion.
+- Network effects require independent native operator classification rather than inheriting a read label from a button capability. Unresolved writes fence the entire target; scoped helper rejection/expiry and dependency revocation preserve unrelated grants. Output authority is rechecked after outer MCP audit/serialization, and secret-bearing paths/field names never enter pending-request metadata.
+- Credential-bearing control/target metadata cannot become action references or drafts, and route metadata is redacted. Per-credential usage reports resolve current profile hashes so private web auditing does not lose profile attribution.
+- Preserved exact origin/account/certificate binding, isolated credentials, the original supervisor/session, responsive windows, and cooperative queue ownership. Web leases now distinguish reacquisition from renewal without changing SSH/VM lease schemas.
+- Upgrade note: new sessions require reviewed startup/login request contracts. Legacy observe/navigate/result tools return `approval-required`; use the task tools. Existing running sessions are not adopted or interrupted. No shared-profile or credential migration is performed.
+- Initial scope is bounded JSON/form traffic, observed controls, and stable table targets. Ambiguous identities, unsupported selection/encoding, missing semantics, and required but unenforceable server-side compare-and-set fail closed. No center business code is modified.
+
 ## RemoteX 0.5.12
 
 - Fixed the isolated Edge context inheriting Playwright's fixed 1280x720 viewport. Visible login and probe pages now follow the actual browser window without changing browser zoom, system display settings, or site code.

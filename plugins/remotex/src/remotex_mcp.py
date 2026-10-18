@@ -25,7 +25,7 @@ import web_adapter
 
 
 SERVER_NAME = "remotex"
-SERVER_VERSION = "0.5.12"
+SERVER_VERSION = "0.6.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 queue_leases.install_hooks()
 
@@ -253,7 +253,9 @@ def _call_tool(
     if tool_name not in TOOLS:
         raise core.ToolError(f"Unknown tool: {tool_name}")
     handler: Callable[[dict[str, Any]], dict[str, Any]] = TOOLS[tool_name]["handler"]
-    if tool_name == "remotex_audit_export":
+    if tool_name in {"remotex_audit_export","remotex_web_authorization_revoke"}:
+        # The authorization broker records revocation; a blocked generic audit
+        # writer must never prevent the independent cancellation fence.
         return handler(arguments)
     started = time.monotonic()
     operation_id = audit_log.begin(tool_name, arguments, SERVER_VERSION)
@@ -271,7 +273,7 @@ def _call_tool(
         SERVER_VERSION,
         started,
     )
-    return audit_log.attach_metadata(result, operation_id)
+    return web_adapter.checked_output(audit_log.attach_metadata(result, operation_id))
 
 
 def handle_request(message: dict[str, Any]) -> dict[str, Any] | None:
@@ -322,8 +324,27 @@ def handle_request(message: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def send_message(message: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
+    encoded=json.dumps(message,ensure_ascii=False,separators=(",",":"))
+    # Serialization and outer audit may block. This is the final logical release
+    # point; already committed pipe bytes cannot be recalled by later revocation.
+    original=message.get('result')
+    checked=web_adapter.checked_output(original)
+    if checked is not original:
+        message={**message,'result':checked}
+        encoded=json.dumps(message,ensure_ascii=False,separators=(",",":"))
+    sys.stdout.write(encoded + "\n")
     sys.stdout.flush()
+
+
+def _parse_message(line):
+    def unique_pairs(pairs):
+        result={}
+        for key,value in pairs:
+            if key in result:
+                raise ValueError('Ambiguous JSON fields')
+            result[key]=value
+        return result
+    return json.loads(line,object_pairs_hook=unique_pairs)
 
 
 def run_stdio_server() -> None:
@@ -333,9 +354,9 @@ def run_stdio_server() -> None:
         if not line:
             continue
         try:
-            message = json.loads(line)
-        except json.JSONDecodeError as exc:
-            send_message(error_response(None, -32700, f"Parse error: {exc}"))
+            message = _parse_message(line)
+        except ValueError:
+            send_message(error_response(None, -32700, "Invalid or ambiguous JSON"))
             continue
         if not isinstance(message, dict):
             send_message(error_response(None, -32600, "Request must be a JSON object"))

@@ -176,9 +176,14 @@ reading the entire shared config. Upgrade/reconnect all consumers before merging
 new profile kinds into that config. Do not remove trust or identity checks as a
 workaround. A successful credential-presence check is not login proof.
 
-RemoteX 0.5.11 adds three same-session tools without changing the profile schema.
-After reconnecting, check `remotex_web_observe`, `remotex_web_navigate`, and
-`remotex_web_read_result` in the tool inventory. Start a new owned login session;
+RemoteX 0.6.0 adds task-level human approval without changing the profile schema.
+After reconnecting, check `remotex_web_components`, `remotex_web_action_prepare`,
+`remotex_web_authorization_request`, `remotex_web_authorization_status`,
+`remotex_web_execute`, `remotex_web_execution_status`, and
+`remotex_web_authorization_revoke` in the tool inventory. The login-resume tool
+supports reviewed startup contracts. Legacy content/navigation APIs return
+`approval-required`; see [Task authorization](../plugins/remotex/docs/web-task-authorization.md).
+Start a new owned login session;
 do not try to adopt an old process's session or move cookies between windows.
 Confirm supported-browser access through the host before any web operation.
 
@@ -192,8 +197,10 @@ Confirm supported-browser access through the host before any web operation.
 | Queue busy | Join the FIFO queue; do not reuse another requester's identity |
 | Config rejected after upgrade | Check every client reading the shared config for old runtimes |
 | Browser-control request-header policy error | Diagnose the host browser interface separately from site credentials |
-| Isolated Edge not in the browser list | Use RemoteX 0.5.11 same-session tools in the process that started login; a session ID is not a generic tab ID |
-| Page stays at 1280x720 when resizing Edge | Use RemoteX 0.5.12+ and a newly created session; inspect `remotex_web_observe.geometry` to separate viewport behavior from site CSS |
+| Isolated Edge not in the browser list | Use RemoteX task tools in the process that started login; a session ID is not a generic tab ID |
+| Button/form interface absent | Upgrade/reconnect to 0.6.0, discover components, request a local human grant, then use typed execution |
+| `authorization-contract-required` | Inspect blocked descriptor refs, review exact startup/login contracts locally, then resume the same UI; never replay raw requests |
+| Page stays at 1280x720 when resizing Edge | Use a new window-sized session; inspect `remotex_web_components.geometry` to separate viewport behavior from site CSS |
 | Host browser access denied or unknown | Stop web operations; do not use RemoteX, CDP, or shell automation as an alternate route |
 
 Keep installation, runtime readiness, authentication, and production acceptance

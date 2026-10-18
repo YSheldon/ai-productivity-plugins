@@ -72,12 +72,13 @@ class WebControlTests(unittest.TestCase):
         channel.request.assert_not_called()
         channel.close.assert_called_once()
 
-    def test_observation_is_not_persisted_in_audit(self):
+    def test_legacy_observation_cannot_bypass_task_approval_or_persist_content(self):
         channel=self.channel()
         result=web_adapter.observe({'session_id':'a'*32,'requester':'owner'})
-        self.assertIn('private-content',result['content'][0]['text'])
+        self.assertEqual(json.loads(result['content'][0]['text'])['failureCode'],'approval-required')
+        self.assertNotIn('private-content',json.dumps(result))
         self.assertNotIn('private-content',json.dumps(audit_log.summarize_result(result)))
-        channel.request.assert_called_once()
+        channel.request.assert_not_called()
 
     def test_control_rejects_unknown_fields_before_sending(self):
         channel=self.channel()
@@ -86,8 +87,32 @@ class WebControlTests(unittest.TestCase):
                 web_adapter.observe({'session_id':'a'*32,'requester':'owner',field:'private'})
         channel.request.assert_not_called()
 
+    def test_authorization_replaces_static_menu_policy_without_rewriting_config(self):
+        p=self.prepared();self.path.write_text(json.dumps(p.candidate))
+        before=self.path.read_bytes()
+        self.assertNotIn('remotex_web_control_setup',web_adapter.TOOLS)
+        self.assertIn('remotex_web_authorization_request',web_adapter.TOOLS)
+        handler=web_adapter.TOOLS['remotex_web_authorization_request']['handler']
+        invalid=handler({'session_id':'a'*32,'requester':'owner','confirm':True,'menu_actions':[]})
+        self.assertTrue(invalid.get('isError'))
+        self.assertEqual(self.path.read_bytes(),before)
+
 
 class WebChannelTests(unittest.TestCase):
+    def test_authorization_events_are_serviced_without_entering_the_command_lock(self):
+        import web_channel
+        request={'phase':'discovery-only','attempt_id':None,'descriptor':{'method':'POST','path':'/inter'},'digest':'c'*64}
+        event={'event':'authorization-check','id':'a'*32,'request':request}
+        process=mock.Mock(stdin=io.BytesIO(),stdout=io.BytesIO((json.dumps(event)+'\n').encode()),poll=lambda:None)
+        channel=web_channel.Channel(process,mock.Mock(),profile='p',requester='r',resource='q',deadline=1,config={})
+        received=[]
+        channel.authorize=lambda value:received.append(value) or False
+        with channel._lock:
+            channel._read()
+        self.assertEqual(received,[request])
+        frames=[json.loads(line) for line in process.stdin.getvalue().splitlines()]
+        self.assertEqual(frames,[{'authorization_reply':'a'*32,'allowed':False}])
+
     def test_supervisor_waits_for_concurrent_channel_termination_before_closing_job(self):
         import web_channel
         import threading

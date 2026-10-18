@@ -9,7 +9,7 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 import audit_log
@@ -106,11 +106,12 @@ def _category(tool: str) -> str:
     return "other"
 
 
-def _operations(records: list[dict[str, Any]], now: datetime, coverage: dict[str, Any]) -> list[dict[str, Any]]:
+def _operations(records: list[dict[str, Any]], now: datetime, coverage: dict[str, Any], *, profile_names: Iterable[str] = ()) -> list[dict[str, Any]]:
     starts: dict[str, dict[str, Any]] = {}
     finishes: dict[str, dict[str, Any]] = {}
     counts = {"duplicateStarts": 0, "duplicateFinishes": 0, "invalidRecords": 0}
     times = []
+    profile_hashes={hashlib.sha256(name.encode('utf-8')).hexdigest():name for name in profile_names}
     for entry in records:
         time = _time(entry.get("timestamp"))
         identifier = entry.get("operationId")
@@ -128,6 +129,12 @@ def _operations(records: list[dict[str, Any]], now: datetime, coverage: dict[str
                 counts["invalidRecords"] += 1
                 continue
             profile = request.get("profile")
+            if profile is None:
+                profile_hash=request.get('profileSha256')
+                if isinstance(profile_hash,str):
+                    profile=profile_hashes.get(profile_hash)
+                elif profile_hash is not None:
+                    counts['invalidRecords']+=1
             if profile is not None and not isinstance(profile, str):
                 counts["invalidRecords"] += 1
                 profile = None
@@ -354,7 +361,7 @@ def build_report(args: dict[str, Any]) -> dict[str, Any]:
     if requested_ref and requested_ref not in bundle.data.get("credentials", {}):
         raise core.ToolError("Usage report credential_ref not found")
     records, audit = _audit_snapshot()
-    operations = _operations(records, now, audit)
+    operations = _operations(records, now, audit, profile_names=profiles)
     queue, leases, receipt_state = _state_snapshot()
     receipts, invalid_receipts = _receipt_index(receipt_state, now)
     known_resources = set(queue["resources"]) | set(leases["leases"]) | {

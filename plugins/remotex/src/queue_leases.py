@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import secrets
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -76,6 +78,8 @@ def _load(path: Path) -> dict[str, Any]:
         _parse_timestamp(record.get("issuedAt"), f"leases.{resource}.issuedAt")
         _parse_timestamp(record.get("expiresAt"), f"leases.{resource}.expiresAt")
         _lease_seconds(record.get("leaseSeconds"))
+        if "acquisitionId" in record and (not isinstance(record["acquisitionId"],str) or re.fullmatch(r'[a-f0-9]{32}',record["acquisitionId"]) is None):
+            raise core.ToolError("Web queue acquisition identity is invalid")
     return payload
 
 
@@ -256,6 +260,11 @@ def _set_lease(
         "leaseSeconds": seconds,
     }
     with _locked() as (path, state):
+        if resource.startswith('web:'):
+            previous=state['leases'].get(resource)
+            retain=bool(previous and previous['requester']==requester and event in {'lease-renewed','lease-heartbeat'}
+                and _parse_timestamp(previous['expiresAt'],'expiresAt')>now and previous.get('acquisitionId'))
+            record['acquisitionId']=previous['acquisitionId'] if retain else secrets.token_hex(16)
         state["leases"][resource] = record
         _event(state, event, resource, requester, expiresAt=record["expiresAt"])
         _write(path, state)

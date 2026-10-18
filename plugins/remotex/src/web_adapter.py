@@ -24,13 +24,16 @@ import secure_paths
 import vm_queue
 import web_policy
 import web_channel
+import web_authorization
+import web_authorization_store
+import web_task_service
 
 
 PLAYWRIGHT_VERSION = "1.62.1"
 PLUGIN = Path(__file__).resolve().parents[1]
 STATE_FIELDS = {"state","loginSubmitted","authenticationVerified","failureCode","updatedAt"}
 STATES = {"starting","opening","ready","submitted","verified","needs-user-check","failed","closed"}
-FAILURES = {None,"invalid-job","origin-blocked","redirect-blocked","tls-or-navigation-failed","certificate-pin-mismatch","certificate-validity-failed","request-too-large","response-too-large","form-unavailable","login-flow-failed","network-guard-failed","unsupported-transport","lease-no-longer-covers-session"}
+FAILURES = {None,"invalid-job","origin-blocked","redirect-blocked","tls-or-navigation-failed","certificate-pin-mismatch","certificate-validity-failed","request-too-large","response-too-large","form-unavailable","login-flow-failed","network-guard-failed","unsupported-transport","lease-no-longer-covers-session","authorization-contract-required"}
 _CHANNELS: dict[str, web_channel.Channel] = {}
 _CHANNELS_LOCK = threading.Lock()
 
@@ -379,6 +382,18 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
             process.stdin.flush()
             del packet, secret
             channel = web_channel.Channel(process,job,profile=name,requester=requester,resource=resource,deadline=deadline,config=raw)
+            channel.worker_identity=uuid.uuid4().hex
+            monotonic_deadline=time.monotonic()+max(0,deadline/1000-time.time())
+            with queue_leases._locked() as (_,leases):
+                acquisition=(leases['leases'].get(resource) or {}).get('acquisitionId')
+            if not acquisition:
+                raise core.ToolError('Renew the web queue lease before using task authorization')
+            binding={'origin':raw['origin'],'account':raw['account'],'profile':name,'session':identifier,
+                'worker':channel.worker_identity,'acquisition':acquisition,
+                'profile_digest':web_authorization.digest([raw,reference.reference_dict()]),'deadline':monotonic_deadline}
+            channel.authorization=web_task_service.Service(channel,binding=binding,
+                check=lambda:_authorization_binding(channel,identifier,monotonic_deadline),
+                journal=web_authorization_store.Journal(state_root()/'authorization'))
             with _CHANNELS_LOCK:
                 _CHANNELS[identifier] = channel
             channel.start()
@@ -419,13 +434,10 @@ def session_status(args: dict[str, Any]) -> dict[str, Any]:
     return core.tool_result(result)
 
 
-def _control(args: dict[str, Any], operation: str, extra: set[str]) -> dict[str, Any]:
-    if set(args) != {'session_id','requester'} | extra:
-        raise core.ToolError('Pass only the declared same-session control fields')
-    identifier = args['session_id']
+def _owned_channel(identifier, requester):
     if not isinstance(identifier,str) or re.fullmatch(r'[a-f0-9]{32}',identifier) is None:
         raise core.ToolError('Invalid web session ID')
-    requester = vm_queue.validate_requester(args['requester'])
+    requester = vm_queue.validate_requester(requester)
     with _CHANNELS_LOCK:
         channel = _CHANNELS.get(identifier)
     if channel is None:
@@ -445,11 +457,78 @@ def _control(args: dict[str, Any], operation: str, extra: set[str]) -> dict[str,
         if current != channel.config:
             channel.close()
             raise core.ToolError('Web configuration changed; close this session and probe the current configuration')
-        result = channel.request(operation,{key:args[key] for key in extra})
-    output = core.tool_result({**result,'webSessionId':identifier})
-    if result.get('ok') is not True:
-        output['isError'] = True
-    return output
+    # Do not hold the queue's operation lock while waiting for worker permit IPC.
+    return channel
+
+
+def _authorization_binding(channel, identifier, deadline):
+    _owned_channel(identifier,channel.requester)
+    _, current, bundle=core.select_profile('web',channel.profile)
+    reference=credential_store.resolve_profile_reference(bundle,channel.profile,current,'web')
+    with queue_leases._locked() as (_,leases):
+        acquisition=(leases['leases'].get(channel.resource) or {}).get('acquisitionId')
+    if not channel.available or not acquisition:
+        raise web_authorization.ScopeError('session-unavailable')
+    return {'origin':current['origin'],'account':current['account'],'profile':channel.profile,'session':identifier,
+        'worker':channel.worker_identity,'acquisition':acquisition,
+        'profile_digest':web_authorization.digest([current,reference.reference_dict()]),'deadline':deadline}
+
+
+def _control(args: dict[str, Any], operation: str, extra: set[str]) -> dict[str, Any]:
+    if set(args) != {'session_id','requester'} | extra:
+        raise core.ToolError('Pass only the declared same-session control fields')
+    _owned_channel(args['session_id'],args['requester'])
+    return {**core.tool_result({'ok':False,'failureCode':'approval-required',
+        'nextStep':'use-components-authorization-request-and-execute','webSessionId':args['session_id']}),'isError':True}
+
+
+def _task_call(args, operation, required=(), optional=()):
+    try:
+        base={'session_id','requester'}
+        if not isinstance(args,dict) or set(args)-(base|set(required)|set(optional)) or not base|set(required)<=set(args):
+            raise web_authorization.ScopeError('request-invalid')
+        channel=_owned_channel(args['session_id'],args['requester'])
+        service=getattr(channel,'authorization',None)
+        if not isinstance(service,web_task_service.Service):
+            raise web_authorization.ScopeError('new-owned-session-required')
+        payload={key:value for key,value in args.items() if key not in base}
+        if operation=='components':
+            result=service.components()
+        elif operation=='prepare':
+            result=service.prepare(payload)
+        elif operation=='request':
+            result=service.request(payload)
+        elif operation=='status':
+            result=service.status(payload.get('request_id'))
+        elif operation=='execute':
+            result=service.execute(payload)
+        elif operation=='execution-status':
+            result=service.execution_status(payload)
+        elif operation=='revoke':
+            result=service.revoke(payload)
+        elif operation=='resume-login':
+            result=service._worker('resume-login',{})
+        else:
+            raise web_authorization.ScopeError('request-invalid')
+        output=core.tool_result({'ok':True,**result,'webSessionId':args['session_id']})
+        guard=service.guard_output(operation,payload,result)
+        return web_authorization.GuardedResult(output,guard) if guard is not None else output
+    except web_authorization.ScopeError as exc:
+        return {**core.tool_result({'ok':False,'failureCode':exc.code}),'isError':True}
+    except Exception:
+        return {**core.tool_result({'ok':False,'failureCode':'session-unavailable'}),'isError':True}
+
+
+def checked_output(result):
+    if not isinstance(result,web_authorization.GuardedResult):
+        return result
+    try:
+        result.check_authority()
+        return result
+    except web_authorization.ScopeError as exc:
+        return {**core.tool_result({'ok':False,'failureCode':exc.code}),'isError':True}
+    except Exception:
+        return {**core.tool_result({'ok':False,'failureCode':'session-unavailable'}),'isError':True}
 
 
 def observe(args: dict[str, Any]) -> dict[str, Any]:
@@ -503,3 +582,65 @@ TOOLS = {
     "remotex_web_session_status":{"description":"Read sanitized Edge login state without exposing DOM, screenshots, cookies or credentials.","inputSchema":_schema({"session_id":{"type":"string"}},["session_id"]),"handler":session_status},
     "remotex_web_session_close":{"description":"Request closure of this requester's RemoteX-owned Edge session. Read back closed state before releasing its queue lease.","inputSchema":_schema({"session_id":{"type":"string"},"requester":{"type":"string"},"confirm":{"type":"boolean"}},["session_id","requester","confirm"]),"handler":close_session},
 }
+
+
+_ID={'type':'string','pattern':'^[a-f0-9]{32}$'}
+_TEXT={'type':'string','minLength':1,'maxLength':128}
+_REFS={'type':'array','items':_ID,'maxItems':32,'uniqueItems':True}
+_EVIDENCE={'type':'array','minItems':1,'maxItems':8,'items':_schema({
+    'kind':{'type':'string','enum':['source-review','api-document','verified-record','operator-inspected']},
+    'reference':{'type':'string','minLength':1,'maxLength':512}},['kind','reference'])}
+_LITERAL={'type':['string','boolean','integer']}
+_ITEM=_schema({'item_id':_TEXT,'capability':{'type':'string','enum':sorted(web_authorization.CAPABILITIES)},
+    'observation_id':_ID,'component_ref':_ID,'max_uses':{'type':'integer','minimum':1,'maximum':50},
+    'depends_on':{'type':'array','items':_TEXT,'maxItems':32,'uniqueItems':True},
+    'parameters':_schema({'action':{'type':'string','enum':['fill','select','check']},'value':_LITERAL},[]),
+    'limits':_schema({'rows':{'type':'integer','minimum':0,'maximum':100},
+        'columns':{'type':'integer','minimum':0,'maximum':30},'bytes':{'type':'integer','minimum':0,'maximum':98304}},[]),
+    'network_refs':_REFS,'network_evidence':_EVIDENCE,'action_draft_ref':_ID},
+    ['item_id','capability','observation_id','component_ref'])
+_EFFECT=_schema({'kind':{'type':'string','enum':['create','update','delete','assign','command','cancel','compensate']},
+    'name':{'type':'string','maxLength':160},'risks':{'type':'array','items':{'type':'string','enum':[
+        'irreversible','weakens-protection','expands-access','availability','inherited-policy','external-concurrency']},'maxItems':6,'uniqueItems':True},
+    'fields':{'type':'array','items':_TEXT,'minItems':1,'maxItems':30},'evidence':_EVIDENCE,
+    'requires_cas':{'type':'boolean'}},['kind','name','risks','fields','evidence'])
+_TASKS={
+    'remotex_web_components':('components',{},[],
+        'Discover bounded component metadata in the original authenticated Edge session; not page content or authority. Requires current supported host browser access.'),
+    'remotex_web_action_prepare':('prepare',{'observation_id':_ID,'component_ref':_ID,
+        'target_refs':{'type':'array','items':_ID,'minItems':1,'maxItems':100,'uniqueItems':True},'read_receipts':_REFS,
+        'changes':{'type':'array','maxItems':30,'items':_schema({'component_ref':_ID,'receipt_ref':_ID,
+            'value':_LITERAL,'action':{'type':'string','enum':['fill','select','check']}},['component_ref','receipt_ref','value','action'])},
+        'effect':_EFFECT,'network_refs':_REFS,
+        'target_state':{'type':'object','additionalProperties':_schema({'header':{'type':'string','minLength':1,'maxLength':160},
+            'after':_LITERAL},['header','after'])},
+        'network_bindings':{'type':'array','maxItems':32,'items':_schema({
+            'network_ref':_ID,'target_path':{'type':'array','items':_TEXT,'minItems':2,'maxItems':8},
+            'change_paths':{'type':'object','additionalProperties':{'type':'array','items':_TEXT,'minItems':2,'maxItems':8}}},
+            ['network_ref','target_path','change_paths'])}},
+        ['observation_id','component_ref','target_refs','read_receipts','changes','effect','network_refs'],
+        'Prepare an immutable write preview from approved reads and observed controls. Does not change the page or send requests. Show actual targets and before/after values before requesting real business writes.'),
+    'remotex_web_authorization_request':('request',{'items':{'type':'array','items':_ITEM,'minItems':1,'maxItems':32},
+        'setup':_schema({'phase':{'type':'string','enum':['bootstrap','login-once']},'network_refs':_REFS,'evidence':_EVIDENCE,
+            'max_uses':{'type':'integer','minimum':1,'maximum':10}},['phase','network_refs','evidence']),
+        'idempotency_key':_TEXT,'ttl_seconds':{'type':'integer','minimum':60,'maximum':900}},['idempotency_key'],
+        'Request a batch of exact observed operations OR blocked startup contracts through the local human approval window. Never self-approves. Network sub-items can be rejected separately. No credentials or raw requests accepted.'),
+    'remotex_web_authorization_status':('status',{'request_id':_ID},[],
+        'Read decisions, expiry, quotas and blocked network descriptor metadata. No approval or request transmission.'),
+    'remotex_web_execute':('execute',{'grant_id':_ID,'item_id':_TEXT,'idempotency_key':_TEXT,
+        'observation_id':_ID,'component_ref':_ID},['grant_id','item_id','idempotency_key','observation_id','component_ref'],
+        'Execute one human-approved typed operation once using fresh observed references. May click approved buttons, fill exact non-secret fields and submit a scoped business workflow. Never retries uncertain writes; inspect the original attempt instead.'),
+    'remotex_web_execution_status':('execution-status',{'attempt_id':_ID,'read_receipts':_REFS},['attempt_id'],
+        'Read the original attempt without replaying it. Optional fresh approved table-read receipts reconcile actual per-target desired state; no success flag or raw data accepted. A click or HTTP success is not business verification.'),
+    'remotex_web_authorization_revoke':('revoke',{'request_id':_ID,'grant_id':_ID,
+        'items':{'type':'array','items':_TEXT,'maxItems':32,'uniqueItems':True},'end_task':{'type':'boolean'}},[],
+        'Cancel one own pending request, revoke a grant or selected items, or end task authority. Concurrent effects are fenced; already accepted server work cannot be undone.'),
+    'remotex_web_login_resume':('resume-login',{},[],
+        'Resume the same owned login page after local approval of exact blocked startup contracts. Never replays HTTP packets or resubmits a potentially transmitted authentication exchange. Requires current supported host browser access.'),
+}
+
+for _name,(_operation,_properties,_required,_description) in _TASKS.items():
+    TOOLS[_name]={'description':_description,'inputSchema':_schema({
+        'session_id':_ID,'requester':_TEXT,**_properties},['session_id','requester',*_required]),
+        'handler':lambda args,op=_operation,required=tuple(_required),optional=tuple(set(_properties)-set(_required)):
+            _task_call(args,op,required,optional)}

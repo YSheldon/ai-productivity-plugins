@@ -13,8 +13,9 @@ class WebBrowserIntegrationTests(unittest.TestCase):
         node = shutil.which("node")
         self.assertIsNotNone(node, "Node.js is required for RemoteX browser tests")
         plugin = Path(__file__).resolve().parents[1]
-        result = subprocess.run([node,"--test",str(plugin / "tests" / "web_login_worker.test.mjs"), str(plugin / "tests" / "web_tls.test.mjs"), str(plugin / "tests" / "web_control.test.mjs")],
-            cwd=plugin,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=120)
+        suites=sorted((plugin/'tests').glob('web_*.test.mjs'))
+        result = subprocess.run([node,"--test",*(str(suite) for suite in suites)],
+            cwd=plugin,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=240)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
 
 

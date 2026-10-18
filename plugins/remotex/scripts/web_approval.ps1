@@ -5,6 +5,18 @@ $script:approved = $false
 $script:loadingTargets = $false
 $script:selectedId = $null
 $script:targetSelections = @{}
+$script:manifestValidated = $false
+$script:uiShown = $false
+$script:uiCloseReason = 'window-closed'
+
+function Send-UiReceipt([string]$eventName, [string]$reason) {
+    if (-not $script:manifestValidated) { return }
+    try {
+        $frame = [ordered]@{ event = $eventName; request_id = $manifest.request_id; nonce = $manifest.nonce; request_digest = $manifest.request_digest; reason = $reason }
+        [Console]::Error.WriteLine(($frame | ConvertTo-Json -Compress))
+        [Console]::Error.Flush()
+    } catch { }
+}
 
 try {
     if (-not [Environment]::UserInteractive) { exit 1 }
@@ -13,6 +25,7 @@ try {
     $script:manifest = $line | ConvertFrom-Json
     if ($manifest.request_id -notmatch '^[a-f0-9]{32}$' -or $manifest.nonce -notmatch '^[a-f0-9]{64}$' -or $manifest.request_digest -notmatch '^[a-f0-9]{64}$') { exit 1 }
     if (@($manifest.items).Count -gt 32) { exit 1 }
+    $script:manifestValidated = $true
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [Windows.Forms.Application]::EnableVisualStyles()
@@ -194,20 +207,22 @@ try {
         $form.Text = 'RemoteX Authorization Active - Revoke to stop'
         $heading.Text = $contextHeading + "`r`n" + (Get-ApprovalReviewText -WaitSeconds $manifest.wait_seconds -ElapsedSeconds 0 -Decided $true -Approved $true)
     })
-    $rejectButton.Add_Click({ Send-Frame 'decision' @() 1; $script:decided = $true; $form.Close() })
+    $rejectButton.Add_Click({ $script:uiCloseReason = 'operator-rejected'; Send-Frame 'decision' @() 1; $script:decided = $true; $form.Close() })
     $revokeButton.Add_Click({ $form.Close() })
-    $form.Add_FormClosing({ if ($script:approved) { Send-Frame 'revoke' @() 1 } })
+    $form.Add_FormClosing({ if ($script:approved) { $script:uiCloseReason = 'operator-revoked'; Send-Frame 'revoke' @() 1 } })
+    $form.Add_FormClosed({ Send-UiReceipt 'closed' $script:uiCloseReason })
     $timer = New-Object Windows.Forms.Timer
     $timer.Interval = 500
     $started = [Diagnostics.Stopwatch]::StartNew()
     $timer.Add_Tick({
         $heading.Text = $contextHeading + "`r`n" + (Get-ApprovalReviewText -WaitSeconds $manifest.wait_seconds -ElapsedSeconds $started.Elapsed.TotalSeconds -Decided $script:decided -Approved $script:approved)
-        if (-not $script:decided -and $started.Elapsed.TotalSeconds -ge [int]$manifest.wait_seconds) { $form.Close() }
+        if (-not $script:decided -and $started.Elapsed.TotalSeconds -ge [int]$manifest.wait_seconds) { $script:uiCloseReason = 'review-expired'; $form.Close() }
     })
     $timer.Start()
-    $form.Add_Shown({ $grid.ClearSelection(); if ($grid.Rows.Count -gt 0) { $grid.Rows[0].Selected = $true }; $form.Activate() })
+    $form.Add_Shown({ $grid.ClearSelection(); if ($grid.Rows.Count -gt 0) { $grid.Rows[0].Selected = $true }; $script:uiShown = $true; Send-UiReceipt 'shown' 'shown'; $form.Activate() })
     $null = $form.ShowDialog()
     $timer.Stop(); $timer.Dispose(); $form.Dispose()
 } catch {
+    Send-UiReceipt 'error' $(if ($script:uiShown) { 'helper-ui-failed' } else { 'helper-startup-failed' })
     exit 1
 }

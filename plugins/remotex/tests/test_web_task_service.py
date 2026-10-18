@@ -37,6 +37,9 @@ def prepared():
             return Prompt()
         def stop(self):
             pass
+        def status(self):
+            return {'state':'starting','shown':False,'review_remaining_seconds':120,
+                    'exit_reason':None,'error_code':None,'helper_exit_code':None}
     channel = Channel()
     service = web_task_service.Service(channel, binding=binding, check=lambda:copy.deepcopy(binding),
         journal=MemoryJournal(), prompt=Prompt, clock=lambda:100.0)

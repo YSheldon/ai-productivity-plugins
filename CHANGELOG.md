@@ -14,6 +14,13 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.6.4
+
+- Added nonce/digest-bound `shown`, `closed` and fixed-code `error` receipts on the native helper's private stderr pipe. Diagnostic frames cannot approve, revoke, replay or extend authority; the stdout decision/revocation protocol is unchanged.
+- Authorization request/status and action-confirmation status now include `approval_ui`: lifecycle state, shown history, remaining review seconds, exit reason, fixed error code and helper exit code. Remaining time is capped by the original broker deadline; showing a window never restarts the 120-second review.
+- Distinguish review expiry, operator rejection/revocation, unclassified helper exit and startup/UI errors without exporting raw PowerShell errors, manifests or credentials. A shown receipt is not proof of foreground or physical human presence.
+- Added real private-pipe/native lifecycle and malformed-receipt regressions. No display positioning, desktop/focus policy, origin/pin, queue, credential or center business-code changes. Existing authorization and business-write boundaries remain intact.
+
 ## RemoteX 0.6.3
 
 - Expired or cancelled private authorization checks remain denied. A bounded, deny-only ID cache consumes their one late reply instead of treating it as a UI command; unknown and malformed traffic still fails closed.

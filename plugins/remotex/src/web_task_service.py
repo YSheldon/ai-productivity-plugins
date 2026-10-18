@@ -65,6 +65,18 @@ class Service:
         self._check_receipts(args)
         return self._worker('prepare-action', args)
 
+    def _ui_result(self, result, identity):
+        prompt=self.prompts.get(identity)
+        if prompt is None:
+            return result
+        ui=prompt.status()
+        review=self.broker.requests.get(identity) or self.broker.attempts.get(identity)
+        remaining=max(0,int(review['review_deadline']-self.broker.clock())) if review else 0
+        if not review or review['state'] not in {'pending','awaiting-action-confirmation'}:
+            remaining=0
+        ui['review_remaining_seconds']=min(ui['review_remaining_seconds'],remaining)
+        return {**result,'approval_ui':ui}
+
     def request(self, args):
         if not isinstance(args, dict) or set(args)-{'items','setup','idempotency_key','ttl_seconds'}:
             raise ScopeError('request-invalid')
@@ -76,7 +88,7 @@ class Service:
                                      ttl_seconds=args.get('ttl_seconds',300))
         request_id = result['request_id']
         if request_id in self.contexts:
-            return result
+            return self._ui_result(result,request_id)
         contracts = resolved.get('contracts', {})
         if not isinstance(contracts,dict) or len(canonical(contracts))>65536:
             raise ScopeError('request-invalid')
@@ -90,7 +102,7 @@ class Service:
         except Exception:
             self._prompt_revoked(request_id)
             raise ScopeError('approval-ui-unavailable') from None
-        return result
+        return self._ui_result(result,request_id)
 
     def _decision(self, request_id, frame):
         result = self.broker.accept_decision(request_id, nonce=frame['nonce'],
@@ -155,7 +167,7 @@ class Service:
         result['phase']=network.get('phase')
         if result['phase'] in {'discovery-only','grant-active'}:
             self._retire_startup()
-        return result
+        return self._ui_result(result,request_id) if request_id else result
 
     def _authorize(self, message):
         try:
@@ -258,9 +270,9 @@ class Service:
                         on_decision=lambda frame:self._action_decision(attempt_id,frame),
                         on_revoke=lambda:self._action_revoked(attempt_id),
                         on_cancel=lambda:self._action_revoked(attempt_id))
-                return self.broker.execution_status(attempt_id)
+                return self._ui_result(self.broker.execution_status(attempt_id),attempt_id)
             if attempt['state']!='reserved':
-                return self.broker.execution_status(attempt_id)
+                return self._ui_result(self.broker.execution_status(attempt_id),attempt_id)
             self.executing.add(attempt_id)
             try:
                 output = self._worker('execute', {'attempt_id':attempt_id,'scope':attempt['scope'],
@@ -294,7 +306,7 @@ class Service:
         if not isinstance(args,dict) or 'attempt_id' not in args or set(args)-{'attempt_id','read_receipts'}:
             raise ScopeError('request-invalid')
         if 'read_receipts' not in args:
-            return self.broker.execution_status(args['attempt_id'])
+            return self._ui_result(self.broker.execution_status(args['attempt_id']),args['attempt_id'])
         self.broker._valid()
         attempt=self.broker.attempts.get(args['attempt_id'])
         if not attempt or not attempt['write'] or attempt['state'] not in {'partial','outcome-unknown','accepted','running'}:

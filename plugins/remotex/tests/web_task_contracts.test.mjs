@@ -8,6 +8,26 @@ const descriptor={method:'POST',path:'/dispatch',query:{},contentType:'applicati
   body:{cmd:'move',ids:['host-one'],group:'New Group'},resourceType:'xhr'};
 const proof=[{kind:'operator-inspected',reference:'Reviewed synthetic handler only'}];
 
+test('revision2 exact init purpose keeps legacy Bootstrap POST denied',()=>{
+  const post={...descriptor,body:{cmd:'database_info'}};
+  const network={phase:'bootstrap',preauthLifecycle:'a'.repeat(32),resolve:()=>post};
+  const setup={revision:2,phase:'bootstrap',requests:[{network_ref:'b'.repeat(32),
+    purpose:'initialization-read',max_uses:2,evidence:proof,
+    response_checks:[{pointer:'/exist',test:'equals-boolean',expected:true}]}],replace_grant_ids:[]};
+  const result=setupContracts(setup,network),contract=result.contracts['setup.network.1'];
+  assert.equal(result.setup_revision,2);assert.equal(contract.semantics,'initialization-read');
+  assert.deepEqual(contract.phase_applicability,['bootstrap','login-once']);
+  assert.equal(contract.required,true);assert.equal(contract.preauth_lifecycle,'a'.repeat(32));
+  assert.equal(result.items[0].parameters.review_kind,'initialization-read');
+  assert.throws(()=>setupContracts({phase:'bootstrap',network_refs:['a'],evidence:proof},network));
+  for(const changed of [{...setup,network_refs:['a']},{...setup,revision:3},
+    {...setup,phase_applicability:['grant-active']},
+    {...setup,requests:[{...setup.requests[0],purpose:'bootstrap-resource'}]},
+    {...setup,requests:[setup.requests[0],setup.requests[0]]},
+    {...setup,replace_grant_ids:['c'.repeat(32),'c'.repeat(32)]}])
+    assert.throws(()=>setupContracts(changed,network));
+});
+
 test('bootstrap contracts never authorize business requests or credential submission',()=>{
   const network={phase:'bootstrap',resolve:()=>descriptor};
   assert.throws(()=>setupContracts({phase:'bootstrap',network_refs:['a'],evidence:proof},network),/request-contract-unavailable/);

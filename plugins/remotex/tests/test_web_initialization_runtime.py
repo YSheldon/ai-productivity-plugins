@@ -42,6 +42,16 @@ def test_probe_diagnostics_do_not_include_arbitrary_process_output():
     assert probe_stages(b'private-canary\nprotocol-probe: forms\nprivate-canary')==['protocol-probe: forms']
 
 
+@pytest.mark.skipif(os.name!='nt',reason='Windows native module admission')
+def test_native_protocol_does_not_depend_on_automatic_module_discovery():
+    result=subprocess.run([web_adapter.credential_store._powershell_path(),'-NoLogo','-NoProfile',
+        '-NonInteractive','-STA','-File',str(Path(__file__).with_name('Test-WebApprovalProtocol.ps1'))],
+        stdin=subprocess.DEVNULL,capture_output=True,text=True,encoding='utf-8',timeout=10,
+        env=web_adapter.credential_store._setup_environment(),creationflags=subprocess.CREATE_NO_WINDOW)
+    assert result.returncode==0,probe_stages(result.stderr)
+    assert json.loads(result.stdout)==web_adapter.V3_NATIVE_PROTOCOL
+
+
 def test_v3_admission_requires_actual_worker_and_native_protocol_readbacks(monkeypatch):
     assert callable(getattr(web_adapter,'_admit_v3_components',None)), 'Missing mixed-component admission'
     worker={'setup_revisions':[1,2,3],'profiles':['json-utf8-v1','form-utf8-v1','form-json-name-view-v1'],

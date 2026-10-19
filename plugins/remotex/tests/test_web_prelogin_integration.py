@@ -14,6 +14,8 @@ import pytest
 
 PLUGIN=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(PLUGIN/'src'))
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from remotex_partial_order import PartialOrder
 import audit_log
 import execution
 import secure_paths
@@ -26,11 +28,11 @@ from web_authorization import ScopeError
 SECRET='synthetic-prelogin-only-canary'
 
 @pytest.mark.skipif(os.name!='nt',reason='Original Windows job and real Edge integration')
-@pytest.mark.parametrize('mode',['complete','partial','late-auth','late-revoke','replace-complete','replace-pending'],
-    ids=['complete','partial-blocks-login','late-auth-no-replay','late-auth-revocation',
+@pytest.mark.parametrize('mode',['complete','partial','partial-deny-first','late-auth','late-revoke','replace-complete','replace-pending'],
+    ids=['complete','partial-blocks-login','partial-denial-cancels-late-permit','late-auth-no-replay','late-auth-revocation',
         'new-document-clears-ready','new-document-rejects-delayed-response'])
 def test_original_supervisor_initialization_replacement_login_and_read(tmp_path,mode):
-    partial=mode=='partial'
+    partial=mode in {'partial','partial-deny-first'}
     node=shutil.which('node');assert node
     site=tmp_path/'site';site.mkdir()
     server=subprocess.Popen([node,str(PLUGIN/'tests/fixtures/web_initialization_worker.mjs'),str(site),
@@ -145,12 +147,18 @@ def test_original_supervisor_initialization_replacement_login_and_read(tmp_path,
             assert channel.available is False
             assert service.startup.authentication_forwarded==0
             return
+        order=PartialOrder(channel,deny_first=mode=='partial-deny-first') if partial else None
         service._worker('resume-login',{})
+        if mode=='partial-deny-first':order.release_late()
         status=service.status();public.append(status)
+        if order:order.finish()
         assert status['initialization']['required']==3
         assert stats()['logins']==0
         if partial:
-            assert status['initialization']['ready']==2
+            assert status['initialization']['ready']==(1 if mode=='partial-deny-first' else 2)
+            assert status['initialization']['pending']==0
+            assert stats()['initialization']==(1 if mode=='partial-deny-first' else 2)
+            assert channel.available and service.startup.authentication_forwarded==0
             assert json.loads((directory/'state.json').read_text())['loginSubmitted'] is False
         else:
             assert status['initialization']['ready']==3

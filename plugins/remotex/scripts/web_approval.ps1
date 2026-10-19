@@ -1,6 +1,10 @@
 param([switch]$DescribeProtocol)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# Use the known system modules without hosted PowerShell's automatic discovery.
+foreach ($name in @('Microsoft.PowerShell.Management','Microsoft.PowerShell.Utility')) {
+    Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules',$name,($name + '.psd1'))) -ErrorAction Stop
+}
 if ($DescribeProtocol) {
     try {
         [Console]::Error.WriteLine('protocol-probe: forms')

@@ -99,6 +99,23 @@ class WebControlTests(unittest.TestCase):
 
 
 class WebChannelTests(unittest.TestCase):
+    def test_v3_checks_cannot_use_legacy_boolean_permission_or_larger_channel_budget(self):
+        import web_channel
+        sys.path.insert(0,str(Path(__file__).resolve().parent))
+        from remotex_v3_support import sample_capture
+        base={'kind':'network','version':3,'phase':'bootstrap','attempt_id':None,'capture':sample_capture(),
+            'startup':{'preauth_lifecycle':'b'*32,'resume_id':'c'*32,'document_id':'d'*32,'generation':1}}
+        for request,expected_calls in [(base,1),({**base,'padding':'x'*32768},0),({**base,'version':4},0)]:
+            event={'event':'authorization-check','id':'a'*32,'request':request}
+            process=mock.Mock(stdin=io.BytesIO(),stdout=io.BytesIO((json.dumps(event)+'\n').encode()),poll=lambda:None)
+            channel=web_channel.Channel(process,mock.Mock(),profile='p',requester='r',resource='q',deadline=1,
+                config={'origin':'https://fixture.example'})
+            callback=mock.Mock(return_value=True);channel.authorize_network=callback
+            channel._read()
+            self.assertEqual(callback.call_count,expected_calls)
+            frames=[json.loads(line) for line in process.stdin.getvalue().splitlines()]
+            self.assertTrue(not frames or frames==[{'authorization_reply':'a'*32,'allowed':False}])
+
     def test_static_batch_callback_returns_one_independent_private_reply_per_id(self):
         import web_channel
         checks=[{'id':'a'*32,'request':{'kind':'network'}},{'id':'b'*32,'request':{'kind':'network'}}]

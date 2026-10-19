@@ -71,9 +71,18 @@ flowchart LR
 2. Preview an HTTPS profile, account identifier, and credential alias. Confirm the scope before opening the local password window.
 3. Use normal system TLS trust. For a private endpoint, a user may explicitly approve its exact origin and a trusted-channel-verified leaf certificate SHA-256 pin.
 4. Run the credential-free probe. A wrong, expired, or not-yet-valid pinned certificate blocks HTTP transmission.
-5. Acquire the local queue for the authorized operation and start isolated Edge. Review exact static scopes locally. In 0.6.8, required pre-login JSON/form POSTs need distinct Initialization Read approval, trustworthy handler/effect evidence and bounded response checks before any credential insertion.
+5. Acquire the local queue for the authorized operation and start isolated Edge. Review exact static scopes locally. Required pre-login JSON/form POSTs need distinct Initialization Read approval, trustworthy handler/effect evidence and bounded response checks before any credential insertion. In 0.6.9, v3-only observations require complete independent public references and non-auth/effect review in the native panel; no business interface is hardcoded.
 6. Explicitly resume after approval; only after readiness obtain separate observed Login approval and submit once. Distinguish `submitted`, `needs-user-check`, and `verified`; current host browser permission remains mandatory.
 7. Discover components and request a bounded local human task grant. Read or operate only its observed controls; show concrete target/change previews before real writes and verify actual target results separately. Close the session and release its queue.
+
+New 0.6.9 reviews last at most 180 seconds. One Windows native notification
+contains only RemoteX, short digest and actual remaining time; clicking locates
+the same pending form without selecting, approving or extending it. Notification
+delivery can be suppressed by Windows and is never authority. Complete reference
+limits are 32 units/request, 96/proposal and 32 KiB including private records;
+four active grants, queues, credential isolation, exact origin/trust, separate
+Login/Read and all other timers remain enforced. See
+[Revision 3 public-reference review](../plugins/remotex/docs/web-task-authorization.md#revision-3-public-reference-review).
 
 ```text
 Use RemoteX to preview a web-console profile for https://console.example:6868

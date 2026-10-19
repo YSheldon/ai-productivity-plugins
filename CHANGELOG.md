@@ -14,6 +14,15 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.6.9
+
+- Added revision-3 initialization compatibility with three explicit UTF-8 profiles: JSON, ordinary form pairs and the bounded structured form-name view. Public fixed constants in sensitive-looking names require complete independent reference, non-auth role and initialization-effect review in the native window; real authentication/private fields remain blocked. No business endpoint or sentinel is hardcoded.
+- Frozen original request bytes, complete effective headers and the owned prelogin cookie context are bound to private memory-only reference proofs and fresh one-use execution receipts. No public compare/approve endpoint, raw capture, secret-derived public hash, automatic decoder fallback or arbitrary POST permission is added.
+- Complete reference review is bounded to 32 units per request, 96 per proposal and 32 KiB including private capture/view/manifest/context data. Four active grants, one pending review and finite counts remain; large proposals must be split within those bounds, not truncated. Revision-2 static-only replacement remains separate.
+- New native reviews last at most 180 seconds; existing requests are not extended. An owned Windows notification is requested once after the form is shown, containing only RemoteX, its short digest and remaining time. A click only focuses the same pending unexpired window; suppression does not bypass approval, and requested/shown is not proof of human visibility.
+- Preserved the separate 120-second blocked-observation TTL, 10-second check, 45/55-second startup/resume, 30-second one-use action ticket, 12-hour grant and 13-hour session limits. API revocation fences issued initialization work; expiry also blocks delayed readiness and credential arming.
+- Added actual worker/native component protocol admission before credential access, safe loaded-worker capabilities, strict public schemas and isolated Edge integration fixtures. Initialization, Login and authenticated Read remain separately approved. No center business-code, credential/profile migration, global notification setting or shared-session interruption.
+
 ## RemoteX 0.6.8
 
 - Added revision-2 startup contracts with distinct native Initialization Read approval for exact non-secret JSON/form POSTs. Required bounded response checks, visible controls and no unsettled initialization calls precede credential insertion on every fresh document. Bootstrap remains bodyless static GET/HEAD; Login and authenticated page Read approvals remain separate.

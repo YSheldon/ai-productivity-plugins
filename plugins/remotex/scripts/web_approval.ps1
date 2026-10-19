@@ -1,5 +1,20 @@
+param([switch]$DescribeProtocol)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+if ($DescribeProtocol) {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        Add-Type -AssemblyName System.Drawing
+        . (Join-Path $PSScriptRoot 'web_approval_ui.ps1')
+        . (Join-Path $PSScriptRoot 'web_reference_review.ps1')
+        foreach ($name in @('New-V3ReferenceState','Apply-V3ReferenceResult','New-V3PublicReferencePanel','New-ApprovalNotification')) {
+            if (-not (Get-Command $name -CommandType Function -ErrorAction Stop)) { exit 1 }
+        }
+        if ($script:RemoteXReferenceProtocol.protocol_revision -ne 3 -or $script:RemoteXReferenceProtocol.reference_units -ne 32) { exit 1 }
+        [Console]::WriteLine('{"protocol_revision":3,"reference_units":32,"review_seconds":180,"notification":"owned-native-v1"}')
+        exit 0
+    } catch { exit 1 }
+}
 $script:decided = $false
 $script:approved = $false
 $script:loadingTargets = $false
@@ -8,6 +23,13 @@ $script:targetSelections = @{}
 $script:manifestValidated = $false
 $script:uiShown = $false
 $script:uiCloseReason = 'window-closed'
+$script:v3 = $false
+$script:decisionSent = $false
+$script:v3States = @{}
+$script:v3ReplyReader = $null
+$script:v3ReferenceAttempts = 0
+$script:v3ProtocolFailed = $false
+$script:approvalNotification = $null
 
 function Send-UiReceipt([string]$eventName, [string]$reason) {
     if (-not $script:manifestValidated) { return }
@@ -20,9 +42,12 @@ function Send-UiReceipt([string]$eventName, [string]$reason) {
 
 try {
     if (-not [Environment]::UserInteractive) { exit 1 }
+    [Console]::InputEncoding = New-Object Text.UTF8Encoding($false, $true)
+    [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false, $true)
     $line = [Console]::ReadLine()
     if (-not $line -or $line.Length -gt 65536) { exit 1 }
     $script:manifest = $line | ConvertFrom-Json
+    $script:v3ReviewStarted = [Diagnostics.Stopwatch]::StartNew()
     if ($manifest.request_id -notmatch '^[a-f0-9]{32}$' -or $manifest.nonce -notmatch '^[a-f0-9]{64}$' -or $manifest.request_digest -notmatch '^[a-f0-9]{64}$') { exit 1 }
     if (@($manifest.items).Count -gt 32) { exit 1 }
     $script:manifestValidated = $true
@@ -31,11 +56,96 @@ try {
     [Windows.Forms.Application]::EnableVisualStyles()
     . (Join-Path $PSScriptRoot 'web_approval_ui.ps1')
 
+    function Send-PrivateFrame($Frame) {
+        $packet = $Frame | ConvertTo-Json -Depth 24 -Compress
+        if ([Text.Encoding]::UTF8.GetByteCount($packet) + 1 -gt 32768) { throw 'Private frame capacity exceeded' }
+        [Console]::WriteLine($packet); [Console]::Out.Flush()
+    }
+
+    if ($null -ne $manifest.protocol_revision) {
+        if ($manifest.protocol_revision -ne 3 -or [Text.Encoding]::UTF8.GetByteCount($line) -gt 32768) { throw 'Unsupported private protocol' }
+        $script:v3 = $true
+        . (Join-Path $PSScriptRoot 'web_reference_review.ps1')
+        $profiles = @('json-utf8-v1','form-utf8-v1','form-json-name-view-v1')
+        if (@($manifest.reference_items).Count -ne @($manifest.items).Count -or @($manifest.reference_items).Count -lt 1) { throw 'Reference scope unavailable' }
+        foreach ($meta in @($manifest.reference_items)) {
+            $keys = @('item_id','profile_id','locations','cookie_context_ref','response_checks')
+            $names = @($meta.PSObject.Properties.Name)
+            if ($names.Count -ne $keys.Count -or @($names | Where-Object { $_ -cnotin $keys }).Count -gt 0 -or
+                $meta.profile_id -cnotin $profiles -or $script:v3States.ContainsKey([string]$meta.item_id) -or
+                @($manifest.items | Where-Object { $_.item_id -ceq $meta.item_id }).Count -ne 1 -or
+                @($meta.locations).Count -lt 1 -or @($meta.locations).Count -gt 32) { throw 'Reference scope unavailable' }
+            foreach ($location in @($meta.locations)) {
+                if ($location.ref -isnot [string] -or $location.ref -cnotmatch '^[a-f0-9]{32}$' -or $location.sensitive -isnot [bool]) { throw 'Reference scope unavailable' }
+            }
+            if ($null -ne $meta.cookie_context_ref -and $meta.cookie_context_ref -cnotmatch '^[a-f0-9]{32}$') { throw 'Reference scope unavailable' }
+            $script:v3States[[string]$meta.item_id] = New-V3ReferenceState -RequestId $manifest.request_id -ItemId $meta.item_id -Nonce $manifest.nonce -RequestDigest $manifest.request_digest -UnitCount @($meta.locations).Count
+        }
+        $script:v3ReplyReader = New-Object RemoteX.V3ReplyQueue([Console]::OpenStandardInput())
+        Send-PrivateFrame ([ordered]@{event='helper-ready';request_id=$manifest.request_id;nonce=$manifest.nonce;request_digest=$manifest.request_digest;protocol_revision=3;profiles=$profiles})
+    }
+
     function Send-Frame([string]$eventName, $choices, [int]$ttl) {
         $frame = [ordered]@{ event = $eventName; request_id = $manifest.request_id; nonce = $manifest.nonce; request_digest = $manifest.request_digest }
         if ($eventName -eq 'decision') { $frame.choices = @($choices); $frame.ttl_seconds = $ttl }
-        [Console]::WriteLine(($frame | ConvertTo-Json -Depth 24 -Compress))
-        [Console]::Out.Flush()
+        Send-PrivateFrame $frame
+    }
+
+    function Get-V3RemainingSeconds {
+        return [Math]::Max(0,[int][Math]::Floor([double]$manifest.wait_seconds - $script:v3ReviewStarted.Elapsed.TotalSeconds))
+    }
+
+    function Update-V3ApprovalButton {
+        if (-not $script:v3) { return }
+        $checked = @($grid.Rows | Where-Object { $_.Cells['Approve'].Value -eq $true })
+        $enabled = ($checked.Count -gt 0 -and -not $script:decisionSent -and (Get-V3RemainingSeconds) -gt 0)
+        foreach ($row in $checked) {
+            $state = $script:v3States[[string]$row.Cells['Item'].Value]
+            if (-not $state -or -not (Test-V3ReferenceDecisionReady $state)) { $enabled = $false }
+        }
+        $approveButton.Enabled = $enabled
+    }
+
+    function Update-V3PrivateReplies {
+        if (-not $script:v3) { return $true }
+        if ($script:v3ReplyReader.Failed -or $script:v3ReplyReader.Completed) { return $false }
+        $raw = ''
+        for ($at = 0; $at -lt 8 -and $script:v3ReplyReader.TryTake([ref]$raw); $at++) {
+            try {
+                $reply = $raw | ConvertFrom-Json
+                if ($reply.request_id -cne $manifest.request_id -or $reply.nonce -cne $manifest.nonce -or $reply.request_digest -cne $manifest.request_digest) { return $false }
+                if ($reply.event -ceq 'reference-result') {
+                    $state = $script:v3States[[string]$reply.item_id]
+                    if (-not $state -or $reply.check_id -cne $state.check_id) { return $false }
+                    $stale = $reply.edit_revision -ne $state.edit_revision
+                    if (-not (Apply-V3ReferenceResult -State $state -Frame $reply) -and -not $stale) { return $false }
+                } elseif ($reply.event -ceq 'decision-result') {
+                    $keys = @('event','request_id','nonce','request_digest','state','grant_id','expires_in_seconds','effective_limits')
+                    $names = @($reply.PSObject.Properties.Name)
+                    if ($names.Count -ne $keys.Count -or @($names | Where-Object { $_ -cnotin $keys }).Count -gt 0 -or
+                        -not $script:decisionSent -or $script:decided -or (Get-V3RemainingSeconds) -le 0) { return $false }
+                    if ($reply.state -ceq 'active') {
+                        if ($reply.grant_id -isnot [string] -or $reply.grant_id -cnotmatch '^[a-f0-9]{32}$' -or
+                            ($reply.expires_in_seconds -isnot [int] -and $reply.expires_in_seconds -isnot [long]) -or
+                            $reply.expires_in_seconds -lt 1 -or $reply.expires_in_seconds -gt [int]$ttl.Value) { return $false }
+                        $limits = @($reply.effective_limits.PSObject.Properties)
+                        if ($limits.Count -lt 1 -or $limits.Count -gt @($script:v3SentChoices).Count) { return $false }
+                        foreach ($limit in $limits) {
+                            $source = @($script:v3SentChoices | Where-Object { $_.item_id -ceq $limit.Name })
+                            if ($source.Count -ne 1 -or $limit.Value.max_uses -lt 1 -or $limit.Value.max_uses -gt $source[0].max_uses) { return $false }
+                        }
+                        $script:decided = $true; $script:approved = $true
+                        $form.Text = 'RemoteX Authorization Active - Revoke to stop'
+                        $revokeButton.Enabled = $true
+                        $details.Text += "`r`n`r`nCommitted effective limits:`r`n" + ($reply.effective_limits | ConvertTo-Json -Depth 16)
+                    } elseif ($reply.state -cin @('rejected','cancelled')) {
+                        $script:decided = $true; $script:uiCloseReason = 'operator-rejected'; $form.Close()
+                    } else { return $false }
+                } else { return $false }
+            } catch { return $false }
+        }
+        Update-V3ApprovalButton
+        return $true
     }
 
     function Save-Targets {
@@ -173,6 +283,26 @@ try {
     $selectionCount.Text = "0 of $($grid.Rows.Count) checked"; $selectionCount.AutoSize = $true
     $selectionCount.Padding = New-Object Windows.Forms.Padding(10, 6, 0, 0)
     $batchTools.Controls.Add($selectionCount)
+    if ($script:v3) {
+        $referenceButton = New-Object Windows.Forms.Button
+        $referenceButton.Text = 'Review Public Reference'; $referenceButton.AutoSize = $true
+        $batchTools.Controls.Add($referenceButton)
+        $referenceButton.Add_Click({
+            if ($grid.SelectedRows.Count -ne 1 -or $script:decisionSent) { return }
+            $itemId = [string]$grid.SelectedRows[0].Cells['Item'].Value
+            $state = $script:v3States[$itemId]
+            $meta = @($manifest.reference_items | Where-Object { $_.item_id -ceq $itemId })[0]
+            if (-not $state -or @($script:v3States.Values | Where-Object { $_.pending }).Count -gt 0) { return }
+            Invalidate-V3ReferenceState -State $state
+            $panel = New-V3PublicReferencePanel -State $state -ReferenceItem $meta -RemainingSeconds { Get-V3RemainingSeconds } -SendFrame {
+                param($frame)
+                if ($script:v3ReferenceAttempts -ge 8 -or (Get-V3RemainingSeconds) -le 0) { return $false }
+                $script:v3ReferenceAttempts++; Send-PrivateFrame $frame; return $true
+            }
+            try { $null = $panel.Form.ShowDialog($form) } finally { $panel.Form.Dispose() }
+            Update-V3ApprovalButton
+        })
+    }
     $grid.Add_CellValueChanged({
         $checkedCount = @($grid.Rows | Where-Object { $_.Cells['Approve'].Value -eq $true }).Count
         $selectionCount.Text = "$checkedCount of $($grid.Rows.Count) checked"
@@ -207,7 +337,7 @@ try {
     $buttons.Controls.Add($revokeButton)
     $helpTips = New-Object Windows.Forms.ToolTip
     $helpTips.AutoPopDelay = 15000; $helpTips.ShowAlways = $true
-    $helpTips.SetToolTip($ttl, 'Lifetime in seconds, capped by this request/session/lease and original replacement source expiry. Task grants: up to 12 hours; one-use action confirmations: up to 30 seconds. Separate from the 120-second review deadline. Replacement never renews a source deadline.')
+    $helpTips.SetToolTip($ttl, 'Lifetime in seconds, capped by this request/session/lease and original replacement source expiry. Task grants: up to 12 hours; one-use action confirmations: up to 30 seconds. Separate from the 180-second maximum review deadline, which may be narrowed. Replacement never renews a source deadline.')
     $helpTips.SetToolTip($ttlLabel, $helpTips.GetToolTip($ttl))
     $helpTips.SetToolTip($selectAllButton, 'Checks the requested items only; does not classify or approve them.')
     $helpTips.SetToolTip($clearSelectionButton, 'Unchecks items without changing their reviewed classification.')
@@ -243,35 +373,52 @@ try {
                 }
                 $choice.semantic_classification = if ($kind -eq 'unclassified') { 'read' } else { $kind }
             }
+            if ($script:v3) {
+                $state = $script:v3States[$itemId]
+                if (-not $state -or -not (Test-V3ReferenceDecisionReady $state) -or (Get-V3RemainingSeconds) -le 0) { return }
+                $choice.review_ref = $state.review_ref; $choice.edit_revision = $state.edit_revision
+            }
             $choices += $choice
         }
         if ($choices.Count -eq 0) { return }
         $replacementCheck = Test-ReplacementSelection -Manifest $manifest -Choices $choices
         if (-not $replacementCheck.ok) { $null = [Windows.Forms.MessageBox]::Show($replacementCheck.reason, 'RemoteX'); return }
         Send-Frame 'decision' $choices ([int]$ttl.Value)
-        $script:decided = $true; $script:approved = $true
+        $script:decisionSent = $true
+        Close-ApprovalNotification $script:approvalNotification
+        if ($script:v3) { $script:v3SentChoices = $choices } else { $script:decided = $true; $script:approved = $true }
         $grid.Enabled = $false; $targetList.Enabled = $false; $ttl.Enabled = $false
         $batchTools.Enabled = $false
         $approveButton.Enabled = $false; $rejectButton.Enabled = $false; $revokeButton.Enabled = $true
-        $form.Text = 'RemoteX Authorization Active - Revoke to stop'
-        $heading.Text = $contextHeading + "`r`n" + (Get-ApprovalReviewText -WaitSeconds $manifest.wait_seconds -ElapsedSeconds 0 -Decided $true -Approved $true)
+        $form.Text = if ($script:v3) { 'RemoteX Awaiting Authority Commit' } else { 'RemoteX Authorization Active - Revoke to stop' }
+        $heading.Text = $contextHeading + "`r`n" + (Get-ApprovalReviewText -WaitSeconds $manifest.wait_seconds -ElapsedSeconds $started.Elapsed.TotalSeconds -Decided $script:decided -Approved $script:approved -PendingCommit ($script:v3 -and $script:decisionSent -and -not $script:decided))
     })
-    $rejectButton.Add_Click({ $script:uiCloseReason = 'operator-rejected'; Send-Frame 'decision' @() 1; $script:decided = $true; $form.Close() })
+    $rejectButton.Add_Click({ $script:uiCloseReason = 'operator-rejected'; Close-ApprovalNotification $script:approvalNotification; Send-Frame 'decision' @() 1; $script:decided = $true; $form.Close() })
     $revokeButton.Add_Click({ $form.Close() })
-    $form.Add_FormClosing({ if ($script:approved) { $script:uiCloseReason = 'operator-revoked'; Send-Frame 'revoke' @() 1 } })
+    $form.Add_FormClosing({ Close-ApprovalNotification $script:approvalNotification; if ($script:approved -or ($script:v3 -and $script:decisionSent)) { $script:uiCloseReason = 'operator-revoked'; Send-Frame 'revoke' @() 1 } })
     $form.Add_FormClosed({ Send-UiReceipt 'closed' $script:uiCloseReason })
     $timer = New-Object Windows.Forms.Timer
     $timer.Interval = 500
-    $started = [Diagnostics.Stopwatch]::StartNew()
+    $started = $script:v3ReviewStarted
+    $script:approvalNotification = New-ApprovalNotification -Form $form -Digest $manifest.request_digest -RemainingSeconds {
+        [Math]::Max(0,[int][Math]::Floor([double]$manifest.wait_seconds - $started.Elapsed.TotalSeconds))
+    } -Pending { -not $script:decided -and -not $script:decisionSent } -Receipt { param($reason) Send-UiReceipt 'notification' $reason }
     $timer.Add_Tick({
-        $heading.Text = $contextHeading + "`r`n" + (Get-ApprovalReviewText -WaitSeconds $manifest.wait_seconds -ElapsedSeconds $started.Elapsed.TotalSeconds -Decided $script:decided -Approved $script:approved)
+        if (-not (Update-V3PrivateReplies)) { $script:v3ProtocolFailed = $true; $form.Close(); return }
+        $heading.Text = $contextHeading + "`r`n" + (Get-ApprovalReviewText -WaitSeconds $manifest.wait_seconds -ElapsedSeconds $started.Elapsed.TotalSeconds -Decided $script:decided -Approved $script:approved -PendingCommit ($script:v3 -and $script:decisionSent -and -not $script:decided))
         if (-not $script:decided -and $started.Elapsed.TotalSeconds -ge [int]$manifest.wait_seconds) { $script:uiCloseReason = 'review-expired'; $form.Close() }
     })
     $timer.Start()
-    $form.Add_Shown({ $grid.ClearSelection(); if ($grid.Rows.Count -gt 0) { $grid.Rows[0].Selected = $true }; $script:uiShown = $true; Send-UiReceipt 'shown' 'shown'; $form.Activate() })
+    Update-V3ApprovalButton
+    $form.Add_Shown({ $grid.ClearSelection(); if ($grid.Rows.Count -gt 0) { $grid.Rows[0].Selected = $true }; $script:uiShown = $true; Send-UiReceipt 'shown' 'shown'; $form.Activate(); Show-ApprovalNotification $script:approvalNotification })
     $null = $form.ShowDialog()
     $timer.Stop(); $timer.Dispose(); $form.Dispose(); $helpTips.Dispose()
+    Close-ApprovalNotification $script:approvalNotification
+    if ($script:v3ReplyReader) { $script:v3ReplyReader.Dispose() }
+    if ($script:v3ProtocolFailed) { throw 'Private protocol failed' }
 } catch {
+    if ($script:approvalNotification) { Close-ApprovalNotification $script:approvalNotification }
+    if ($script:v3ReplyReader) { $script:v3ReplyReader.Dispose() }
     Send-UiReceipt 'error' $(if ($script:uiShown) { 'helper-ui-failed' } else { 'helper-startup-failed' })
     exit 1
 }

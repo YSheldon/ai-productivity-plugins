@@ -154,6 +154,20 @@ class StartupAuthority:
             for c in context['contracts'].values():
                 if c.get('purpose')!='initialization-read':
                     continue
+                if c.get('revision')==3:
+                    if (context.get('revision')!=3 or not _hex(c.get('prerequisite_id'),64) or not _hex(c.get('intent_ref'),32) or
+                            c.get('preauth_lifecycle')!=lifecycle or c.get('required') is not True or
+                            any(old.get('revision')!=3 for old in staged.values())):
+                        raise ScopeError('scope-mismatch')
+                    validate_checks(c['response_checks'])
+                    for old in staged.values():
+                        if old.get('intent_ref')==c['intent_ref'] and (old['prerequisite_id']!=c['prerequisite_id'] or
+                                canonical(old['response_checks'])!=canonical(c['response_checks'])):
+                            raise ScopeError('scope-mismatch')
+                    staged[c['prerequisite_id']]=copy.deepcopy(c)
+                    continue
+                if any(old.get('revision')==3 for old in staged.values()):
+                    raise ScopeError('scope-mismatch')
                 for old in staged.values():
                     if canonical(old['descriptor'])==canonical(c['descriptor']) and canonical(old)!=canonical(c):
                         # Item IDs/phase are proposal-local; the prerequisite is not.
@@ -206,6 +220,25 @@ class StartupAuthority:
                 'document_id':a['document_id'],'generation':a['generation'],
                 'expires_at_ms':min(a['deadline_ms'],int((self.wall_clock()+10)*1000)),
                 'prerequisite_id':contract['prerequisite_id'],'response_checks':copy.deepcopy(contract['response_checks'])}
+            self.issued[check_id]={'permit':permit,'forwarded':False}
+            return copy.deepcopy(permit)
+
+    def issue_v3(self,*,authority,grant_id,item_id,check_id,message,contract,check_deadline):
+        with self.lock:
+            a=self.matches(message)
+            if (a['stage']!='committed' or not _hex(check_id,32) or check_id in self.seen or
+                    contract.get('revision')!=3 or contract.get('purpose')!='initialization-read' or
+                    contract.get('prerequisite_id') not in self.required or self.clock()>=check_deadline):
+                raise ScopeError('scope-mismatch')
+            remaining=min(10,check_deadline-self.clock())
+            execution={'check_id':check_id,'preauth_lifecycle':self.lifecycle,'resume_id':a['resume_id'],
+                'document_id':a['document_id'],'generation':a['generation'],
+                'expires_at_ms':min(a['deadline_ms'],int((self.wall_clock()+remaining)*1000))}
+            permit=authority.issue(grant_id,item_id,message['capture'],execution)
+            if (permit['prerequisite_id']!=contract['prerequisite_id'] or permit['intent_ref']!=contract['intent_ref'] or
+                    canonical(permit['response_checks'])!=canonical(contract['response_checks'])):
+                raise ScopeError('scope-mismatch')
+            self.seen.add(check_id)
             self.issued[check_id]={'permit':permit,'forwarded':False}
             return copy.deepcopy(permit)
 

@@ -45,7 +45,7 @@ def test_background_ui_harness_does_not_inherit_console_input():
     'select-all','clear-selection','apply-bootstrap','checked-only',
     'mixed-refused','wrong-class-refused','unreviewed-refused',
     'unknown-kind-refused','no-checked-refused','scope-countdown',
-    'known-effects','native-wiring',
+    'known-effects','native-wiring','v3-awaiting-commit',
     'hint-selection','hint-row','hint-tooltips','hint-resize','hint-action-context',
     'apply-initialization-read','mixed-init-refused','init-hint',
     'replacement-scope','replacement-carried-required','replacement-lifetime',

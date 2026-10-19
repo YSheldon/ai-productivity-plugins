@@ -15,6 +15,16 @@ export class StartupState {
     for(const contract of Object.values(contracts)){
       if(contract.purpose!=='initialization-read')continue;
       normalizeResponseChecks(contract.response_checks);
+      if(contract.revision===3){
+        if([...staged.values()].some(old=>old.revision!==3)||contract.preauth_lifecycle!==this.lifecycle||
+          !/^[a-f0-9]{64}$/.test(contract.prerequisite_id)||!/^[a-f0-9]{32}$/.test(contract.intent_ref)||contract.required!==true)
+          throw new Error('scope-mismatch');
+        for(const old of staged.values())if(old.intent_ref===contract.intent_ref&&
+          (old.prerequisite_id!==contract.prerequisite_id||signature(old.response_checks)!==signature(contract.response_checks)))
+          throw new Error('scope-mismatch');
+        staged.set(contract.prerequisite_id,structuredClone(contract));continue;
+      }
+      if([...staged.values()].some(old=>old.revision===3))throw new Error('scope-mismatch');
       for(const old of staged.values())if(signature(old.descriptor)===signature(contract.descriptor)&&
         (old.prerequisite_id!==contract.prerequisite_id||signature(old.response_checks)!==signature(contract.response_checks)))
         throw new Error('scope-mismatch');
@@ -50,8 +60,12 @@ export class StartupState {
 
   begin(permit){
     this.check(permit);
-    if(permit.kind!=='initialization-read'||!this.required.has(permit.prerequisite_id)||
+    if(!['initialization-read','initialization-permit-v3'].includes(permit.kind)||!this.required.has(permit.prerequisite_id)||
       this.clock()>=permit.expires_at_ms||this.seen.has(permit.check_id))throw new Error('scope-mismatch');
+    const contract=this.required.get(permit.prerequisite_id);
+    if(permit.kind==='initialization-permit-v3'&&(permit.version!==3||contract.revision!==3||permit.intent_ref!==contract.intent_ref||
+      signature(permit.response_checks)!==signature(contract.response_checks)))throw new Error('scope-mismatch');
+    if(permit.kind==='initialization-read'&&contract.revision===3)throw new Error('scope-mismatch');
     const deadline=Math.min(permit.dispatch_deadline??Infinity,this.monotonic()+Math.max(0,Math.min(10000,permit.expires_at_ms-this.clock())));
     const receipt=Object.freeze({...permit,dispatch_deadline:deadline});this.seen.add(permit.check_id);
     this.pending.set(receipt,{forwarded:false});return receipt;

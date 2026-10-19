@@ -1,3 +1,5 @@
+. (Join-Path $PSScriptRoot 'web_approval_notification.ps1')
+
 function Get-EffectReviewLabel([string]$Kind) {
     switch ($Kind) {
         'unclassified' { return 'Read' }
@@ -104,12 +106,13 @@ function Test-ReplacementSelection($Manifest, $Choices) {
     return [pscustomobject]@{ok=$true;reason=''}
 }
 
-function Get-ApprovalReviewText([int]$WaitSeconds, [double]$ElapsedSeconds, [bool]$Decided, [bool]$Approved) {
+function Get-ApprovalReviewText([int]$WaitSeconds, [double]$ElapsedSeconds, [bool]$Decided, [bool]$Approved, [bool]$PendingCommit=$false) {
     if ($Decided) {
         if ($Approved) { return 'Authorization active' }
         return 'Review complete'
     }
     $remaining = [int][Math]::Ceiling([Math]::Max(0,$WaitSeconds - $ElapsedSeconds))
     if ($remaining -eq 0) { return 'Review expired' }
+    if ($PendingCommit) { return 'Awaiting authority commit; review expires in ' + ([TimeSpan]::FromSeconds($remaining).ToString('mm\:ss')) }
     return 'Review expires in ' + ([TimeSpan]::FromSeconds($remaining).ToString('mm\:ss'))
 }

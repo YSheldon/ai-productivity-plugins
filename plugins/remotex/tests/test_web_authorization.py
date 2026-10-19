@@ -84,6 +84,22 @@ def test_request_cannot_self_approve_or_execute(prepared):
     with pytest.raises(auth.ScopeError, match='approval-required'):
         broker.reserve(request['request_id'], 'read', 'attempt-1', {})
 
+def test_new_native_reviews_allow_180_seconds_but_not_181(prepared):
+    broker,clock,*_=prepared
+    request=broker.request([item()],idempotency_key='native-180',ttl_seconds=300)
+    manifest=broker.approval_manifest(request['request_id'])
+    assert manifest['wait_seconds']==180
+    clock.now=279.0
+    result=broker.accept_decision(request['request_id'],nonce=manifest['nonce'],digest=manifest['request_digest'],
+        choices=[{'item_id':'read','max_uses':1,'targets':[]}],ttl_seconds=60)
+    assert result['grant_state']=='active'
+    request=broker.request([item('second')],idempotency_key='native-expired',ttl_seconds=300)
+    manifest=broker.approval_manifest(request['request_id'])
+    clock.now+=181
+    with pytest.raises(auth.ScopeError,match='request-expired'):
+        broker.accept_decision(request['request_id'],nonce=manifest['nonce'],digest=manifest['request_digest'],
+            choices=[{'item_id':'second','max_uses':1,'targets':[]}],ttl_seconds=60)
+
 
 def test_human_output_narrowing_cannot_be_widened_or_ignored(prepared):
     broker,*_=prepared
@@ -300,7 +316,7 @@ def test_action_time_target_change_or_late_decision_cannot_be_accepted(prepared)
     with pytest.raises(auth.ScopeError,match='decision-invalid'):
         broker.accept_action_decision(attempt['attempt_id'],nonce=manifest['nonce'],digest=manifest['request_digest'],
             choices=[{'item_id':'write','targets':['host-2'],'max_uses':1}],ttl_seconds=30)
-    clock.now+=121
+    clock.now+=181
     with pytest.raises(auth.ScopeError,match='request-expired'):
         broker.accept_action_decision(attempt['attempt_id'],nonce=manifest['nonce'],digest=manifest['request_digest'],
             choices=[{'item_id':'write','targets':['host-1'],'max_uses':1}],ttl_seconds=30)

@@ -23,7 +23,7 @@ def test_typed_task_tools_exist_without_an_approve_or_raw_browser_interface():
 def test_public_setup_schema_exposes_mutually_exclusive_exact_v2_contracts():
     setup=web_adapter.TOOLS['remotex_web_authorization_request']['inputSchema']['properties']['setup']
     variants=setup.get('oneOf',[])
-    assert len(variants)==2,'Clients cannot discover strict legacy and revision2 shapes'
+    assert len(variants)==3,'Clients cannot discover strict legacy, revision2 and revision3 shapes'
     modern=next(v for v in variants if v['properties'].get('revision',{}).get('const')==2)
     assert modern['additionalProperties'] is False
     assert set(modern['properties'])=={'revision','phase','requests','replace_grant_ids'}
@@ -37,6 +37,20 @@ def test_public_setup_schema_exposes_mutually_exclusive_exact_v2_contracts():
     initialization=next(v for v in kinds if v['properties']['purpose']['const']=='initialization-read')
     assert 'response_checks' in initialization['required']
     assert initialization['properties']['response_checks']['maxItems']==8
+
+
+def test_public_v3_setup_schema_accepts_only_complete_owned_refs():
+    variants=web_adapter.TOOLS['remotex_web_authorization_request']['inputSchema']['properties']['setup']['oneOf']
+    modern=next(v for v in variants if v['properties'].get('revision',{}).get('const')==3)
+    assert modern['additionalProperties'] is False and set(modern['properties'])=={'revision','phase','requests'}
+    row=modern['properties']['requests']['items']
+    assert row['additionalProperties'] is False
+    assert set(row['properties'])=={'network_ref','purpose','representation_ref','literal_review_refs','max_uses','response_checks','evidence'}
+    assert set(row['required'])==set(row['properties'])-{'max_uses'}
+    assert row['properties']['purpose']=={'const':'initialization-read'}
+    assert row['properties']['literal_review_refs']['minItems']==1
+    assert row['properties']['literal_review_refs']['maxItems']==32
+    assert row['properties']['literal_review_refs']['uniqueItems'] is True
 
 def test_read_only_capabilities_do_not_export_private_startup_context():
     from test_web_task_service import prepared

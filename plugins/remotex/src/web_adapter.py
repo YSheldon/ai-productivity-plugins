@@ -27,6 +27,7 @@ import web_channel
 import web_authorization
 import web_authorization_store
 import web_task_service
+from web_component_protocol import V3_WORKER_PROTOCOL, V3_NATIVE_PROTOCOL
 
 
 PLAYWRIGHT_VERSION = "1.62.1"
@@ -87,6 +88,20 @@ def _node() -> str:
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise core.ToolError("Web login requires Node.js 24 or newer for system CA trust") from exc
     return node
+
+
+def _admit_v3_components(node: str) -> None:
+    commands=[([node,str(PLUGIN/'scripts/web_login_worker.mjs'),'--describe-protocol'],V3_WORKER_PROTOCOL),
+        ([credential_store._powershell_path(),'-NoLogo','-NoProfile','-NonInteractive','-STA','-File',
+          str(PLUGIN/'scripts/web_approval.ps1'),'-DescribeProtocol'],V3_NATIVE_PROTOCOL)]
+    try:
+        for command,expected in commands:
+            result=subprocess.run(command,stdin=subprocess.DEVNULL,capture_output=True,text=True,encoding='utf-8',
+                timeout=10,env=credential_store._setup_environment(),creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+            if result.returncode!=0 or len(result.stdout)>2048 or json.loads(result.stdout)!=expected:
+                raise ValueError()
+    except (OSError,ValueError,subprocess.SubprocessError):
+        raise core.ToolError('RemoteX web components are incomplete or incompatible; install one complete plugin version') from None
 
 
 def runtime_setup(args: dict[str, Any]) -> dict[str, Any]:
@@ -167,7 +182,7 @@ def profile_status(name: str, raw: dict[str, Any]) -> dict[str, Any]:
     except core.ToolError:
         node_ready = False
     edge_ready = os.name == "nt" and any((Path(os.environ.get(variable,"C:/Program Files")) / "Microsoft/Edge/Application/msedge.exe").is_file() for variable in ("PROGRAMFILES(X86)","PROGRAMFILES"))
-    runtime_ready = _module_path() is not None and node_ready
+    runtime_ready = _module_path() is not None and _parser_module_path() is not None and node_ready
     return {"profile":name,"kind":"web","credential_alias":reference.alias,"credential_source":reference.source,
             "referencePresent":present,"runtimeReady":runtime_ready,"client_available":edge_ready,"ready":present is True and runtime_ready and edge_ready,
             "readinessScope":"local-configuration-only","authenticationVerified":None}
@@ -375,6 +390,7 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
         lease = owner.get("lease") or {}
         if lease.get("remainingSeconds",0) < seconds + 45:
             raise core.ToolError(f"Renew this task's web queue lease to cover session_seconds plus 45 seconds (at least {seconds+45} seconds)")
+        _admit_v3_components(node)
         secret = core.read_windows_generic_credential(reference.reference_dict()["target"])
         if secret.username != raw["account"] or not secret.password or len(secret.password) > 4096:
             raise core.ToolError("Stored web credential does not match the configured account")
@@ -627,6 +643,12 @@ _SETUP_REQUEST={'oneOf':[
 _MODERN_SETUP=_schema({'revision':{'type':'integer','const':2},'phase':_SETUP_PHASE,
     'requests':{'type':'array','minItems':1,'maxItems':32,'items':_SETUP_REQUEST},
     'replace_grant_ids':{'type':'array','maxItems':2,'uniqueItems':True,'items':_ID}},['revision','phase','requests'])
+_V3_SETUP_REQUEST=_schema({'network_ref':_ID,'purpose':{'const':'initialization-read'},
+    'representation_ref':_ID,'literal_review_refs':{**_REFS,'minItems':1},'max_uses':_SETUP_USE,
+    'response_checks':{'type':'array','minItems':1,'maxItems':8,'items':_CHECK},'evidence':_EVIDENCE},
+    ['network_ref','purpose','representation_ref','literal_review_refs','response_checks','evidence'])
+_V3_SETUP=_schema({'revision':{'type':'integer','const':3},'phase':_SETUP_PHASE,
+    'requests':{'type':'array','minItems':1,'maxItems':32,'items':_V3_SETUP_REQUEST}},['revision','phase','requests'])
 _ITEM=_schema({'item_id':_TEXT,'capability':{'type':'string','enum':sorted(web_authorization.CAPABILITIES)},
     'observation_id':_ID,'component_ref':_ID,'max_uses':{'type':'integer','minimum':1,'maximum':50},
     'depends_on':{'type':'array','items':_TEXT,'maxItems':32,'uniqueItems':True},
@@ -657,9 +679,9 @@ _TASKS={
         ['observation_id','component_ref','target_refs','read_receipts','changes','effect','network_refs'],
         'Prepare an immutable write preview from approved reads and observed controls. Does not change the page or send requests. Show actual targets and before/after values before requesting real business writes.'),
     'remotex_web_authorization_request':('request',{'items':{'type':'array','items':_ITEM,'minItems':1,'maxItems':32},
-        'setup':{'oneOf':[_LEGACY_SETUP,_MODERN_SETUP]},
+        'setup':{'oneOf':[_LEGACY_SETUP,_MODERN_SETUP,_V3_SETUP]},
         'idempotency_key':_TEXT,'ttl_seconds':{'type':'integer','minimum':60,'maximum':web_authorization.MAX_GRANT_SECONDS,'default':web_authorization.MAX_GRANT_SECONDS,'description':'Requested task grant lifetime, default/maximum 43200 seconds (12 hours); human may lower it, and the existing session deadline still caps it.'}},['idempotency_key'],
-        'Request exact observed operations OR blocked startup contracts through the local human window. Revision2 supports independently reviewed pre-login Initialization Read POSTs and bounded static-only replacement within four active grants. Inspect approval_ui; shown is not authority. No credentials, raw requests or self-approval.'),
+        'Request exact observed operations OR blocked startup contracts through the local human window. Revision3 adds private native review of complete independent public references for exact initialization POSTs; no values or approval verdicts in public arguments. Revision2 static-only replacement is separate. Four active grants; new reviews last at most 180 seconds. Notification requested/shown is not authority or proof of visibility. No credentials, raw requests or self-approval.'),
     'remotex_web_authorization_status':('status',{'request_id':_ID},[],
         'Read decisions, expiry, quotas, blocked descriptors and approval_ui lifecycle/remaining review/exit diagnostics. Shown is not authority or proof of foreground. No approval or request transmission.'),
     'remotex_web_execute':('execute',{'grant_id':_ID,'item_id':_TEXT,'idempotency_key':_TEXT,

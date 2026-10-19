@@ -18,6 +18,17 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
+Version `0.6.9` adds revision-3 independent public-reference review for exact
+prelogin requests, including public fixed constants in sensitive-looking fields.
+Only the original native window can attest public data, non-auth role and
+initialization effects. Frozen wire bytes, reviewed headers, original cookie
+context and response checks remain bound; no arbitrary POST is permitted.
+New reviews last at most **180 seconds**. A one-shot Windows notification only
+focuses the same pending window and never approves or extends it. Complete
+reference review is capped at 32 units/request, 96/proposal and 32 KiB; four
+active grants and the separate 120-second observation TTL are unchanged.
+See [Public-reference review](docs/web-task-authorization.md#revision-3-public-reference-review).
+
 Version `0.6.8` adds native **Initialization Read** review for exact non-secret
 pre-login JSON/form POSTs, with required response checks before credential
 insertion. Bootstrap remains static GET/HEAD only; sign-in and page-content

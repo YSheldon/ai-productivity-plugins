@@ -156,6 +156,7 @@ class WebCredentialTests(unittest.TestCase):
         try:
             with (mock.patch.object(web_adapter, '_node', return_value='node'),
                   mock.patch.object(web_adapter, '_module_path', return_value=self.root),
+                  mock.patch.object(web_adapter, '_admit_v3_components', return_value=None),
                   mock.patch.object(web_adapter.secure_paths, 'ensure_private_directory', side_effect=lambda p: p.mkdir(parents=True, exist_ok=True)),
                   mock.patch.object(web_adapter.secure_paths, 'ensure_private_file', return_value=None),
                   mock.patch.object(web_adapter.subprocess, 'Popen', return_value=process),
@@ -310,6 +311,7 @@ class WebCredentialTests(unittest.TestCase):
         with (
             mock.patch.object(web_adapter,'_node',return_value='node'),
             mock.patch.object(web_adapter,'_module_path',return_value=self.root),
+            mock.patch.object(web_adapter,'_admit_v3_components',return_value=None),
             mock.patch.object(web_adapter.secure_paths,'ensure_private_directory',side_effect=lambda p:p.mkdir(parents=True,exist_ok=True)),
             mock.patch.object(web_adapter.subprocess,'Popen',return_value=process),
             mock.patch.object(web_adapter.execution,'_WindowsJob',return_value=job),

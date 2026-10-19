@@ -112,11 +112,18 @@ function Get-NativeFormConstruction {
     $ast = [Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$parseErrors)
     Assert-True ($parseErrors.Count -eq 0) 'The actual native helper cannot be parsed'
     $begin = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Send-Frame' },$true))[0]
-    $dialog = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member.Value -eq 'ShowDialog' },$true))[0]
+    $writers = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Send-PrivateFrame' },$true))
+    Assert-True ($writers.Count -eq 1) 'The production private frame writer is not uniquely bound'
+    $dialogs = @($ast.FindAll({ param($node)
+        $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member.Value -eq 'ShowDialog' -and
+        $node.Expression -is [Management.Automation.Language.VariableExpressionAst] -and $node.Expression.VariablePath.UserPath -eq 'form'
+    },$true))
+    Assert-True ($dialogs.Count -eq 1) 'The production main dialog is not uniquely bound'
+    $dialog = $dialogs[0]
     $end = $dialog
     while ($end -and $end -isnot [Management.Automation.Language.AssignmentStatementAst]) { $end = $end.Parent }
     Assert-True ($null -ne $begin -and $null -ne $end) 'The native form construction cannot be exercised'
-    return [scriptblock]::Create($source.Substring($begin.Extent.StartOffset,$end.Extent.StartOffset-$begin.Extent.StartOffset))
+    return [scriptblock]::Create($writers[0].Extent.Text + "`r`n" + $source.Substring($begin.Extent.StartOffset,$end.Extent.StartOffset-$begin.Extent.StartOffset))
 }
 
 $fixture = $null
@@ -271,6 +278,33 @@ try {
                 $fixture.Grid.Dispose(); $fixture = $null
             }
         }
+        'v3-awaiting-commit' {
+            . (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\web_reference_review.ps1')
+            $fixture = New-Fixture -Kinds @('initialization-read')
+            $script:manifest = [pscustomobject]@{
+                request_id=('a'*32);nonce=('b'*64);request_digest=('c'*64)
+                binding=[pscustomobject]@{origin='https://fixture.example';account='operator'}
+                items=$fixture.Items;ttl_seconds=300;wait_seconds=180
+            }
+            $script:v3=$true; $script:decisionSent=$false; $script:decided=$false; $script:approved=$false
+            $script:loadingTargets=$false; $script:selectedId=$null; $script:targetSelections=@{}
+            $script:v3ReviewStarted=[Diagnostics.Stopwatch]::StartNew()
+            $state=New-V3ReferenceState -RequestId $manifest.request_id -ItemId 'item.0' -UnitCount 5
+            $state.status='ready'; $state.review_ref='e'*32; $state.matched_revision=1
+            $script:v3States=@{'item.0'=$state}
+            . (Get-NativeFormConstruction)
+            Invoke-TestClick $selectAllButton
+            $batchReview.SelectedItem='Initialization Read'; Invoke-TestClick $applyCheckedButton
+            Update-V3ApprovalButton
+            Invoke-TestClick $approveButton
+            $decision=$captured.ToString() | ConvertFrom-Json
+            Assert-True ($decision.event -ceq 'decision') 'Synthetic final decision was not emitted'
+            Assert-True (-not $script:decided -and -not $script:approved -and $script:decisionSent) 'A sent v3 decision became authority without acknowledgment'
+            Assert-True ($form.Text.Contains('Awaiting') -and $heading.Text.Contains('Awaiting')) 'The native body did not wait for authority commit'
+            Assert-True (-not $heading.Text.Contains('Authorization active')) 'The native body optimistically advertised active authority'
+            Assert-True ((Get-ApprovalReviewText -WaitSeconds 180 -ElapsedSeconds 181 -Decided $false -Approved $false -PendingCommit $true) -ceq 'Review expired') 'Pending commit extended the original review'
+            $null=$captured.GetStringBuilder().Clear()
+        }
         'native-wiring' {
             $fixture = New-Fixture -Kinds (@('bootstrap') * 15)
             $script:manifest = [pscustomobject]@{
@@ -365,7 +399,7 @@ try {
                         Assert-True ($grid.Rows[0].Cells[$name].ToolTipText.Length -gt 20) 'A limit cell has no explanation'
                     }
                     Assert-True ($helpTips.GetToolTip($ttl).Contains('12 hours')) 'The lifetime field does not explain its units and task bound'
-                    Assert-True ($helpTips.GetToolTip($ttl).Contains('120-second')) 'The task lifetime is confused with the review deadline'
+                    Assert-True ($helpTips.GetToolTip($ttl).Contains('180-second')) 'The task lifetime is confused with the review deadline'
                     Assert-True ($helpTips.GetToolTip($applyCheckedButton).Contains('does not approve')) 'Batch classification help implies immediate authority'
                     Assert-True ($helpTips.GetToolTip($revokeButton).Contains('cannot undo')) 'Revocation help implies rollback'
                 }

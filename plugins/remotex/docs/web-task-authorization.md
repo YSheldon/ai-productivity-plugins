@@ -15,6 +15,8 @@ without changing authority or deadlines.
 Version 0.6.8 adds explicitly reviewed pre-login Initialization Read POSTs and
 bounded replacement of revision-2 static grants. Bootstrap remains GET/HEAD
 only; ordinary Login and authenticated Read approvals remain separate.
+Version 0.6.9 adds independent public-reference review with exact frozen egress,
+180-second new reviews and non-authorizing native notification hints.
 For an interactive
 Windows regression, set `REMOTEX_TEST_NATIVE_APPROVAL=1` when running
 `plugins/remotex/tests/test_web_approval.py`. Its synthetic helper uses no saved
@@ -38,7 +40,8 @@ Never preempt another task or copy its identifiers.
   and lease cap every grant; a short existing session is never extended.
   No executable grant is persisted, recovered across MCP processes or renewed
   automatically. Closing its active human window still revokes the grant.
-- The review window remains 120 seconds, not 12 hours. New Edge sessions default
+- New review windows last at most 180 seconds, not 12 hours; a narrower original
+  deadline is preserved and existing reviews are never extended. New Edge sessions default
   to and are capped at 46,800 seconds (13 hours), with a covering queue lease
   plus 45 seconds. Use a shorter explicit session for short tasks. See
   [Login and lifetime](web-credentials.md#login-and-lifetime).
@@ -93,9 +96,17 @@ execute/execution-status result. These fields are diagnostic only:
 | `exit_reason` | Review expiry, operator rejection/revocation, window closure, helper exit, grant expiry, protocol error or server cleanup; null while no exit is reported |
 | `error_code` | A fixed diagnostic code, never raw exception text |
 | `helper_exit_code` | Observed process exit code, or null while unavailable; an intentional job termination can also be nonzero |
+| `notification_state` | `not-requested`, `requested`, `shown`, `unavailable` or `removed`; separate advisory metadata, never a grant |
 
 `shown` records a Windows Forms event. It does not prove foreground, the
 operator's desktop visibility, human presence, approval or business completion.
+Since 0.6.9 an owned NotifyIcon requests one Windows native notification after
+the form's Shown event, with only RemoteX, the short opaque digest and remaining
+seconds. Clicking restores/focuses only that same pending, unexpired form. It
+does not select, classify, compare, approve or renew anything. Decision/close
+disposes the icon. Windows suppression or notification failure leaves normal
+approval in force; RemoteX does not change notification settings. Requested is
+not delivered, and a shown event still does not prove the operator saw it.
 Do not describe `starting` or a process handle as a displayed window. On an
 unseen/closed window, inspect the receipt and actual remaining seconds instead
 of reopening requests in a loop or treating cancellation as operator rejection.
@@ -194,7 +205,7 @@ or malformed protocol messages remain fail-closed.
 Document navigation and fragment restoration share one total 45-second budget.
 Only `remotex_web_login_resume` may wait up to 55 seconds for its original result,
 further capped by the existing session. Business operations keep their 30-second
-behavior. These limits do not extend the 120-second native review, grant TTL,
+behavior. These limits do not extend the 180-second maximum native review, grant TTL,
 quotas, session, lease or permission scope. Inspect the original session/outcome
 after a timeout; never replay a request or retry potentially submitted credentials.
 
@@ -338,8 +349,92 @@ That leaves a fourth slot for separately reviewed Login. This layout is not a
 general capacity guarantee: inspect actual bytes, all carried rows and remaining
 uses before requesting. `setup-plan-capacity-required` means choose a smaller
 safe plan, not truncate carried scopes, reset quotas or raise the four-grant cap.
-Expiry of a denied ref remains 120 seconds and review remains 120 seconds;
+Expiry of a denied ref remains 120 seconds; new reviews are capped at 180 seconds;
 neither replacement nor metadata readback refreshes them.
+
+### Revision 3 Public Reference Review
+
+Revision 3 is a generic compatibility protocol, not a business API allowlist.
+Inspect loaded `setup_revisions` and `initialization_profiles` in the original
+supervisor's status. Installing new files does not upgrade an old running worker;
+missing/mixed worker or native components fail admission before credential access.
+
+The three explicit profiles are `json-utf8-v1`, `form-utf8-v1` and
+`form-json-name-view-v1`. The last requires a valid form with one structured
+JSON-name carrier and an empty value; it is not automatic recursive decoding.
+Structured query names are unsupported and cannot borrow this body-only profile.
+Unsupported UTF-8/charset/percent spelling, duplicate/prototype keys, unsafe
+numbers, unknown roles and real authentication/private slots stay blocked.
+`userSession` is not automatically safe or private solely because of its name.
+Public API keys, tokens and actual session material cannot become initialization
+authority merely by being constant.
+
+Public discovery exposes opaque request, representation and complete literal
+refs for v3-only candidates, with positions/types/counts, never their captured
+path, keys, headers, values or hashes. Legacy-safe discovery retains its existing
+descriptor contract; v3-only requests cannot downgrade through it. Build a setup
+using only fresh refs and independently proposed checks/evidence:
+
+```json
+{
+  "revision": 3,
+  "phase": "bootstrap",
+  "requests": [{
+    "network_ref": "<fresh opaque request ref>",
+    "purpose": "initialization-read",
+    "representation_ref": "<owned named-profile ref>",
+    "literal_review_refs": ["<every literal ref, in the observed order>"],
+    "max_uses": 2,
+    "evidence": [{"kind": "api-document", "reference": "<deployed independent contract>"}],
+    "response_checks": [{"pointer": "/ready", "test": "equals-boolean", "expected": true}]
+  }]
+}
+```
+
+This is a shape example, not the real site's schema. Do not guess `/ready` or
+accept a `get_*` name, frontend call or HTTP success as effect evidence. V3 accepts
+no raw public request values, caller approval flags, resources or replacement IDs.
+Do not mix V2 and V3 initialization contracts within one preauth lifecycle;
+existing V2 static and separately approved Login scopes remain usable.
+
+In **Review Public Reference**, the human independently supplies complete public
+wire-reference JSON: `profile_id`, `target_text`, `content_type`, `body_text`,
+`public_headers` (ordered name/value rows). Include exact supported spelling,
+spacing, ordering, escaping and every non-fixed effective header. The reference
+does not come from copying an unknown intercepted value, and cannot change the
+outgoing request. Separately review public invariance, non-auth role, deployed
+initialization-read effects, source/revision/deployment/basis and response
+predicates. A sensitive-name acknowledgment and original cookie-role evidence
+are required where indicated. Real secrets must never be entered here.
+
+**Compare Public Reference** is a bounded private comparison, not approval. Edits
+invalidate its proof. Only a complete current match enables **Approve Selected**;
+Select All and Apply to Checked cannot create reference judgments. Partial
+approval leaves all declared prerequisites required. The original supervisor
+must durably commit and report active authority before explicit UI resume.
+
+Bounds: 32 complete reference units/request, 96/proposal, 32 KiB including capture,
+view, context and native manifest, 32 items, 200 uses, four active grants, one
+pending review. Path segments, keys, values, containers and all non-fixed public
+header names/values count. Fixed transport headers are still exactly bound.
+Split an oversized plan without dropping fields or increasing ceilings. The
+original 180-second maximum includes reference comparisons and final commit;
+comparisons are at most 10 seconds, one outstanding and eight attempts/proposal.
+
+Forwarding consumes the newly captured immutable request, not a reconstructed
+payload or a replay. Private memory-only proofs bind source and effective headers,
+wire bytes, context and current resume/document/generation. An original-cookie
+snapshot is checked at capture, permit preparation and after TLS before HTTP;
+attribute-only changes also deny. Cookie bytes are not regenerated or exported.
+Only exposed attributes of the pinned browser API are covered: snapshots cannot
+prove absence of transient A-to-B-to-A changes or attributes the API omits.
+Unsupported or ambiguous contexts fail closed; this is not universal taint tracking.
+
+Initialization remains pre-credential only, with strict 64-KiB response validation
+before fulfillment and no Set-Cookie/auth negotiation/redirect/unknown encoding.
+Revocation invalidates issued work; expiry blocks delayed readiness and arming.
+No business write follows from initialization. Obtain separate Login, then Read,
+and never resubmit a potentially sent authentication exchange.
 
 ## Approve a Read or Button Batch
 
@@ -375,7 +470,7 @@ those rows separately. Non-network rows stay Not applicable. Neither batch
 control grants authority or sends a decision; final approval is still separate.
 The read-only Scope column and its tooltip show the sanitized request label,
 while full details remain available. The countdown shows the existing
-120-second review deadline, not the separately bounded lifetime after approval.
+180-second maximum review deadline, not the separately bounded lifetime after approval.
 Rejecting a prerequisite blocks its dependent items. The agent cannot approve
 itself.
 
@@ -422,7 +517,7 @@ Hover over **Uses**, **Rows**, **Columns** or **Bytes** to inspect the execution
 read-output limit. **Lifetime (seconds)** bounds the authorization represented by
 this window: task grants allow up to 43,200 seconds (12 hours), while one-use
 action confirmations allow at most 30 seconds. The request, session and lease
-may lower these bounds; neither extends the separate 120-second pending review.
+may lower these bounds; neither extends the separate 180-second maximum pending review.
 Limits can only be narrowed. **Approve Selected** is the final decision.
 **Revoke** or closing an active task-grant window stops that grant. Cancelling
 an action confirmation does not itself revoke its parent grant; revocation

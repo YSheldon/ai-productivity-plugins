@@ -44,7 +44,7 @@ def test_default_long_request_is_still_pending_until_a_bound_human_decision():
     result = broker.request([item()], idempotency_key='long-default')
     manifest = broker.approval_manifest(result['request_id'])
     assert manifest['ttl_seconds'] == 43200
-    assert manifest['wait_seconds'] == 120
+    assert manifest['wait_seconds'] == 180
     assert result['state'] == 'pending' and result['grant_id'] is None
     with pytest.raises(auth.ScopeError, match='approval-required'):
         broker.reserve(result['request_id'], 'read', 'not-approved', {})
@@ -58,6 +58,7 @@ def test_long_task_service_default_reaches_the_native_manifest():
     result = service.request({'items': [{}], 'idempotency_key': 'long-service'})
     manifest, callbacks = prompts[-1]
     assert manifest['ttl_seconds'] == 43200
+    assert manifest['wait_seconds'] == 180
     assert result['state'] == 'pending' and result['approval_ui']['review_remaining_seconds'] == 120
     decision = callbacks['on_decision']({'nonce': manifest['nonce'], 'request_digest': manifest['request_digest'],
         'choices': [{'item_id': 'read', 'max_uses': 2, 'targets': []}], 'ttl_seconds': 43200})
@@ -68,7 +69,9 @@ def test_twelve_hour_request_does_not_extend_the_review_deadline():
     broker, clock, _, _ = long_broker()
     request = broker.request([item()], idempotency_key='review-still-short', ttl_seconds=43200)
     manifest = broker.approval_manifest(request['request_id'])
-    clock.now += 120
+    clock.now += 179
+    assert broker.status(request['request_id'])['state']=='pending'
+    clock.now += 1
     with pytest.raises(auth.ScopeError, match='request-expired'):
         broker.accept_decision(request['request_id'], nonce=manifest['nonce'], digest=manifest['request_digest'],
             choices=[], ttl_seconds=43200)
@@ -107,7 +110,7 @@ def test_long_write_does_not_remove_action_time_confirmation_or_its_thirty_secon
     with pytest.raises(auth.ScopeError, match='action-confirmation-required'):
         broker.authorize_attempt(attempt['attempt_id'])
     manifest = broker.confirmation_manifest(attempt['attempt_id'])
-    assert manifest['ttl_seconds'] == 30 and manifest['wait_seconds'] == 120
+    assert manifest['ttl_seconds'] == 30 and manifest['wait_seconds'] == 180
     broker.accept_action_decision(attempt['attempt_id'], nonce=manifest['nonce'], digest=manifest['request_digest'],
         choices=[{'item_id': 'remove', 'targets': ['host-one'], 'max_uses': 1}], ttl_seconds=30)
     clock.now += 30

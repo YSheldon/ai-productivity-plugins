@@ -276,11 +276,11 @@ class Broker:
                 del self._audit_transaction.events
                 del self._audit_transaction.limit
 
-    def request(self, items, *, idempotency_key, ttl_seconds=MAX_GRANT_SECONDS):
+    def request(self, items, *, idempotency_key, ttl_seconds=MAX_GRANT_SECONDS, setup_context=None):
         key = identifier(idempotency_key)
         integer(ttl_seconds, 60, MAX_GRANT_SECONDS)
         rows = validate_items(items)
-        submitted = digest({'items':rows,'ttl':ttl_seconds})
+        submitted = digest({'items':rows,'ttl':ttl_seconds,'setup':setup_context})
         with self.lock:
             self._valid()
             if key in self.request_keys:
@@ -296,8 +296,9 @@ class Broker:
                 raise ScopeError('lifetime-insufficient')
             identifier_value = secrets.token_hex(16)
             request = {'id':identifier_value,'nonce':secrets.token_hex(32),
-                'submitted':submitted,'digest':digest({'binding':self.binding,'scope':rows,'ttl':ttl_seconds}),
+                'submitted':submitted,'digest':digest({'binding':self.binding,'scope':rows,'ttl':ttl_seconds,'setup':setup_context}),
                 'items':rows,'ttl':ttl_seconds,'state':'pending','created':self.clock(),
+                'setup_context':copy.deepcopy(setup_context),
                 'review_deadline':min(self.clock()+120,self.binding['deadline']),
                 'grant_id':None,'fence':threading.Event(),'item_states':{row['item_id']:'pending' for row in rows}}
             self._event('request-created',request_id=identifier_value,request_digest=request['digest'],count=len(rows))
@@ -356,7 +357,10 @@ class Broker:
                     review=original['parameters'].get('review_kind')
                     if review is not None:
                         expected='read' if review=='unclassified' else review
-                        if expected not in {'read','write','bootstrap','login'} or choice.get('semantic_classification')!=expected:
+                        if expected not in {'read','write','bootstrap','login','initialization-read'} or choice.get('semantic_classification')!=expected:
+                            raise ScopeError('decision-invalid')
+                        if expected=='initialization-read' and (not request.get('setup_context') or
+                            request['setup_context'].get('contracts',{}).get(name,{}).get('purpose')!='initialization-read'):
                             raise ScopeError('decision-invalid')
                         selected[name]['parameters']['approved_semantics']=expected
                     elif 'semantic_classification' in choice:
@@ -392,6 +396,7 @@ class Broker:
                 if request['fence'].is_set():
                     raise ScopeError('grant-revoked')
                 self.grants[grant_id]={'state':'active','items':selected,'deadline':deadline,'scope_digest':scope_digest,
+                    'setup_context':copy.deepcopy(request.get('setup_context')),
                     'remaining':{n:r['max_uses'] for n,r in selected.items()},'verified':set(),'revoked_items':set(),'write_reservations':0,'request_id':request_id}
                 request['grant_id']=grant_id
             return self.status(request_id)

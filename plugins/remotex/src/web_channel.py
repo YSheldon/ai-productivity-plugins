@@ -24,7 +24,9 @@ class Channel:
         self._responses: queue.Queue = queue.Queue(maxsize=2)
         self._closed = threading.Event()
         self.authorize = None
+        self.authorize_network = None
         self.authorize_batch = None
+        self.on_startup = None
         self.on_close = None
 
     def start(self):
@@ -37,6 +39,10 @@ class Channel:
                 if not line or len(line) > 131072 or not line.endswith(b'\n'):
                     break
                 value = json.loads(line)
+                if isinstance(value,dict) and set(value)=={'event','state'} and value['event']=='startup-state':
+                    if not isinstance(value['state'],dict) or not callable(self.on_startup) or self.on_startup(value['state']) is not True:
+                        break
+                    continue
                 if isinstance(value,dict) and set(value)=={'event','checks'} and value['event']=='authorization-check-batch':
                     checks=value['checks']
                     if (len(line)>32768 or not isinstance(checks,list) or not 2<=len(checks)<=16 or any(
@@ -60,6 +66,17 @@ class Channel:
                     if not isinstance(value['id'],str) or re.fullmatch(r'[a-f0-9]{32}',value['id']) is None or not isinstance(value['request'],dict):
                         break
                     allowed=False
+                    if value['request'].get('kind')=='network' and callable(self.authorize_network):
+                        try:
+                            reply=self.authorize_network(value['request'],value['id'])
+                            if isinstance(reply,dict) and set(reply)=={'allowed','permit'} and reply['allowed'] is True and isinstance(reply['permit'],dict):
+                                self._send({'authorization_reply':value['id'],**reply})
+                                continue
+                            allowed=reply is True
+                        except Exception:
+                            allowed=False
+                        self._send({'authorization_reply':value['id'],'allowed':allowed})
+                        continue
                     if callable(self.authorize):
                         try:
                             allowed=self.authorize(value['request']) is True

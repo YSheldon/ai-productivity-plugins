@@ -8,6 +8,7 @@ import time
 
 from web_authorization import Broker, ScopeError, MAX_GRANT_SECONDS, canonical, digest
 from web_approval import ApprovalPrompt
+from web_initialization import StartupAuthority, validate_setup_context
 
 
 class Service:
@@ -21,9 +22,12 @@ class Service:
         self.executing, self.dispatched = set(), set()
         self.retired=set()
         self.receipt_authorities={}
-        self.execute_lock = threading.Lock()
+        self.execute_lock = threading.RLock()
+        self.startup=StartupAuthority(binding,clock=clock)
         self.channel.authorize = self._authorize
+        self.channel.authorize_network = self._authorize_network
         self.channel.authorize_batch = self._authorize_batch
+        self.channel.on_startup = self._startup_event
         self.channel.on_close = self.broker.emergency_revoke
 
     def _close(self):
@@ -42,15 +46,27 @@ class Service:
         return {'state':'revoked','session_closed':True,'auditPending':True}
 
     def _worker(self, operation, args):
+        with self.execute_lock:
+            return self._worker_locked(operation,args)
+
+    def _worker_locked(self, operation, args):
         self.broker._valid()
         options={}
+        ticket=None
         if operation=='resume-login':
             remaining=self.channel.deadline/1000-time.time()
             if remaining<=0:
                 self.channel.close()
                 raise ScopeError('session-unavailable')
             options['timeout']=min(55,remaining)
-        result = self.channel.request(operation, args, **options)
+            if self.startup.lifecycle and not self.startup.authentication_forwarded:
+                ticket=self.startup.begin(lifecycle=self.startup.lifecycle,session_deadline_ms=self.channel.deadline)
+                args={'startup':ticket}
+        try:
+            result = self.channel.request(operation, args, **options)
+        finally:
+            if ticket:
+                self.startup.end(ticket['resume_id'])
         if result.get('ok') is not True:
             code = result.get('failureCode', 'control-failed')
             if not isinstance(code, str) or len(code)>64:
@@ -86,8 +102,16 @@ class Service:
             raise ScopeError('request-invalid')
         resolved = self._worker('resolve-setup' if 'setup' in args else 'resolve-items',
             {'setup':args['setup']} if 'setup' in args else {'items':args['items']})
+        setup_context=None
+        if resolved.get('setup_revision') is not None:
+            setup_context=validate_setup_context(resolved,self.broker.binding)
+            if resolved.get('replace_grant_ids'):
+                raise ScopeError('capability-unsupported')
+        elif any(isinstance(c,dict) and (c.get('revision')==2 or c.get('semantics')=='initialization-read')
+                 for c in resolved.get('contracts',{}).values()):
+            raise ScopeError('request-invalid')
         result = self.broker.request(resolved.get('items'), idempotency_key=args.get('idempotency_key'),
-                                     ttl_seconds=args.get('ttl_seconds',MAX_GRANT_SECONDS))
+                                     ttl_seconds=args.get('ttl_seconds',MAX_GRANT_SECONDS),setup_context=setup_context)
         request_id = result['request_id']
         if request_id in self.contexts:
             return self._ui_result(result,request_id)
@@ -95,6 +119,13 @@ class Service:
         if not isinstance(contracts,dict) or len(canonical(contracts))>65536:
             raise ScopeError('request-invalid')
         self.contexts[request_id] = copy.deepcopy(contracts)
+        if setup_context:
+            try:
+                self.startup.register(setup_context)
+                self._worker('register-initialization',{'contracts':contracts})
+            except Exception:
+                self.broker.cancel(request_id)
+                raise
         manifest = self.broker.approval_manifest(request_id)
         try:
             self.prompts[request_id] = self.prompt.start(manifest,
@@ -117,6 +148,9 @@ class Service:
         if request_id in self.retired:
             return
         self.broker.revoke_request(request_id)
+        grant_id=self.broker.requests.get(request_id,{}).get('grant_id')
+        if self.startup.active and grant_id in self.startup.used_grants:
+            self.broker.emergency_revoke()
         if any(self.broker.grants[self.broker.attempts[attempt]['grant_id']]['request_id']==request_id
                for attempt in list(self.executing)):
             self.broker.emergency_revoke()
@@ -150,10 +184,12 @@ class Service:
             return self.broker._valid
         return None
 
-    def _retire_startup(self):
+    def _retire_startup(self,exclude_login=False):
         for request_id,request in list(self.broker.requests.items()):
             contracts=self.contexts.get(request_id,{})
             if request_id in self.retired or not contracts or any(c.get('phase') not in {'bootstrap','login-once'} for c in contracts.values()):
+                continue
+            if exclude_login and any(c.get('semantics')=='login' for c in contracts.values()):
                 continue
             self.retired.add(request_id)
             if request.get('grant_id'):
@@ -167,6 +203,8 @@ class Service:
         network=self._worker('network-status',{})
         result['pending_network']=network.get('descriptors',[])
         result['phase']=network.get('phase')
+        result['setup_revisions']=[1,2]
+        result['initialization']=self.startup.status()
         if result['phase'] in {'discovery-only','grant-active'}:
             self._retire_startup()
         return self._ui_result(result,request_id) if request_id else result
@@ -185,7 +223,43 @@ class Service:
         except Exception:
             return False
 
-    def _network(self, message):
+    def _startup_event(self,frame):
+        try:
+            with self.broker.lock:
+                self.broker._valid()
+                event=self.startup.event(frame)
+                self.broker._event(event.pop('event'),**event)
+                if frame['kind']=='authentication-forwarded':
+                    self._retire_startup(exclude_login=True)
+                return True
+        except Exception:
+            self.broker.emergency_revoke()
+            return False
+
+    def _authorize_network(self,message,check_id):
+        try:
+            if (not isinstance(message,dict) or message.get('kind')!='network' or
+                set(message) not in ({'kind','phase','attempt_id','descriptor','digest'},
+                    {'kind','phase','attempt_id','descriptor','digest','startup'}) or
+                not isinstance(check_id,str) or re.fullmatch('[a-f0-9]{32}',check_id) is None):
+                return False
+            return self._network(message,check_id)
+        except Exception:
+            return False
+
+    def _contract_current(self,contract,message):
+        if contract.get('revision')==2:
+            if (message['phase'] not in contract['phase_applicability'] or
+                contract['preauth_lifecycle']!=self.startup.lifecycle):
+                return False
+            try:
+                self.startup.matches(message)
+            except ScopeError:
+                return False
+            return True
+        return contract.get('phase')==message['phase']
+
+    def _network(self, message, check_id=None):
         self.broker._valid()
         phase, attempt_id = message['phase'], message['attempt_id']
         if phase not in {'bootstrap','login-once','grant-active'}:
@@ -203,7 +277,7 @@ class Service:
             return False
         for grant_id, contracts in candidates:
             for item_id, contract in contracts.items():
-                if contract.get('phase')!=phase:
+                if not self._contract_current(contract,message):
                     continue
                 if action and contract.get('parent_id')!=action['item_id']:
                     continue
@@ -215,7 +289,9 @@ class Service:
                     continue
                 classification=scope['parameters'].get('approved_semantics')
                 expected_class='read' if contract.get('semantics')=='unclassified' else contract.get('semantics')
-                if classification!=expected_class or classification not in {'read','write','bootstrap','login'}:
+                if classification!=expected_class or classification not in {'read','write','bootstrap','login','initialization-read'}:
+                    continue
+                if classification=='initialization-read' and (check_id is None or contract.get('revision')!=2):
                     continue
                 expected=copy.deepcopy(contract.get('descriptor'))
                 if classification=='write':
@@ -257,6 +333,15 @@ class Service:
                             self.broker.authorize_attempt(attempt_id,consume=True)
                         self.broker.finish(permit['attempt_id'],state='verified',summary={'count':1})
                     self.broker._valid()
+                    self.broker._grant(grant_id,item_id)
+                    if contract.get('revision')==2:
+                        self.startup.matches(message)
+                        self.startup.used_grants.add(grant_id)
+                    if classification=='initialization-read':
+                        receipt=self.startup.issue(check_id=check_id,message=message,contract=contract)
+                        self.broker._event('initialization-permit-issued',contract_digest=receipt['prerequisite_id'],count=1)
+                        self.broker._grant(grant_id,item_id)
+                        return {'allowed':True,'permit':receipt}
                     if action:
                         self.dispatched.add(attempt_id)
                     return True
@@ -276,7 +361,8 @@ class Service:
             matches=[]
             for message in messages:
                 candidates=[]
-                if (isinstance(message,dict) and set(message)=={'kind','phase','attempt_id','descriptor','digest'} and
+                if (isinstance(message,dict) and set(message) in ({'kind','phase','attempt_id','descriptor','digest'},
+                    {'kind','phase','attempt_id','descriptor','digest','startup'}) and
                     message['kind']=='network' and message['phase'] in {'bootstrap','login-once'} and
                     message['attempt_id'] is None and isinstance(message['digest'],str) and
                     re.fullmatch(r'[a-f0-9]{64}',message['digest'])):
@@ -289,7 +375,7 @@ class Service:
                         for grant_id,contracts in list(self.grant_contexts.items()):
                             for item_id,contract in contracts.items():
                                 semantics=contract.get('semantics')
-                                if (contract.get('phase')!=message['phase'] or semantics not in {'bootstrap','login'} or
+                                if (not self._contract_current(contract,message) or semantics not in {'bootstrap','login'} or
                                     canonical(contract.get('descriptor'))!=canonical(descriptor)):
                                     continue
                                 try:
@@ -298,6 +384,8 @@ class Service:
                                     continue
                                 if scope['parameters'].get('approved_semantics')==semantics:
                                     candidates.append((grant_id,item_id,scope['parameters']))
+                                    if contract.get('revision')==2:
+                                        self.startup.used_grants.add(grant_id)
                 matches.append(candidates)
             result=self.broker.consume_static_network_batch(matches)
             self.broker._valid()

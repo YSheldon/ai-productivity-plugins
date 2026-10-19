@@ -8,6 +8,26 @@ function Get-EffectReviewLabel([string]$Kind) {
     }
 }
 
+function Get-EffectReviewHint([string]$Classification) {
+    switch ($Classification) {
+        'Unreviewed' { return 'Unreviewed: inspect the exact effect and evidence; no network permission yet.' }
+        'Read' { return 'Read: reviewed information retrieval; no business changes. HTTP method alone is not proof.' }
+        'Business Write' { return 'Business Write: exact targets and a change preview required. High-risk actions also need one-use confirmation.' }
+        'Bootstrap' { return 'Bootstrap: startup page/assets only. Exact GET/HEAD; no POST or business changes.' }
+        'Login' { return 'Login: exact reviewed sign-in exchanges for this site/account only; no business-operation permission.' }
+        'Not applicable' { return 'Not applicable: no network-effect classification for this item. Explicit approval is still required.' }
+        default { return 'Unknown classification: no implied permission. Inspect the exact item before approval.' }
+    }
+}
+
+function Update-SelectedEffectHint($Grid, $Hint) {
+    if ($Grid.SelectedRows.Count -eq 0) {
+        $Hint.Text = 'Select an item to see its current effect classification and limits.'
+        return
+    }
+    $Hint.Text = 'Selected item - ' + (Get-EffectReviewHint ([string]$Grid.SelectedRows[0].Cells['Effect Review'].Value))
+}
+
 function Set-ApprovalChecks($Grid, [bool]$Checked) {
     $null = $Grid.EndEdit()
     foreach ($row in $Grid.Rows) { $row.Cells['Approve'].Value = $Checked }

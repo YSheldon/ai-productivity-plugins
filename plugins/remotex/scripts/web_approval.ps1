@@ -60,7 +60,8 @@ try {
     # Standard output is reserved for decision and revocation frames.
     $null = $layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent, 70)))
     $null = $layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent, 30)))
-    foreach ($height in @(90, 46)) { $null = $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute, $height))) }
+    $null = $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute, 90)))
+    $null = $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::AutoSize)))
     foreach ($height in @(55, 45)) { $null = $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Percent, $height))) }
     $null = $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute, 76)))
     $form.Controls.Add($layout)
@@ -85,6 +86,13 @@ try {
     $semanticColumn.Name = 'Effect Review'; $semanticColumn.FillWeight = 170
     $semanticColumn.Items.AddRange(@('Not applicable', 'Unreviewed', 'Read', 'Business Write', 'Bootstrap', 'Login'))
     $null = $grid.Columns.Add($semanticColumn)
+    $limitHints = @{
+        Uses = 'Maximum executions for this item. You may reduce, but not increase, the requested count.'
+        Rows = 'Maximum rows returned by an approved read, not the number of targets that may be changed.'
+        Columns = 'Maximum columns returned by an approved read. Only the approved output is included.'
+        Bytes = 'Maximum returned data in bytes. A lower value narrows the approved output budget.'
+    }
+    foreach ($name in $limitHints.Keys) { $grid.Columns[$name].HeaderCell.ToolTipText = $limitHints[$name] }
     foreach ($name in @('Uses', 'Rows', 'Columns', 'Bytes')) { $grid.Columns[$name].FillWeight = 45 }
     $grid.Columns['Item'].FillWeight = 120; $grid.Columns['Capability'].FillWeight = 140
     $grid.Columns['Scope'].FillWeight = 220; $grid.Columns['Scope'].MinimumWidth = 250
@@ -94,18 +102,33 @@ try {
             [string]$item.output.rows, [string]$item.output.columns, [string]$item.output.bytes, $effectReview)
         if (-not $item.parameters.review_kind) { $grid.Rows[$rowIndex].Cells['Effect Review'].ReadOnly = $true }
         $grid.Rows[$rowIndex].Cells['Scope'].ToolTipText = [string]$item.display.label
+        foreach ($name in $limitHints.Keys) { $grid.Rows[$rowIndex].Cells[$name].ToolTipText = $limitHints[$name] }
         $script:targetSelections[[string]$item.item_id] = @($item.targets)
     }
     $layout.Controls.Add($grid, 0, 2); $layout.SetColumnSpan($grid, 2)
+    $detailsPanel = New-Object Windows.Forms.TableLayoutPanel
+    $detailsPanel.Dock = 'Fill'; $detailsPanel.ColumnCount = 1; $detailsPanel.RowCount = 2
+    $null = $detailsPanel.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent, 100)))
+    $null = $detailsPanel.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::AutoSize)))
+    $null = $detailsPanel.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Percent, 100)))
+    $layout.Controls.Add($detailsPanel, 0, 3)
+    $rowHint = New-Object Windows.Forms.Label
+    $rowHint.AutoSize = $true; $rowHint.Dock = 'Top'; $rowHint.Padding = New-Object Windows.Forms.Padding(3, 6, 3, 6)
+    $rowHint.Text = 'Select an item to see its current effect classification and limits.'
+    $detailsPanel.Controls.Add($rowHint, 0, 0)
+    $detailsPanel.Add_SizeChanged({
+        $rowHint.MaximumSize = New-Object Drawing.Size([Math]::Max(1, $detailsPanel.ClientSize.Width - $rowHint.Margin.Horizontal), 0)
+    })
     $details = New-Object Windows.Forms.TextBox
     $details.Dock = 'Fill'; $details.Multiline = $true; $details.ReadOnly = $true
     $details.ScrollBars = 'Both'; $details.WordWrap = $false
-    $layout.Controls.Add($details, 0, 3)
+    $detailsPanel.Controls.Add($details, 0, 1)
     $targetList = New-Object Windows.Forms.CheckedListBox
     $targetList.Dock = 'Fill'; $targetList.CheckOnClick = $true
     $layout.Controls.Add($targetList, 1, 3)
     $grid.Add_SelectionChanged({
         Save-Targets
+        Update-SelectedEffectHint -Grid $grid -Hint $rowHint
         if ($grid.SelectedRows.Count -eq 0) { return }
         $script:selectedId = [string]$grid.SelectedRows[0].Cells['Item'].Value
         $item = @($manifest.items | Where-Object { $_.item_id -eq $script:selectedId })[0]
@@ -116,7 +139,8 @@ try {
     })
     $grid.Add_CurrentCellDirtyStateChanged({ if ($grid.IsCurrentCellDirty) { $null = $grid.CommitEdit([Windows.Forms.DataGridViewDataErrorContexts]::Commit) } })
     $batchTools = New-Object Windows.Forms.FlowLayoutPanel
-    $batchTools.Dock = 'Fill'; $batchTools.WrapContents = $false; $batchTools.AutoScroll = $true
+    $batchTools.Dock = 'Fill'; $batchTools.WrapContents = $true; $batchTools.AutoSize = $true
+    $batchTools.AutoSizeMode = 'GrowAndShrink'
     $batchTools.Padding = New-Object Windows.Forms.Padding(10, 4, 10, 4)
     $layout.Controls.Add($batchTools, 0, 1); $layout.SetColumnSpan($batchTools, 2)
     $selectAllButton = New-Object Windows.Forms.Button
@@ -133,6 +157,12 @@ try {
     $batchReview.Items.AddRange(@('Unreviewed','Read','Business Write','Bootstrap','Login'))
     $batchReview.SelectedIndex = 0
     $batchTools.Controls.Add($batchReview)
+    $batchHint = New-Object Windows.Forms.Label
+    $batchHint.AutoSize = $true; $batchHint.MaximumSize = New-Object Drawing.Size(320, 0)
+    $batchHint.MinimumSize = New-Object Drawing.Size(0, ($form.Font.Height * 4))
+    $batchHint.Text = Get-EffectReviewHint ([string]$batchReview.SelectedItem)
+    $batchTools.Controls.Add($batchHint)
+    $batchReview.Add_SelectedIndexChanged({ $batchHint.Text = Get-EffectReviewHint ([string]$batchReview.SelectedItem) })
     $applyCheckedButton = New-Object Windows.Forms.Button
     $applyCheckedButton.Text = 'Apply to Checked'; $applyCheckedButton.AutoSize = $true
     $batchTools.Controls.Add($applyCheckedButton)
@@ -143,6 +173,7 @@ try {
     $grid.Add_CellValueChanged({
         $checkedCount = @($grid.Rows | Where-Object { $_.Cells['Approve'].Value -eq $true }).Count
         $selectionCount.Text = "$checkedCount of $($grid.Rows.Count) checked"
+        Update-SelectedEffectHint -Grid $grid -Hint $rowHint
     })
     $selectAllButton.Add_Click({ Set-ApprovalChecks -Grid $grid -Checked $true })
     $clearSelectionButton.Add_Click({ Set-ApprovalChecks -Grid $grid -Checked $false })
@@ -168,6 +199,16 @@ try {
     $revokeButton = New-Object Windows.Forms.Button
     $revokeButton.Text = 'Revoke'; $revokeButton.AutoSize = $true; $revokeButton.Enabled = $false
     $buttons.Controls.Add($revokeButton)
+    $helpTips = New-Object Windows.Forms.ToolTip
+    $helpTips.AutoPopDelay = 15000; $helpTips.ShowAlways = $true
+    $helpTips.SetToolTip($ttl, 'Lifetime in seconds, capped by this request/session/lease. Task grants: up to 12 hours; one-use action confirmations: up to 30 seconds. Separate from the 120-second review deadline.')
+    $helpTips.SetToolTip($ttlLabel, $helpTips.GetToolTip($ttl))
+    $helpTips.SetToolTip($selectAllButton, 'Checks the requested items only; does not classify or approve them.')
+    $helpTips.SetToolTip($clearSelectionButton, 'Unchecks items without changing their reviewed classification.')
+    $helpTips.SetToolTip($applyCheckedButton, 'Sets a compatible classification on checked network items; does not approve them.')
+    $helpTips.SetToolTip($approveButton, 'Approves only checked items with their reviewed effects, selected targets and reduced limits.')
+    $helpTips.SetToolTip($rejectButton, 'Rejects this pending request; does not revoke independent active grants.')
+    $helpTips.SetToolTip($revokeButton, 'Stops the authorization in this window; cancelling an action confirmation does not revoke its parent grant. An in-flight revocation may close the session. It cannot undo server-accepted work. Closing this active window has the same effect.')
     $approveButton.Add_Click({
         Save-Targets; $null = $grid.EndEdit()
         $choices = @()
@@ -221,7 +262,7 @@ try {
     $timer.Start()
     $form.Add_Shown({ $grid.ClearSelection(); if ($grid.Rows.Count -gt 0) { $grid.Rows[0].Selected = $true }; $script:uiShown = $true; Send-UiReceipt 'shown' 'shown'; $form.Activate() })
     $null = $form.ShowDialog()
-    $timer.Stop(); $timer.Dispose(); $form.Dispose()
+    $timer.Stop(); $timer.Dispose(); $form.Dispose(); $helpTips.Dispose()
 } catch {
     Send-UiReceipt 'error' $(if ($script:uiShown) { 'helper-ui-failed' } else { 'helper-startup-failed' })
     exit 1

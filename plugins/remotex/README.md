@@ -18,6 +18,14 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
+Version `0.6.7` explains each Effect Review category beside the native dropdown
+and shows the selected row's current classification above its request details.
+Limit and lifetime tooltips clarify finite counts, read-output budgets, the
+120-second review and task grants of up to 12 hours. Help wraps as the window
+resizes. Selecting a category only changes the help; Apply to Checked and final
+Approve Selected remain separate actions. No permission, deadline, credential,
+certificate or queue boundary changes. See [Approval help](docs/web-task-authorization.md#approval-help).
+
 Version `0.6.6` groups already queued startup JS/CSS GET checks into private
 transactions of at most 16 checks and 32 KiB. Each request still needs its own
 active human-approved scope and count. The complete old audit chain is verified

@@ -10,6 +10,8 @@ Version 0.6.4 adds non-authorizing native-window lifecycle receipts.
 Version 0.6.5 adds 12-hour task grants and durable startup audit event pairs.
 Version 0.6.6 groups already queued static checks into bounded private audit
 transactions; it does not combine or bypass their human-approved scopes.
+Version 0.6.7 adds inline classification explanations and limit/lifetime tooltips
+without changing authority or deadlines.
 For an interactive
 Windows regression, set `REMOTEX_TEST_NATIVE_APPROVAL=1` when running
 `plugins/remotex/tests/test_web_approval.py`. Its synthetic helper uses no saved
@@ -248,6 +250,34 @@ and inspected `network_evidence` to a subsequent request. Network rows are
 independently selectable; approving a button does not approve its requests.
 The initial implementation matches exact supported JSON/form descriptors rather
 than arbitrary predicates or endpoint/method wildcards.
+
+### Approval Help
+
+The Effect Review dropdown shows an adjacent explanation immediately. Selecting
+a grid row shows that row's current classification above its full details;
+changing the batch dropdown does not classify that row or approve it. Compatible
+checked rows change only when **Apply to Checked** is used. Help wraps at narrower
+window widths without covering the commands.
+
+| Classification | Meaning |
+| --- | --- |
+| Unreviewed | Effect/evidence has not been independently reviewed; no network permission |
+| Bootstrap | Exact startup document/assets GET/HEAD only; no POST or business changes |
+| Login | Exact reviewed sign-in exchanges for the bound site/account, not business permission |
+| Read | Reviewed information retrieval without business changes; the HTTP method alone is not proof |
+| Business Write | Exact target/change preview required; high-risk operations additionally need one-use confirmation |
+| Not applicable | Non-network item with no network-effect classification; explicit approval is still required |
+
+Hover over **Uses**, **Rows**, **Columns** or **Bytes** to inspect the execution or
+read-output limit. **Lifetime (seconds)** bounds the authorization represented by
+this window: task grants allow up to 43,200 seconds (12 hours), while one-use
+action confirmations allow at most 30 seconds. The request, session and lease
+may lower these bounds; neither extends the separate 120-second pending review.
+Limits can only be narrowed. **Approve Selected** is the final decision.
+**Revoke** or closing an active task-grant window stops that grant. Cancelling
+an action confirmation does not itself revoke its parent grant; revocation
+during an in-flight operation can fence/close the session. None of these actions
+can undo work already accepted by the server.
 
 ## Prepare a Business Write
 

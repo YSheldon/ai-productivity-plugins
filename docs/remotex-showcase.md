@@ -58,7 +58,9 @@ flowchart LR
     B --> C[Local Windows credential input]
     C --> D[Credential-free TLS and page probe]
     D --> E[Acquire local FIFO lease]
-    E --> F[Submit once in isolated Edge]
+    E --> K[Native static and initialization review]
+    K --> L[Required responses and visible controls]
+    L --> F[Separate Login approval and submit once]
     F --> G[Verified or needs user check]
     G --> H[Request bounded local human task approval]
     H --> J[Read or operate approved observed controls]
@@ -69,8 +71,8 @@ flowchart LR
 2. Preview an HTTPS profile, account identifier, and credential alias. Confirm the scope before opening the local password window.
 3. Use normal system TLS trust. For a private endpoint, a user may explicitly approve its exact origin and a trusted-channel-verified leaf certificate SHA-256 pin.
 4. Run the credential-free probe. A wrong, expired, or not-yet-valid pinned certificate blocks HTTP transmission.
-5. Acquire the local queue for the authorized operation and submit once in isolated Edge.
-6. Review missing startup/login contracts before transmission. Distinguish `submitted`, `needs-user-check`, and `verified`; current host browser permission remains mandatory.
+5. Acquire the local queue for the authorized operation and start isolated Edge. Review exact static scopes locally. In 0.6.8, required pre-login JSON/form POSTs need distinct Initialization Read approval, trustworthy handler/effect evidence and bounded response checks before any credential insertion.
+6. Explicitly resume after approval; only after readiness obtain separate observed Login approval and submit once. Distinguish `submitted`, `needs-user-check`, and `verified`; current host browser permission remains mandatory.
 7. Discover components and request a bounded local human task grant. Read or operate only its observed controls; show concrete target/change previews before real writes and verify actual target results separately. Close the session and release its queue.
 
 ```text
@@ -81,7 +83,7 @@ Use the element IDs observed on its login page. Do not accept a password in chat
 
 The hostname is intentionally non-operational. Do not invent selectors or use a
 demo pin as real trust. Web sign-in requires **Windows, Edge, Node.js 24+, and
-Playwright Core 1.62.1**. Pins substitute for CA/hostname identity checks only at
+Playwright Core 1.62.1 plus jsonc-parser 3.3.1**. Pins substitute for CA/hostname identity checks only at
 the approved origin; validity checks remain. No global trust-store change or
 browser warning bypass is performed. [Full guide](../plugins/remotex/docs/web-credentials.md).
 
@@ -96,6 +98,10 @@ Same-session control does not register the isolated window as a generic browser
 tab. RemoteX 0.6.0 supports human-approved observed buttons, exact field input and
 target-bound business submission, with independent finite request permissions.
 See [Task authorization](../plugins/remotex/docs/web-task-authorization.md).
+Revision-2 static grant replacement can carry existing rows and remaining uses
+into one bounded proposal without extending the earliest source lifetime.
+It preserves four active grants and leaves room for separately reviewed Login;
+it never grants arbitrary POST access or hides initialization prerequisites.
 Server-side effects of a site
 route still require user authorization. Observation and passive result reading
 send no application request of their own.

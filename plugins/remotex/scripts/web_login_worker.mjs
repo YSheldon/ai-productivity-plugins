@@ -20,7 +20,7 @@ export async function launchEdge(pw, headless = false) {
   await new Promise((resolve,reject)=>{deny.once('error',reject);deny.listen(0,'127.0.0.1',resolve);});
   try {
     const browser = await pw.chromium.launch({channel:'msedge',headless,
-      args:[`--proxy-server=http://127.0.0.1:${deny.address().port}`,'--proxy-bypass-list=<-loopback>','--host-resolver-rules=MAP * ~NOTFOUND','--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
+      args:[`--proxy-server=http://127.0.0.1:${deny.address().port}`,'--proxy-bypass-list=<-loopback>','--host-resolver-rules=MAP * ~NOTFOUND','--force-webrtc-ip-handling-policy=disable_non_proxied_udp','--disable-back-forward-cache'],
       env:{...process.env,DEBUG:'',PWDEBUG:'',NODE_OPTIONS:''}});
     return {browser,deny};
   } catch(error) {deny.close();throw error;}
@@ -63,6 +63,26 @@ export function browserCancellation(context) {
   return cancellation;
 }
 
+export function watchStartupDocument(page,{origin,authenticating,onCommit,onReplace}) {
+  let firstRequest=null,committed=false,invalid=false;
+  const invalidate=()=>{if(!invalid){invalid=true;committed=false;onReplace();}};
+  const request=value=>{
+    if(invalid||authenticating()||!value.isNavigationRequest()||value.frame()!==page.mainFrame())return;
+    // BFCache stays disabled: a new HTTPS document has a navigation Request;
+    // a fragment/history change in the current document does not.
+    if(firstRequest&&firstRequest!==value)invalidate();
+    else firstRequest=value;
+  };
+  const navigated=frame=>{
+    if(invalid||authenticating()||frame!==page.mainFrame())return;
+    if(!sameOrigin(frame.url(),origin)){invalidate();return;}
+    if(!committed){committed=true;onCommit();}
+  };
+  page.on('request',request);page.on('framenavigated',navigated);
+  return {committed:()=>committed&&!invalid,
+    dispose:()=>{page.off('request',request);page.off('framenavigated',navigated);}};
+}
+
 export async function loadConfiguredDocument(page,cfg,{deadline=Date.now()+45000}={}){
   if(!sameOrigin(cfg.url,cfg.origin))throw new Error('origin-blocked');
   const started=performance.now(),now=Date.now();
@@ -101,7 +121,8 @@ export async function guardRoute(route, origin, failed, certificateSha256, signa
     }
     if(signal?.aborted||requestCancelled(request)){await route.abort();return;}
     completed=policy?.beginForwarding?.(route.request());
-    const activeSignal=completed?.startupSignal?(signal?AbortSignal.any([signal,completed.startupSignal]):completed.startupSignal):signal;
+    const activeSignal=completed?.startupSignal&&!completed.authentication?
+      (signal?AbortSignal.any([signal,completed.startupSignal]):completed.startupSignal):signal;
     if(completed?.initialization){
       const receipt=completed.initialization;
       const response=await initializationResponse(request,origin,certificateSha256,activeSignal,
@@ -114,7 +135,7 @@ export async function guardRoute(route, origin, failed, certificateSha256, signa
     }
     if(completed?.privateStartup){
       const response=await guardedResponse(request,origin,certificateSha256,activeSignal,
-        {deadline:completed.startupDeadline,beforeSend:completed.checkDispatch});
+        {deadline:completed.authentication?undefined:completed.startupDeadline,beforeSend:completed.checkDispatch});
       if(response.status>=300&&response.status<400&&response.status!==304){failed('redirect-blocked');await route.abort();return;}
       await route.fulfill(response);return;
     }
@@ -162,7 +183,7 @@ export function validateJob(job) {
   return c;
 }
 
-export async function submitLogin(page, cfg, username, password, check) {
+export async function submitLogin(page, cfg, username, password, check, beforeSubmit=()=>{}) {
   check();
   if (!sameOrigin(page.url(), cfg.origin)) throw new Error('origin-blocked');
   const user = page.locator(cfg.username_selector), secret = page.locator(cfg.password_selector), submit = page.locator(cfg.submit_selector);
@@ -177,6 +198,8 @@ export async function submitLogin(page, cfg, username, password, check) {
   await secret.pressSequentially(password, {timeout:15000});
   check();
   if (!sameOrigin(page.url(), cfg.origin)) throw new Error('origin-blocked');
+  // UI intent is not permission: NetworkPolicy still gates the actual exchange.
+  beforeSubmit();
   await submit.click({timeout:10000});
 }
 
@@ -253,13 +276,15 @@ async function main() {
       startupContext=snapshot;
       network.startupState.open(snapshot);
       network.startupState._event('document-opening');
-      let committed=false;
-      const documentCommitted=frame=>{
-        if(!committed&&frame===page.mainFrame()&&startupContext===snapshot){
-          committed=true;network.startupState._event('document-committed');
-        }
+      let loginSubmissionStarted=false;
+      const documentWatch=watchStartupDocument(page,{origin:cfg.origin,
+        authenticating:()=>loginSubmissionStarted||network.authenticationForwarded>0,
+        onCommit:()=>network.startupState._event('document-committed'),
+        onReplace:()=>{network.setPhase(network.phase);startupAbort.abort();rejected('authorization-contract-required');}});
+      const credentialCheck=()=>{
+        check();
+        if(startupAbort.signal.aborted||!documentWatch.committed())throw new Error('initialization-required');
       };
-      page.on('framenavigated',documentCommitted);
       try {
         await write({state:'opening',failureCode:null});
         try {await loadConfiguredDocument(page,cfg,{deadline:snapshot.deadline});}
@@ -276,7 +301,7 @@ async function main() {
           check();
           if(network.startupState.status().blocked)break;
           const visible=await Promise.all(['username_selector','password_selector','submit_selector'].map(name=>page.locator(cfg[name]).isVisible()));
-          if(committed&&visible.every(Boolean)&&network.startupState.canInsertCredentials()){ready=true;break;}
+          if(documentWatch.committed()&&visible.every(Boolean)&&network.startupState.canInsertCredentials()){ready=true;break;}
           await new Promise(resolve=>setTimeout(resolve,20));
         }
         if(!ready){check();await write({state:'needs-user-check',failureCode:'authorization-contract-required'});return {ok:true,authenticationVerified:false,contractRequired:true};}
@@ -286,12 +311,13 @@ async function main() {
           return {ok:true,authenticationVerified:false,loginOutcomeUnknown:true,doNotResubmit:true};
         }
         if(successVisibleBefore===null)successVisibleBefore=cfg.success_selector?await page.locator(cfg.success_selector).isVisible():false;
+        credentialCheck();
         // A seal invalidates all pre-credential checks without extending this resume.
         network.setPhase('login-once');
         const sealedContext=Object.freeze({...snapshot,phase:network.phase,generation:network.generation});
         network.startupState.updateContext(sealedContext);startupContext=sealedContext;
         network.startupState.armCredentials();
-        await submitLogin(page,cfg,job.username,job.password,check);
+        await submitLogin(page,cfg,job.username,job.password,credentialCheck,()=>{loginSubmissionStarted=true;});
         await write({state:'submitted',loginSubmitted:true});
         try {await secret.waitFor({state:'hidden',timeout:3000});}catch{}
         check();
@@ -303,7 +329,7 @@ async function main() {
           failureCode:!verified&&network.list().length?'authorization-contract-required':null});
         return {ok:true,authenticationVerified:verified,contractRequired:!verified&&network.list().length>0};
       } finally {
-        page.off('framenavigated',documentCommitted);
+        documentWatch.dispose();
         if(startupContext?.document_id===snapshot.document_id){
           network.startupState._event('resume-ended');network.startupState.end(startupContext);startupContext=null;
         }

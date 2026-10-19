@@ -12,6 +12,9 @@ Version 0.6.6 groups already queued static checks into bounded private audit
 transactions; it does not combine or bypass their human-approved scopes.
 Version 0.6.7 adds inline classification explanations and limit/lifetime tooltips
 without changing authority or deadlines.
+Version 0.6.8 adds explicitly reviewed pre-login Initialization Read POSTs and
+bounded replacement of revision-2 static grants. Bootstrap remains GET/HEAD
+only; ordinary Login and authenticated Read approvals remain separate.
 For an interactive
 Windows regression, set `REMOTEX_TEST_NATIVE_APPROVAL=1` when running
 `plugins/remotex/tests/test_web_approval.py`. Its synthetic helper uses no saved
@@ -27,6 +30,9 @@ Never preempt another task or copy its identifiers.
 
 - Requests contain 1-32 items, including separately approvable network sub-items,
   and at most 32 KiB of canonical scope data.
+- At most four grants are active and one proposal is pending per session.
+  A proposal has at most 200 uses across its rows; replacement includes all
+  carried rows and their remaining counts in these same limits.
 - Requested TTL is 60-43,200 seconds, default 43,200 (12 hours), for exact
   approved read and write scopes. The human can lower it. The existing session
   and lease cap every grant; a short existing session is never extended.
@@ -192,6 +198,149 @@ behavior. These limits do not extend the 120-second native review, grant TTL,
 quotas, session, lease or permission scope. Inspect the original session/outcome
 after a timeout; never replay a request or retry potentially submitted credentials.
 
+### Revision 2 Initialization Reads
+
+Some login pages need information-only POSTs before displaying their controls.
+Since 0.6.8 these use **Initialization Read**, not a Bootstrap exception or a
+business Read grant. Before proposing them, inspect trustworthy deployed handler
+source/API evidence for each exact operation, side effects and actual encoding.
+A frontend call, `get_*` name or HTTP 200 is not proof of read-only behavior.
+Do not guess handler semantics or modify the center to fit the connector.
+
+Revision 2 uses this mutually exclusive `setup` shape inside
+`remotex_web_authorization_request`:
+
+```json
+{
+  "setup": {
+    "revision": 2,
+    "phase": "bootstrap",
+    "requests": [
+      {
+        "network_ref": "<fresh denied static ref>",
+        "purpose": "bootstrap-resource",
+        "max_uses": 4,
+        "evidence": [{"kind": "operator-inspected", "reference": "<inspected static resource>"}]
+      },
+      {
+        "network_ref": "<fresh denied initialization ref>",
+        "purpose": "initialization-read",
+        "max_uses": 2,
+        "evidence": [{"kind": "source-review", "reference": "<deployed handler revision and effect review>"}],
+        "response_checks": [{"pointer": "/ready", "test": "equals-boolean", "expected": true}]
+      }
+    ],
+    "replace_grant_ids": []
+  }
+}
+```
+
+The example is synthetic; `/ready` must not be assumed to exist in a real
+response. Supply the usual owned `session_id`, `requester`, stable
+`idempotency_key` and optional `ttl_seconds` outside `setup`. `phase` must match
+the original supervisor's current `bootstrap` or `login-once` phase. Only fresh
+opaque denied refs are accepted, not caller-provided URLs, bodies, headers,
+lifecycles, approval labels or private receipt IDs. Do not combine revision 2
+with legacy `network_refs`/top-level setup `evidence`/`max_uses` fields.
+
+| Purpose | Exact scope | Native Effect Review |
+| --- | --- | --- |
+| `bootstrap-resource` | Bodyless static document/script/style/image/font GET/HEAD | Bootstrap |
+| `initialization-read` | Reviewed non-secret JSON or form POST, XHR/fetch only | Initialization Read |
+
+Each row needs 1-8 bounded evidence references and allows 1-10 uses, default 2.
+Initialization rows need 1-8 `response_checks`; static rows forbid them.
+In the local window, classify static and initialization rows in separate
+compatible selections, then use **Approve Selected**. Applying Bootstrap to a
+mixed checked batch refuses the update. Partial approval of new rows is valid
+but does not remove an unapproved initialization prerequisite.
+
+Response checks are fixed structural predicates on reviewed JSON pointers:
+
+| `test` | Additional field |
+| --- | --- |
+| `type` | `expected`: object, array, string, boolean, integer or null |
+| `nonempty-string` | None; the selected value is never returned |
+| `equals-boolean` | Boolean `expected` |
+| `equals-integer` | Safe integer `expected` |
+
+Pointers have at most eight segments and cannot select authentication/secret
+paths. There is no arbitrary script, regex, string-equality oracle or body export.
+The response must be a bounded 2xx UTF-8 JSON document, at most 64 KiB, without
+duplicate keys, ambiguous encoding, redirects, authentication negotiation or
+Set-Cookie. Validation happens before browser fulfillment; cookies and response
+values are not copied into tools, receipts or audit records. The reviewed page
+can use its own initialization response internally.
+
+Revision-2 scopes have a fixed, visible applicability to Bootstrap and
+**pre-credential** Login-once. Declared required reads are append-only for the
+original pre-auth lifecycle. Every new document must satisfy them again, with
+no unsettled initialization calls and visible configured controls before the
+worker can arm credential insertion. Status reports fixed required/ready/pending
+counts, not selected values or private permits. Approval alone sends nothing;
+explicitly resume the original UI to make new checks and requests.
+
+An unexpected second top-level document navigation before the final UI login
+submission invalidates that resume and closes only its owned browser;
+completed or delayed responses cannot carry readiness into the new document.
+Normal same-document fragment/history navigation is not a replacement. The
+owned launch retains disabled back/forward caching, so fresh HTTPS documents
+cannot bypass the navigation-request guard through a cached document restore.
+After confirmed closure, a new owned session needs its own review, not recovered
+grants or an automatic credential retry.
+Starting the final UI submit is not network permission: its exact Login
+exchange still needs independent native approval.
+
+The private supervisor binds each one-request initialization permit to the
+original worker, check, resume, document, generation and expiry. A caller label
+cannot exempt an ordinary POST from conservative authentication accounting.
+Once any authentication might have been sent, initialization cannot reopen and
+credentials cannot be resubmitted. An outstanding approved Login response may
+finish within its original transport/session limits; a later explicit resume
+can only verify that same document, never issue a second login. Revoking its
+grant before verification fences the owned session. Unknown stays unknown.
+
+Legacy setup remains supported without `revision`; it keeps its original
+single-phase behavior and cannot be migrated silently to revision 2. Use its
+observed one-use Login contract for sign-in. After verified authentication,
+startup authority is retired and a separate native Read grant is still required
+to export current-page content. Initialization is not general Read or Write
+permission. Legacy authentication codecs, MFA/CAPTCHA and unknown effects stay
+unsupported; no decoder fallback, raw HTTP replay or alternate classification.
+
+### Bounded Static Grant Replacement
+
+Revision-2 `replace_grant_ids` may explicitly name at most two active, idle,
+same-session/lifecycle **static-only** source grants. The supervisor, not the
+caller, copies every approved source row and its remaining uses. Init/mixed,
+legacy, expired, revoked or foreign sources cannot be replaced this way.
+
+Every carried row must be selected in the native window; new rows can be
+partially approved and all counts/lifetimes can only be narrowed. The combined
+proposal retains the 32-item, 32-KiB, 4096-byte per-preview and 200-use limits.
+One effective deadline is the earliest of the human limit, every source,
+original session and covering lease. A source expiring in 20 minutes cannot be
+renewed to 12 hours, even if a new task's requested default is 12 hours.
+
+Pending replacement blocks new forwarding/resumes/operations without stopping
+an already running one: a busy worker refuses admission. Passive status,
+cancellation and revocation remain available. After a durable audited commit,
+the supervisor atomically retires sources and activates the approved destination
+without ever exposing a fifth active grant. Source windows then close with
+`grant-replaced`; a stale source callback cannot revoke the destination.
+A local button/title is not proof: read the server's final grant state.
+Failure closes only the new helper and preserves still-valid source grants;
+uncertain audit/worker state fences only its owned session.
+
+For example, one root grant can be replaced by its carried root plus 24 static
+resources, followed by 23 resources, then a mixed static/initialization batch.
+That leaves a fourth slot for separately reviewed Login. This layout is not a
+general capacity guarantee: inspect actual bytes, all carried rows and remaining
+uses before requesting. `setup-plan-capacity-required` means choose a smaller
+safe plan, not truncate carried scopes, reset quotas or raise the four-grant cap.
+Expiry of a denied ref remains 120 seconds and review remains 120 seconds;
+neither replacement nor metadata readback refreshes them.
+
 ## Approve a Read or Button Batch
 
 Discover components. Copy the returned `observationId` to `observation_id` and a
@@ -263,6 +412,7 @@ window widths without covering the commands.
 | --- | --- |
 | Unreviewed | Effect/evidence has not been independently reviewed; no network permission |
 | Bootstrap | Exact startup document/assets GET/HEAD only; no POST or business changes |
+| Initialization Read | Reviewed exact pre-login POST with required bounded response checks; no authentication or business changes |
 | Login | Exact reviewed sign-in exchanges for the bound site/account, not business permission |
 | Read | Reviewed information retrieval without business changes; the HTTP method alone is not proof |
 | Business Write | Exact target/change preview required; high-risk operations additionally need one-use confirmation |

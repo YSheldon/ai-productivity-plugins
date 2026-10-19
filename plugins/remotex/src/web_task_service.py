@@ -76,6 +76,10 @@ class Service:
                 code = 'control-failed'
             raise ScopeError(code)
         if operation=='resume-login' and result.get('authenticationVerified') is True:
+            self.broker._valid()
+            if not self.startup.authentication_verified:
+                self.broker._event('authentication-verified',count=1)
+                self.startup.authentication_verified=True
             self._retire_startup()
         return result
 
@@ -204,7 +208,8 @@ class Service:
         self.broker.revoke_request(request_id)
         self._sync_setup_hold()
         grant_id=self.broker.requests.get(request_id,{}).get('grant_id')
-        if self.startup.active and grant_id in self.startup.used_grants:
+        if (self.startup.active and grant_id in self.startup.used_grants) or (
+            self.startup.authentication_forwarded and not self.startup.authentication_verified and grant_id in self.startup.authentication_grants):
             self.broker.emergency_revoke()
         if any(self.broker.grants[self.broker.attempts[attempt]['grant_id']]['request_id']==request_id
                for attempt in list(self.executing)):
@@ -395,6 +400,10 @@ class Service:
                     if contract.get('revision')==2:
                         self.startup.matches(message)
                         self.startup.used_grants.add(grant_id)
+                    if classification=='login':
+                        self.startup.authentication_grants.add(grant_id)
+                        if self.startup.active is not None:
+                            self.startup.used_grants.add(grant_id)
                     if classification=='initialization-read':
                         receipt=self.startup.issue(check_id=check_id,message=message,contract=contract)
                         self.broker._event('initialization-permit-issued',contract_digest=receipt['prerequisite_id'],count=1)

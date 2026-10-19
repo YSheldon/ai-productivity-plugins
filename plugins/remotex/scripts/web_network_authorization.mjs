@@ -107,7 +107,7 @@ export class NetworkPolicy {
     if(this.setupHold)throw new Error('replacement-pending');
     const permit=this.takeForwardingReceipt(request);
     const attempt=this.activeAttempt;
-    let initialization;
+    let initialization,authentication=false;
     if(permit.kind==='initialization-read'){
       if(!this.startupState||this.authenticationForwarded)throw new Error('scope-mismatch');
       initialization=this.startupState.begin(permit);this.initializationForwarded++;
@@ -120,6 +120,7 @@ export class NetworkPolicy {
       const internalAuth=value=>!!(value&&typeof value==='object'&&
         (value.internalAuth===true||Object.values(value).some(internalAuth)));
       if(!['GET','HEAD'].includes(descriptor.method)||internalAuth(descriptor.body)||internalAuth(descriptor.query)){
+        authentication=true;
         this.authenticationForwarded++;
         if(this.startupState?.context){
           this.startupState.authenticationForwarded=this.authenticationForwarded;
@@ -134,6 +135,7 @@ export class NetworkPolicy {
       if(attempt)this.inFlight.set(attempt,Math.max(0,(this.inFlight.get(attempt)||1)-1));
     };
     completed.initialization=initialization;
+    completed.authentication=authentication;
     completed.privateStartup=!!context?.binding_digest;
     completed.startupSignal=context?.signal;
     completed.startupDeadline=context?.deadline;

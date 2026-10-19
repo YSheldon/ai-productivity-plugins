@@ -142,6 +142,7 @@ class StartupAuthority:
         self.clock,self.wall_clock=clock,wall_clock
         self.lock=threading.RLock();self.lifecycle=None;self.active=None
         self.required={};self.authentication_forwarded=0
+        self.authentication_verified=False;self.authentication_grants=set()
         self.issued={};self.seen=set();self.ready=set();self.blocked=set();self.used_grants=set()
 
     def register(self,context):
@@ -263,6 +264,8 @@ class StartupAuthority:
             elif kind in {'authentication-forwarded','authentication-verified'}:
                 if kind=='authentication-verified' and not self.authentication_forwarded:
                     raise ScopeError('scope-mismatch')
+                if kind=='authentication-verified':
+                    self.authentication_verified=True
             elif kind=='resume-ended':
                 self.end(a['resume_id'])
             else:

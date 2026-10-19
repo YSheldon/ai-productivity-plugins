@@ -53,12 +53,16 @@ use raw CDP, or switch transports to bypass an access decision.
 After denial, owned-session status/closure and queue release after confirmed
 closure are cleanup only; they do not authorize further page interaction.
 
-Install Microsoft Edge and Node.js 24 or newer. `remotex_web_runtime_setup`
-first checks for Playwright Core 1.62.1 in the private runtime or Codex bundle.
-With `confirm=true`, it can install that pinned package from the shipped lock
-file using npm with lifecycle scripts disabled. It does not install Edge or
-change browser policy. Operators can use `REMOTEX_PLAYWRIGHT_MODULE` to locate
-an existing matching package; this is local trusted configuration, not MCP input.
+Install Microsoft Edge and Node.js 24 or newer. In 0.6.8,
+`remotex_web_runtime_setup` requires both Playwright Core 1.62.1 and
+jsonc-parser 3.3.1; a matching Playwright package alone is not runtime readiness.
+With `confirm=true`, it installs the complete pinned lock file using npm with
+lifecycle scripts disabled in a new versioned private directory. It does not
+overwrite an old runtime used by running sessions, install Edge or change
+browser policy. Operators can use `REMOTEX_PLAYWRIGHT_MODULE` to locate an
+existing matching Playwright package; the pinned parser must also be available.
+This is local trusted configuration, not MCP input. Missing dependencies block
+probe/login before credential retrieval.
 
 `remotex_web_probe({"profile":"web-console"})` opens and closes an isolated
 Edge session and checks the HTTPS page and controls without reading credentials.
@@ -121,6 +125,15 @@ capped by the original session deadline, covering acquisition and all scope/use
 checks. It is not a rolling 12-hour renewal and does not extend an older grant.
 The approval window remains 120 seconds; high-risk action-time tickets remain
 one use and at most 30 seconds. Server-side login expiry can still occur earlier.
+
+New sessions deny startup traffic until native contract review. In 0.6.8 use
+revision-2 static scopes and, only with trustworthy handler/effect evidence,
+separate Initialization Read POSTs with required response checks. Complete
+readiness precedes any credential insertion. A separate observed one-use Login
+approval still controls sign-in; unsupported authentication encodings are not
+decoded or retried. See [Initialization reads](web-task-authorization.md#revision-2-initialization-reads)
+and [static replacement](web-task-authorization.md#bounded-static-grant-replacement)
+for four-slot planning without renewal or wider network access.
 
 The helper receives credentials once through an anonymous stdin pipe. Secrets
 are not passed through argv, environment, stdout/stderr or receipt files. A

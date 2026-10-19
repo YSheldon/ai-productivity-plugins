@@ -14,6 +14,16 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.6.8
+
+- Added revision-2 startup contracts with distinct native Initialization Read approval for exact non-secret JSON/form POSTs. Required bounded response checks, visible controls and no unsettled initialization calls precede credential insertion on every fresh document. Bootstrap remains bodyless static GET/HEAD; Login and authenticated page Read approvals remain separate.
+- Initialization responses are bounded to 64 KiB and checked before browser fulfillment. Duplicate JSON keys, ambiguous encodings, authentication negotiation, Set-Cookie and secret-bearing request slots fail closed. Private one-request permits bind the original supervisor, worker, request, resume, document, generation and expiry; values, GUIDs, cookies and raw responses are not exported.
+- Added explicit replacement of at most two idle, same-lifecycle revision-2 static-only grants. All approved source rows and remaining counts are carried; every carried row must be selected, new rows may be partially approved, and one deadline is capped by the earliest source/human/session/lease limit. Durable atomic retirement never exposes a fifth active grant or renews a source.
+- Preserved legacy single-phase setup, conservative possible-authentication tracking and no password resubmission. A delayed, independently approved Login response can finish within its original limits; revocation before verification fences its owned session. Current-page export still requires a fresh separate human-approved read.
+- Unexpected top-level document replacement before login submission invalidates old readiness/receipts and closes only the owned attempt. Fragment/history changes and the final separately permitted Login form navigation are preserved; disabled back/forward caching remains explicit. Original-worker regressions cover completed and delayed old-document initialization responses.
+- Added the pinned jsonc-parser 3.3.1 alongside Playwright Core 1.62.1 in a complete versioned runtime, without overwriting runtimes used by active sessions. Updated English API, approval-category, capacity, failure and installation guidance.
+- Kept four active grants/one pending proposal, all existing time/size/count bounds, credential isolation, exact origin/account/trust, cooperative queue ownership and business-write previews/confirmations. No center business-code, profile/credential migration, arbitrary POST permission or automatic decoder fallback.
+
 ## RemoteX 0.6.7
 
 - The native Effect Review dropdown now shows an adjacent English explanation of the selected category. Selecting a request row shows its current classification above the full details; editing that row updates the explanation immediately without applying the batch dropdown to it.

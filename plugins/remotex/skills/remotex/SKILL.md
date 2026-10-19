@@ -70,6 +70,71 @@ for opaque blocked descriptor refs. Request exact `setup` contracts through
 `remotex_web_authorization_request` with inspected evidence, wait for the local
 human window, then explicitly call `remotex_web_login_resume`. This resumes UI,
 never replays an HTTP packet. Do not broaden origins, TLS, methods or endpoints.
+
+### Pre-Login Initialization Reads (0.6.8+)
+
+Use revision 2 for required pre-login reads and reusable static startup scopes.
+First inspect trustworthy deployed handler/API evidence for the exact operation's
+side effects and supported wire encoding. A `get_*` name, frontend call site,
+HTTP method or successful response alone is not evidence of read-only effects.
+Missing evidence, credential/authentication slots, unsupported encoding or a
+handler that changes state remains denied; do not relabel it Login or Read.
+
+Build `setup` from fresh denied refs in the original session:
+
+```json
+{
+  "revision": 2,
+  "phase": "<current bootstrap or login-once>",
+  "requests": [
+    {
+      "network_ref": "<fresh observed opaque ref>",
+      "purpose": "initialization-read",
+      "max_uses": 2,
+      "evidence": [{"kind": "source-review", "reference": "<reviewed handler revision>"}],
+      "response_checks": [{"pointer": "/ready", "test": "equals-boolean", "expected": true}]
+    }
+  ],
+  "replace_grant_ids": []
+}
+```
+
+This is a shape example, not a real endpoint/schema or proof. Choose checks from
+the reviewed response contract. Static GET/HEAD rows use
+`purpose:"bootstrap-resource"` and omit `response_checks`. Do not mix revision 2
+with legacy `network_refs`, supply raw URLs/bodies/headers, or invent refs.
+The native operator must classify initialization rows **Initialization Read**
+and static rows **Bootstrap**, in separate compatible selections. Select All
+followed by Apply to Checked with Bootstrap must not classify a mixed batch;
+selection/classification never replaces Approve Selected.
+
+Initialization Read permits only exact reviewed JSON/form POSTs in Bootstrap
+and pre-credential Login-once. All declared prerequisites remain required even
+after partial approval/rejection. Each fresh document needs successful bounded
+responses, approved checks, no unsettled reads and visible login controls before
+credential insertion. Status exposes readiness counts, never response values or
+GUIDs. Checks are limited to type, nonempty-string, boolean equality and safe
+integer equality; no secret paths, arbitrary predicates or string guessing.
+Request an independently observed one-use **Login** exchange afterward, then
+a separate native **Read** item for authenticated page content. No arbitrary
+POST, business permission or credential retry follows from initialization.
+
+At most four grants may be active, with one proposal pending. To free a slot
+without discarding valid static scopes, explicitly name at most two idle,
+same-session/lifecycle **revision-2 static-only** source grant IDs in
+`replace_grant_ids`. The supervisor copies every approved source row and its
+remaining uses; every carried row must stay selected. New rows may be partially
+approved. The combined proposal still has at most 32 items, 32 KiB and 200 uses.
+Its single lifetime is capped by the earliest source, human, session or lease
+deadline: a source with 20 minutes remaining cannot become a 12-hour grant.
+No count reset, renewal or fifth grant occurs. Legacy/mixed/init sources,
+busy operations and `setup-plan-capacity-required` need a different bounded
+plan, not a limit increase. Read the original supervisor's committed status;
+only successful replacement retires source windows. Failed proposals preserve
+still-valid sources. See [Initialization and replacement](../../docs/web-task-authorization.md#revision-2-initialization-reads).
+
+### Native Review And Login Outcome
+
 For 0.6.4 or later, inspect the request's `approval_ui` in request/status results.
 `starting` is not a shown window. A `shown` receipt records the native form event,
 not foreground, physical human presence or permission. Tell the operator the

@@ -3,6 +3,7 @@ from unittest import mock
 import json
 import os
 import shutil
+import subprocess
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
@@ -11,8 +12,34 @@ import pytest
 
 
 @pytest.mark.skipif(os.name!='nt',reason='Windows native component protocol')
-def test_actual_component_protocol_probe_opens_no_approval_window():
-    web_adapter._admit_v3_components(shutil.which('node'))
+def test_actual_component_protocol_probe_opens_no_approval_window(monkeypatch):
+    run=web_adapter.subprocess.run
+    reports=[]
+    def observed(command,**options):
+        stage='worker' if '--describe-protocol' in command else 'native'
+        try:
+            result=run(command,**options)
+        except subprocess.TimeoutExpired as error:
+            reports.append((stage,'timeout',probe_stages(error.stderr)))
+            raise
+        reports.append((stage,result.returncode,len(result.stdout),probe_stages(result.stderr)))
+        return result
+    monkeypatch.setattr(web_adapter.subprocess,'run',observed)
+    try:
+        web_adapter._admit_v3_components(shutil.which('node'))
+    except web_adapter.core.ToolError:
+        pytest.fail(f'Component admission failed; fixed-stage diagnostics: {reports}',pytrace=False)
+
+
+def probe_stages(stderr):
+    if isinstance(stderr,bytes):stderr=stderr.decode('utf-8',errors='replace')
+    allowed={f'protocol-probe: {name}' for name in
+        ('forms','drawing','approval-ui','reference-review','functions','complete')}
+    return [line for line in (stderr or '').splitlines() if line in allowed][-6:]
+
+
+def test_probe_diagnostics_do_not_include_arbitrary_process_output():
+    assert probe_stages(b'private-canary\nprotocol-probe: forms\nprivate-canary')==['protocol-probe: forms']
 
 
 def test_v3_admission_requires_actual_worker_and_native_protocol_readbacks(monkeypatch):

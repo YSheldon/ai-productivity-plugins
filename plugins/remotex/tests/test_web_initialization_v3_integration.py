@@ -245,8 +245,14 @@ def test_original_v3_pipeline_synthetic_prompt(tmp_path,mode):
         if mode=='response-cookie':
             assert r['race']=={'emitted':3,'held':True,'released':True,'error':None}
         assert r['stats']()['writes']==0 and not r['stats']()['credentialOutsideLogin']
-        for text in [json.dumps(r['public']),r['audit'].read_text(),(r['directory']/'state.json').read_text()]:
+        active_state=(r['directory']/'state.json').read_text()
+        for text in (json.dumps(r['public']),active_state):
             assert SECRET not in text and 'PUBLIC_V3_MARKER' not in text
+    # Read final evidence only after the owned writers and revocation audits drain.
+    audit=r['audit'].read_text()
+    state=(r['directory']/'state.json').read_text()
+    for text in (audit,state):
+        assert SECRET not in text and 'PUBLIC_V3_MARKER' not in text
 
 
 @pytest.mark.skipif(os.name!='nt' or os.environ.get('REMOTEX_TEST_MANUAL_V3')!='1',reason='Explicit human native review opt-in')

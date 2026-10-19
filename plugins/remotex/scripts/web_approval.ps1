@@ -3,14 +3,20 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 if ($DescribeProtocol) {
     try {
+        [Console]::Error.WriteLine('protocol-probe: forms')
         Add-Type -AssemblyName System.Windows.Forms
+        [Console]::Error.WriteLine('protocol-probe: drawing')
         Add-Type -AssemblyName System.Drawing
+        [Console]::Error.WriteLine('protocol-probe: approval-ui')
         . (Join-Path $PSScriptRoot 'web_approval_ui.ps1')
+        [Console]::Error.WriteLine('protocol-probe: reference-review')
         . (Join-Path $PSScriptRoot 'web_reference_review.ps1')
+        [Console]::Error.WriteLine('protocol-probe: functions')
         foreach ($name in @('New-V3ReferenceState','Apply-V3ReferenceResult','New-V3PublicReferencePanel','New-ApprovalNotification')) {
             if (-not (Get-Command $name -CommandType Function -ErrorAction Stop)) { exit 1 }
         }
         if ($script:RemoteXReferenceProtocol.protocol_revision -ne 3 -or $script:RemoteXReferenceProtocol.reference_units -ne 32) { exit 1 }
+        [Console]::Error.WriteLine('protocol-probe: complete')
         [Console]::WriteLine('{"protocol_revision":3,"reference_units":32,"review_seconds":180,"notification":"owned-native-v1"}')
         exit 0
     } catch { exit 1 }

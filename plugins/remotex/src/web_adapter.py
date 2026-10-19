@@ -30,6 +30,8 @@ import web_task_service
 
 
 PLAYWRIGHT_VERSION = "1.62.1"
+JSONC_VERSION = "3.3.1"
+WEB_RUNTIME_REVISION = "1.62.1-init-read-1"
 MAX_SESSION_SECONDS = web_authorization.MAX_GRANT_SECONDS + 3600
 PLUGIN = Path(__file__).resolve().parents[1]
 STATE_FIELDS = {"state","loginSubmitted","authenticationVerified","failureCode","updatedAt"}
@@ -47,7 +49,8 @@ def state_root() -> Path:
 
 
 def _module_path() -> Path | None:
-    candidates = [state_root() / "runtime" / PLAYWRIGHT_VERSION / "node_modules" / "playwright-core",
+    candidates = [state_root() / "runtime" / WEB_RUNTIME_REVISION / "node_modules" / "playwright-core",
+                  state_root() / "runtime" / PLAYWRIGHT_VERSION / "node_modules" / "playwright-core",
                   Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node" / "node_modules" / "playwright-core"]
     if os.environ.get("REMOTEX_PLAYWRIGHT_MODULE"):
         candidates.insert(0, core.expand_path(os.environ["REMOTEX_PLAYWRIGHT_MODULE"], "REMOTEX_PLAYWRIGHT_MODULE"))
@@ -56,6 +59,21 @@ def _module_path() -> Path | None:
             if json.loads((path / "package.json").read_text(encoding="utf-8")).get("version") == PLAYWRIGHT_VERSION:
                 return path
         except (OSError, ValueError):
+            pass
+    return None
+
+
+def _parser_module_path() -> Path | None:
+    module=_module_path()
+    candidates=[state_root() / 'runtime' / WEB_RUNTIME_REVISION / 'node_modules' / 'jsonc-parser',
+                PLUGIN / 'scripts' / 'web-runtime' / 'node_modules' / 'jsonc-parser']
+    if module:
+        candidates.append(module.parent / 'jsonc-parser')
+    for path in candidates:
+        try:
+            if json.loads((path/'package.json').read_text(encoding='utf-8')).get('version')==JSONC_VERSION:
+                return path
+        except (OSError,ValueError):
             pass
     return None
 
@@ -76,11 +94,12 @@ def runtime_setup(args: dict[str, Any]) -> dict[str, Any]:
         raise core.ToolError("Unsupported web runtime argument")
     node = _node()
     module = _module_path()
-    if module:
-        return core.tool_result({"ok":True,"ready":True,"playwrightVersion":PLAYWRIGHT_VERSION,"installedNow":False})
+    if module and _parser_module_path():
+        return core.tool_result({"ok":True,"ready":True,"playwrightVersion":PLAYWRIGHT_VERSION,"jsoncVersion":JSONC_VERSION,"installedNow":False})
     if args.get("confirm") is not True:
-        return core.tool_result({"ok":True,"preview":True,"ready":False,"package":"playwright-core","version":PLAYWRIGHT_VERSION,"nextStep":"rerun-with-confirm-true"})
-    root = state_root() / "runtime" / PLAYWRIGHT_VERSION
+        return core.tool_result({"ok":True,"preview":True,"ready":False,"package":"playwright-core","version":PLAYWRIGHT_VERSION,
+            "packages":{"playwright-core":PLAYWRIGHT_VERSION,"jsonc-parser":JSONC_VERSION},"nextStep":"rerun-with-confirm-true"})
+    root = state_root() / "runtime" / WEB_RUNTIME_REVISION
     secure_paths.ensure_private_directory(root)
     for name in ("package.json","package-lock.json"):
         shutil.copyfile(PLUGIN / "scripts" / "web-runtime" / name, root / name)
@@ -94,9 +113,9 @@ def runtime_setup(args: dict[str, Any]) -> dict[str, Any]:
             cwd=root,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=_environment(),timeout=180,check=False)
     except (OSError, subprocess.SubprocessError) as exc:
         raise core.ToolError("Unable to install the pinned web runtime") from exc
-    if result.returncode != 0 or not _module_path():
+    if result.returncode != 0 or not _module_path() or not _parser_module_path():
         raise core.ToolError("Pinned web runtime installation failed")
-    return core.tool_result({"ok":True,"ready":True,"playwrightVersion":PLAYWRIGHT_VERSION,"installedNow":True})
+    return core.tool_result({"ok":True,"ready":True,"playwrightVersion":PLAYWRIGHT_VERSION,"jsoncVersion":JSONC_VERSION,"installedNow":True})
 
 
 SETUP_FIELDS = {"profile","url","account","credential_ref","username_selector","password_selector","submit_selector","success_selector","certificate_sha256","confirm","timeout_seconds"}
@@ -296,15 +315,15 @@ def _environment() -> dict[str, str]:
 def probe_config(raw: dict[str, Any]) -> dict[str, Any]:
     if os.name != "nt":
         raise core.ToolError("Web browser probing requires Windows")
-    node, module = _node(), _module_path()
-    if not module:
+    node, module, parser = _node(), _module_path(), _parser_module_path()
+    if not module or not parser:
         raise core.ToolError("Run remotex_web_runtime_setup before browser probing")
     directory = state_root() / "probes" / uuid.uuid4().hex
     secure_paths.ensure_private_directory(directory)
     packet = json.dumps({"config":raw,"mode":"probe","deadline":int((time.time()+60)*1000)}).encode()
     process = job = None
     try:
-        process = subprocess.Popen([node,"--use-system-ca",str(PLUGIN / "scripts" / "web_login_worker.mjs"),str(directory),str(module)],
+        process = subprocess.Popen([node,"--use-system-ca",str(PLUGIN / "scripts" / "web_login_worker.mjs"),str(directory),str(module),str(parser)],
             stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=_environment(),creationflags=subprocess.CREATE_NO_WINDOW)
         job = execution._WindowsJob(process,memory_limit_mb=None,cpu_time_seconds=None,max_processes=None)
         if not job.assigned:
@@ -342,8 +361,8 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
     name, raw, bundle = core.select_profile("web",args.get("profile"))
     reference = credential_store.resolve_profile_reference(bundle,name,raw,"web")
     web_policy.validate_binding(raw,reference.reference_dict())
-    node, module = _node(), _module_path()
-    if not module:
+    node, module, parser = _node(), _module_path(), _parser_module_path()
+    if not module or not parser:
         raise core.ToolError("Run remotex_web_runtime_setup before web login")
     requester = vm_queue.validate_requester(args.get("requester"))
     resource = raw["queue_resource"]
@@ -369,7 +388,7 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
         _write(directory / "state.json",{"state":"starting","loginSubmitted":False,"authenticationVerified":False,"failureCode":None,"updatedAt":datetime.now(timezone.utc).isoformat().replace("+00:00","Z")})
         process = job = None
         try:
-            process = subprocess.Popen([node,"--use-system-ca",str(PLUGIN / "scripts" / "web_login_worker.mjs"),str(directory),str(module)],
+            process = subprocess.Popen([node,"--use-system-ca",str(PLUGIN / "scripts" / "web_login_worker.mjs"),str(directory),str(module),str(parser)],
                 stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env=_environment(),close_fds=True,
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
             job = execution._WindowsJob(process,memory_limit_mb=None,cpu_time_seconds=None,max_processes=None)
@@ -577,7 +596,7 @@ TOOLS = {
     "remotex_web_profile_setup":{"description":"Preview or create an HTTPS/account-bound Edge web profile and open the local secure credential window. Password values are never accepted.",
         "inputSchema":_schema({k:({"type":"boolean"} if k=="confirm" else {"type":"integer","minimum":1,"maximum":600} if k=="timeout_seconds" else {"type":"string"}) for k in sorted(SETUP_FIELDS)},
             ["profile","url","account","credential_ref","username_selector","password_selector","submit_selector","confirm"]),"handler":setup},
-    "remotex_web_runtime_setup":{"description":"Check or install the pinned Playwright Core runtime for existing Microsoft Edge; never changes browser security policy.","inputSchema":_schema({"confirm":{"type":"boolean"}},[]),"handler":runtime_setup},
+    "remotex_web_runtime_setup":{"description":"Check or install the complete pinned Playwright Core and JSON parser runtime for existing Microsoft Edge; never changes browser security policy.","inputSchema":_schema({"confirm":{"type":"boolean"}},[]),"handler":runtime_setup},
     "remotex_web_login":{"description":"Start one bounded, visible Edge login using a stored origin/account-bound credential and the caller's queue lease. No passwords in arguments.",
         "inputSchema":_schema({"profile":{"type":"string"},"requester":{"type":"string"},"confirm":{"type":"boolean"},"session_seconds":{"type":"integer","minimum":60,"maximum":MAX_SESSION_SECONDS,"default":MAX_SESSION_SECONDS,"description":"New session duration, default/maximum 46800 seconds (13 hours); queue lease must cover it plus 45 seconds."}},["profile","requester","confirm"]),"handler":login},
     "remotex_web_session_status":{"description":"Read sanitized Edge login state without exposing DOM, screenshots, cookies or credentials.","inputSchema":_schema({"session_id":{"type":"string"}},["session_id"]),"handler":session_status},
@@ -592,6 +611,22 @@ _EVIDENCE={'type':'array','minItems':1,'maxItems':8,'items':_schema({
     'kind':{'type':'string','enum':['source-review','api-document','verified-record','operator-inspected']},
     'reference':{'type':'string','minLength':1,'maxLength':512}},['kind','reference'])}
 _LITERAL={'type':['string','boolean','integer']}
+_POINTER={'type':'string','minLength':2,'maxLength':512,'pattern':'^/'}
+_CHECK={'oneOf':[
+    _schema({'pointer':_POINTER,'test':{'const':'type'},'expected':{'type':'string','enum':['object','array','string','boolean','integer','null']}},['pointer','test','expected']),
+    _schema({'pointer':_POINTER,'test':{'const':'nonempty-string'}},['pointer','test']),
+    _schema({'pointer':_POINTER,'test':{'const':'equals-boolean'},'expected':{'type':'boolean'}},['pointer','test','expected']),
+    _schema({'pointer':_POINTER,'test':{'const':'equals-integer'},'expected':{'type':'integer','minimum':-9007199254740991,'maximum':9007199254740991}},['pointer','test','expected'])]}
+_SETUP_USE={'type':'integer','minimum':1,'maximum':10,'default':2}
+_SETUP_PHASE={'type':'string','enum':['bootstrap','login-once']}
+_LEGACY_SETUP=_schema({'phase':_SETUP_PHASE,'network_refs':_REFS,'evidence':_EVIDENCE,'max_uses':_SETUP_USE},['phase','network_refs','evidence'])
+_SETUP_REQUEST={'oneOf':[
+    _schema({'network_ref':_ID,'purpose':{'const':'bootstrap-resource'},'max_uses':_SETUP_USE,'evidence':_EVIDENCE},['network_ref','purpose','evidence']),
+    _schema({'network_ref':_ID,'purpose':{'const':'initialization-read'},'max_uses':_SETUP_USE,'evidence':_EVIDENCE,
+        'response_checks':{'type':'array','minItems':1,'maxItems':8,'items':_CHECK}},['network_ref','purpose','evidence','response_checks'])]}
+_MODERN_SETUP=_schema({'revision':{'type':'integer','const':2},'phase':_SETUP_PHASE,
+    'requests':{'type':'array','minItems':1,'maxItems':32,'items':_SETUP_REQUEST},
+    'replace_grant_ids':{'type':'array','maxItems':2,'uniqueItems':True,'items':_ID}},['revision','phase','requests'])
 _ITEM=_schema({'item_id':_TEXT,'capability':{'type':'string','enum':sorted(web_authorization.CAPABILITIES)},
     'observation_id':_ID,'component_ref':_ID,'max_uses':{'type':'integer','minimum':1,'maximum':50},
     'depends_on':{'type':'array','items':_TEXT,'maxItems':32,'uniqueItems':True},
@@ -622,10 +657,9 @@ _TASKS={
         ['observation_id','component_ref','target_refs','read_receipts','changes','effect','network_refs'],
         'Prepare an immutable write preview from approved reads and observed controls. Does not change the page or send requests. Show actual targets and before/after values before requesting real business writes.'),
     'remotex_web_authorization_request':('request',{'items':{'type':'array','items':_ITEM,'minItems':1,'maxItems':32},
-        'setup':_schema({'phase':{'type':'string','enum':['bootstrap','login-once']},'network_refs':_REFS,'evidence':_EVIDENCE,
-            'max_uses':{'type':'integer','minimum':1,'maximum':10}},['phase','network_refs','evidence']),
+        'setup':{'oneOf':[_LEGACY_SETUP,_MODERN_SETUP]},
         'idempotency_key':_TEXT,'ttl_seconds':{'type':'integer','minimum':60,'maximum':web_authorization.MAX_GRANT_SECONDS,'default':web_authorization.MAX_GRANT_SECONDS,'description':'Requested task grant lifetime, default/maximum 43200 seconds (12 hours); human may lower it, and the existing session deadline still caps it.'}},['idempotency_key'],
-        'Request exact observed operations OR blocked startup contracts through the local human window. Inspect approval_ui and remaining review time; shown is diagnostic, not permission or foreground proof. Never self-approves. Network sub-items may be rejected separately. No credentials or raw requests.'),
+        'Request exact observed operations OR blocked startup contracts through the local human window. Revision2 supports independently reviewed pre-login Initialization Read POSTs and bounded static-only replacement within four active grants. Inspect approval_ui; shown is not authority. No credentials, raw requests or self-approval.'),
     'remotex_web_authorization_status':('status',{'request_id':_ID},[],
         'Read decisions, expiry, quotas, blocked descriptors and approval_ui lifecycle/remaining review/exit diagnostics. Shown is not authority or proof of foreground. No approval or request transmission.'),
     'remotex_web_execute':('execute',{'grant_id':_ID,'item_id':_TEXT,'idempotency_key':_TEXT,

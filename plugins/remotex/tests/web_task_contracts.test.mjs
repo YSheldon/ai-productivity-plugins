@@ -8,6 +8,43 @@ const descriptor={method:'POST',path:'/dispatch',query:{},contentType:'applicati
   body:{cmd:'move',ids:['host-one'],group:'New Group'},resourceType:'xhr'};
 const proof=[{kind:'operator-inspected',reference:'Reviewed synthetic handler only'}];
 
+test('revision2 exact init purpose keeps legacy Bootstrap POST denied',()=>{
+  const post={...descriptor,body:{cmd:'database_info'}};
+  const network={phase:'bootstrap',preauthLifecycle:'a'.repeat(32),resolve:()=>post};
+  const setup={revision:2,phase:'bootstrap',requests:[{network_ref:'b'.repeat(32),
+    purpose:'initialization-read',max_uses:2,evidence:proof,
+    response_checks:[{pointer:'/exist',test:'equals-boolean',expected:true}]}],replace_grant_ids:[]};
+  const result=setupContracts(setup,network),contract=result.contracts['setup.network.1'];
+  assert.equal(result.setup_revision,2);assert.equal(contract.semantics,'initialization-read');
+  assert.deepEqual(contract.phase_applicability,['bootstrap','login-once']);
+  assert.equal(contract.required,true);assert.equal(contract.preauth_lifecycle,'a'.repeat(32));
+  assert.equal(result.items[0].parameters.review_kind,'initialization-read');
+  assert.throws(()=>setupContracts({phase:'bootstrap',network_refs:['a'],evidence:proof},network));
+  for(const changed of [{...setup,network_refs:['a']},{...setup,revision:3},
+    {...setup,phase_applicability:['grant-active']},
+    {...setup,requests:[{...setup.requests[0],purpose:'bootstrap-resource'}]},
+    {...setup,requests:[setup.requests[0],setup.requests[0]]},
+    {...setup,replace_grant_ids:['c'.repeat(32),'c'.repeat(32)]}])
+    assert.throws(()=>setupContracts(changed,network));
+});
+
+test('revision2 static resources cannot carry internal authentication slots',()=>{
+  const descriptor={method:'GET',path:'/app.js',query:{token:{internalAuth:true}},
+    contentType:'',body:null,resourceType:'script'};
+  assert.throws(()=>setupContracts({revision:2,phase:'bootstrap',requests:[{network_ref:'b'.repeat(32),
+    purpose:'bootstrap-resource',evidence:proof}]},{phase:'bootstrap',preauthLifecycle:'a'.repeat(32),resolve:()=>descriptor}));
+});
+
+test('equivalent readiness check key ordering keeps the prerequisite identity stable',()=>{
+  const descriptor={method:'POST',path:'/init',query:{},contentType:'application/json',body:{cmd:'info'},resourceType:'xhr'};
+  const network={phase:'bootstrap',preauthLifecycle:'a'.repeat(32),resolve:()=>descriptor};
+  const setup=check=>({revision:2,phase:'bootstrap',requests:[{network_ref:'b'.repeat(32),purpose:'initialization-read',
+    evidence:proof,response_checks:[check]}]});
+  const first=setupContracts(setup({pointer:'/exist',test:'equals-boolean',expected:true}),network);
+  const second=setupContracts(setup({expected:true,test:'equals-boolean',pointer:'/exist'}),network);
+  assert.deepEqual(first.prerequisites,second.prerequisites);
+});
+
 test('bootstrap contracts never authorize business requests or credential submission',()=>{
   const network={phase:'bootstrap',resolve:()=>descriptor};
   assert.throws(()=>setupContracts({phase:'bootstrap',network_refs:['a'],evidence:proof},network),/request-contract-unavailable/);

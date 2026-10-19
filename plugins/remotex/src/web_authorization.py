@@ -152,6 +152,8 @@ class Broker:
         self.binding_digest = digest(binding)
         self.journal, self.check, self.close, self.clock = journal, check, close, clock
         self.lock = threading.RLock()
+        # Never hold this short publication/fence lock across journal I/O.
+        self.publication_lock = threading.RLock()
         self.output_lock = threading.RLock()
         self._audit_transaction = threading.local()
         self.fenced = threading.Event()
@@ -276,11 +278,77 @@ class Broker:
                 del self._audit_transaction.events
                 del self._audit_transaction.limit
 
-    def request(self, items, *, idempotency_key, ttl_seconds=MAX_GRANT_SECONDS):
+    def replacement_pending(self):
+        return any(r.get('replacement') and r['state']=='pending' and not r['fence'].is_set() and
+                   r['review_deadline']>self.clock() for r in self.requests.values())
+
+    def _active_count(self):
+        return sum(g['state']=='active' and not self.requests[g['request_id']]['fence'].is_set() and
+                   g['deadline']>self.clock() for g in self.grants.values())
+
+    def _source_snapshot(self, grant_id, context):
+        grant=self.grants.get(grant_id)
+        if not grant:
+            raise ScopeError('replacement-source-unavailable')
+        request=self.requests[grant['request_id']];scope=grant.get('setup_context')
+        if (grant['state']!='active' or request['fence'].is_set() or self.clock()>=grant['deadline'] or
+            grant['revoked_items'] or not scope or scope.get('revision')!=2 or not context or context.get('revision')!=2 or
+            scope.get('preauth_lifecycle')!=context.get('preauth_lifecycle') or
+            scope.get('phase_applicability')!=['bootstrap','login-once'] or scope['phase_applicability']!=context.get('phase_applicability') or
+            digest(scope)!=grant.get('context_digest') or not grant['items'] or
+            set(grant['items'])-set(scope.get('contracts',{})) or
+            any(c.get('purpose')!='bootstrap-resource' for c in scope['contracts'].values())):
+            raise ScopeError('replacement-source-unavailable')
+        if digest({'items':grant['items'],'deadline':grant['deadline'],'request':request['digest']})!=grant['scope_digest']:
+            raise ScopeError('replacement-source-unavailable')
+        for name,row in grant['items'].items():
+            c=scope['contracts'][name];d=c.get('descriptor',{})
+            if (grant['remaining'].get(name,0)<=0 or row['capability']!='web.page_step' or row['targets'] or row['depends_on'] or
+                row['parameters'].get('approved_semantics')!='bootstrap' or row['parameters'].get('review_kind')!='bootstrap' or
+                c.get('revision')!=2 or c.get('semantics')!='bootstrap' or c.get('phase_applicability')!=scope['phase_applicability'] or
+                c.get('preauth_lifecycle')!=scope['preauth_lifecycle'] or d.get('method') not in {'GET','HEAD'} or
+                d.get('body') is not None or d.get('resourceType') not in {'document','script','stylesheet','image','font'}):
+                raise ScopeError('replacement-source-unavailable')
+        if any(a['grant_id']==grant_id and a['state'] in {'reserved','awaiting-action-confirmation','accepted','running','outcome-unknown','partial'}
+               for a in self.attempts.values()):
+            raise ScopeError('operation-in-progress')
+        return {'grant_id':grant_id,'request_id':grant['request_id'],'scope_digest':grant['scope_digest'],
+                'context_digest':grant['context_digest'],'deadline':grant['deadline'],'remaining':copy.deepcopy(grant['remaining'])}
+
+    def _replacement_proposal(self,rows,context,source_ids):
+        if (not isinstance(source_ids,(list,tuple)) or not 1<=len(source_ids)<=2 or
+            any(not isinstance(s,str) or re.fullmatch('[a-f0-9]{32}',s) is None for s in source_ids) or len(set(source_ids))!=len(source_ids)):
+            raise ScopeError('request-invalid')
+        snapshots=[self._source_snapshot(s,context) for s in source_ids]
+        carried=[];contracts={};mapping={}
+        for source_index,snapshot in enumerate(snapshots,1):
+            grant=self.grants[snapshot['grant_id']]
+            for item_index,(name,source) in enumerate(grant['items'].items(),1):
+                alias=f'carry.{source_index}.{item_index}'
+                row=copy.deepcopy(source);row['item_id']=alias;row['max_uses']=snapshot['remaining'][name]
+                row['parameters'].pop('approved_semantics',None);row['parameters']['network_ref']=alias
+                row['display']['label']='Carried: '+str(row['display'].get('label',name))
+                contracts[alias]=copy.deepcopy(grant['setup_context']['contracts'][name])
+                mapping[alias]={'source_grant_id':snapshot['grant_id'],'source_item_id':name,'remaining_uses':row['max_uses']}
+                carried.append(row)
+        if {r['item_id'] for r in rows}&set(contracts):
+            raise ScopeError('request-invalid')
+        try:
+            combined=validate_items(carried+rows)
+        except ScopeError as exc:
+            if exc.code=='request-too-large':
+                raise ScopeError('setup-plan-capacity-required') from None
+            raise
+        composed=copy.deepcopy(context);composed['contracts']={**contracts,**composed['contracts']}
+        meta={'source_grant_ids':list(source_ids),'snapshots':snapshots,'carried_items':mapping,
+              'deadline':min(s['deadline'] for s in snapshots)}
+        return combined,composed,meta
+
+    def request(self, items, *, idempotency_key, ttl_seconds=MAX_GRANT_SECONDS, setup_context=None,replacement_source_ids=()):
         key = identifier(idempotency_key)
         integer(ttl_seconds, 60, MAX_GRANT_SECONDS)
         rows = validate_items(items)
-        submitted = digest({'items':rows,'ttl':ttl_seconds})
+        submitted = digest({'items':rows,'ttl':ttl_seconds,'setup':setup_context,'sources':replacement_source_ids})
         with self.lock:
             self._valid()
             if key in self.request_keys:
@@ -290,14 +358,25 @@ class Broker:
                 return self.status(previous['id'])
             if any(r['state']=='pending' and not r['fence'].is_set() and r['review_deadline']>self.clock() for r in self.requests.values()):
                 raise ScopeError('approval-already-pending')
-            if sum(g['state']=='active' and not self.requests[g['request_id']]['fence'].is_set() and g['deadline']>self.clock() for g in self.grants.values()) >= 4:
+            replacement=None
+            if replacement_source_ids:
+                rows,setup_context,replacement=self._replacement_proposal(rows,setup_context,replacement_source_ids)
+                if self._active_count()-len(replacement['snapshots'])+1>4:
+                    raise ScopeError('grant-limit-exceeded')
+            elif self._active_count() >= 4:
                 raise ScopeError('grant-limit-exceeded')
             if self.binding['deadline'] - self.clock() < 60:
                 raise ScopeError('lifetime-insufficient')
+            if replacement:
+                ttl_seconds=min(ttl_seconds,max(0,int(replacement['deadline']-self.clock())))
+                if ttl_seconds<1:
+                    raise ScopeError('replacement-source-unavailable')
             identifier_value = secrets.token_hex(16)
             request = {'id':identifier_value,'nonce':secrets.token_hex(32),
-                'submitted':submitted,'digest':digest({'binding':self.binding,'scope':rows,'ttl':ttl_seconds}),
+                'submitted':submitted,'digest':digest({'binding':self.binding,'scope':rows,'ttl':ttl_seconds,'setup':setup_context,'replacement':replacement}),
                 'items':rows,'ttl':ttl_seconds,'state':'pending','created':self.clock(),
+                'setup_context':copy.deepcopy(setup_context),
+                'replacement':replacement,
                 'review_deadline':min(self.clock()+120,self.binding['deadline']),
                 'grant_id':None,'fence':threading.Event(),'item_states':{row['item_id']:'pending' for row in rows}}
             self._event('request-created',request_id=identifier_value,request_digest=request['digest'],count=len(rows))
@@ -313,7 +392,69 @@ class Broker:
                 raise ScopeError('decision-consumed')
             return {'request_id':request_id,'nonce':request['nonce'],'request_digest':request['digest'],
                 'binding':copy.deepcopy(self.binding),'items':copy.deepcopy(request['items']),
-                'ttl_seconds':request['ttl'],'wait_seconds':max(0,int(request['review_deadline']-self.clock()))}
+                'ttl_seconds':request['ttl'],'wait_seconds':max(0,int(request['review_deadline']-self.clock())),
+                **({'replacement':{'source_grant_ids':request['replacement']['source_grant_ids'],
+                    'carried_items':copy.deepcopy(request['replacement']['carried_items']),
+                    'source_expires_in_seconds':max(0,int(request['replacement']['deadline']-self.clock()))}}
+                    if request.get('replacement') else {})}
+
+    def _replacement_unchanged(self,request):
+        try:
+            return (not request['fence'].is_set() and not self.fenced.is_set() and self.clock()<request['review_deadline'] and
+                self._active_count()-len(request['replacement']['snapshots'])+1<=4 and
+                all(self._source_snapshot(s['grant_id'],request['setup_context'])==s for s in request['replacement']['snapshots']))
+        except ScopeError:
+            return False
+
+    def _replacement_blocked(self,request,reason,states=None):
+        request.update(state='replacement-blocked',nonce='',failure_code=reason)
+        if states is not None:
+            request['item_states']=states
+        self._event('replacement-blocked',request_id=request['id'],reason=reason)
+        return self.status(request['id'])
+
+    def _accept_replacement(self,request,selected,states,ttl_seconds):
+        meta=request['replacement']
+        if not selected:
+            request.update(state='rejected',nonce='',item_states=states)
+            self._event('decision-recorded',request_id=request['id'],approved_items=[],ttl_seconds=ttl_seconds)
+            return self.status(request['id'])
+        if not set(meta['carried_items'])<=set(selected):
+            return self._replacement_blocked(request,'replacement-incomplete',states)
+        if not self._replacement_unchanged(request):
+            return self._replacement_blocked(request,'replacement-source-changed',states)
+        deadline=min(self.clock()+ttl_seconds,self.binding['deadline'],meta['deadline'])
+        scope_digest=digest({'items':selected,'deadline':deadline,'request':request['digest']})
+        grant_id=secrets.token_hex(16)
+        self._event('decision-recorded',request_id=request['id'],approved_scope_digest=scope_digest,
+            approved_items=list(selected),ttl_seconds=ttl_seconds)
+        self._event('replacement-committed',request_id=request['id'],grant_id=grant_id,
+            approved_scope_digest=scope_digest,item_ids=meta['source_grant_ids'],
+            contract_digest=digest(meta['snapshots']),count=len(selected))
+        self._valid()
+        # Revocation fences and publication serialize here, never behind an fsync.
+        with self.publication_lock:
+            if not self._replacement_unchanged(request):
+                published=False
+            else:
+                published=True
+                for snapshot in meta['snapshots']:
+                    source=self.grants[snapshot['grant_id']];source['state']='replaced'
+                    old=self.requests[snapshot['request_id']];old.update(state='replaced',replaced_by=grant_id)
+                self.grants[grant_id]={'state':'active','items':selected,'deadline':deadline,'scope_digest':scope_digest,
+                    'setup_context':copy.deepcopy(request['setup_context']),'context_digest':digest(request['setup_context']),
+                    'remaining':{n:r['max_uses'] for n,r in selected.items()},'verified':set(),'revoked_items':set(),
+                    'write_reservations':0,'request_id':request['id']}
+                originals={r['item_id']:copy.deepcopy(r) for r in request['items']}
+                for name,row in selected.items():
+                    originals[name]['parameters']['approved_semantics']=row['parameters']['approved_semantics']
+                full=len(selected)==len(originals) and all(row==originals[name] for name,row in selected.items())
+                request.update(state='approved' if full else 'partially-approved',
+                    nonce='',item_states=states,grant_id=grant_id)
+        if not published:
+            return self._replacement_blocked(request,'replacement-source-changed',states)
+        self._event('grant-issued',grant_id=grant_id,request_id=request['id'],approved_scope_digest=scope_digest)
+        return self.status(request['id'])
 
     def accept_decision(self, request_id, *, nonce, digest, choices, ttl_seconds):
         with self.lock:
@@ -356,7 +497,10 @@ class Broker:
                     review=original['parameters'].get('review_kind')
                     if review is not None:
                         expected='read' if review=='unclassified' else review
-                        if expected not in {'read','write','bootstrap','login'} or choice.get('semantic_classification')!=expected:
+                        if expected not in {'read','write','bootstrap','login','initialization-read'} or choice.get('semantic_classification')!=expected:
+                            raise ScopeError('decision-invalid')
+                        if expected=='initialization-read' and (not request.get('setup_context') or
+                            request['setup_context'].get('contracts',{}).get(name,{}).get('purpose')!='initialization-read'):
                             raise ScopeError('decision-invalid')
                         selected[name]['parameters']['approved_semantics']=expected
                     elif 'semantic_classification' in choice:
@@ -371,6 +515,8 @@ class Broker:
                 for name in blocked:
                     selected.pop(name)
                     states[name]='dependency-blocked'
+            if request.get('replacement'):
+                return self._accept_replacement(request,selected,states,ttl_seconds)
             deadline = min(self.clock()+ttl_seconds,self.binding['deadline'])
             scope_digest = globals()['digest']({'items':selected,'deadline':deadline,'request':request['digest']})
             self._event('decision-recorded',request_id=request_id,approved_scope_digest=scope_digest,
@@ -392,6 +538,8 @@ class Broker:
                 if request['fence'].is_set():
                     raise ScopeError('grant-revoked')
                 self.grants[grant_id]={'state':'active','items':selected,'deadline':deadline,'scope_digest':scope_digest,
+                    'setup_context':copy.deepcopy(request.get('setup_context')),
+                    'context_digest':globals()['digest'](request.get('setup_context')),
                     'remaining':{n:r['max_uses'] for n,r in selected.items()},'verified':set(),'revoked_items':set(),'write_reservations':0,'request_id':request_id}
                 request['grant_id']=grant_id
             return self.status(request_id)
@@ -417,12 +565,17 @@ class Broker:
                 'effective_limits':{n:{'max_uses':r['max_uses'],'targets':copy.deepcopy(r['targets']),
                     'output':copy.deepcopy(r['output'])} for n,r in grant['items'].items() if n in allowed} if grant else {},
                 'expires_in_seconds':max(0,int(grant['deadline']-self.clock())) if grant else 0,
-                'approved_scope_digest':grant['scope_digest'] if grant else None}
+                'approved_scope_digest':grant['scope_digest'] if grant else None,
+                **({'failure_code':request['failure_code']} if request.get('failure_code') else {}),
+                **({'replaced_by':request['replaced_by']} if request.get('replaced_by') else {}),
+                **({'replacement':{'source_grant_ids':request['replacement']['source_grant_ids'],
+                    'carried_item_ids':list(request['replacement']['carried_items'])}} if request.get('replacement') else {})}
 
     def cancel(self, request_id):
         request=self.requests.get(request_id)
-        if request and request['state']=='pending':
-            request['fence'].set()
+        with self.publication_lock:
+            if request and request['state']=='pending':
+                request['fence'].set()
         with self.lock:
             request=self.requests.get(request_id)
             if not request or request['state']!='pending':
@@ -437,14 +590,15 @@ class Broker:
         if not request:
             raise ScopeError('request-invalid')
         # Set before any audit/authorization lock; a late decision cannot revive it.
-        if request['fence'].is_set():
-            return
-        request['fence'].set()
+        with self.publication_lock:
+            if request.get('replaced_by') or request['fence'].is_set():
+                return
+            request['fence'].set()
         def record():
             try:
                 with self.lock:
                     request['nonce']=''
-                    if not request.get('grant_id') and request['state'] not in {'rejected','expired'}:
+                    if not request.get('grant_id') and request['state'] not in {'rejected','expired','replacement-blocked'}:
                         request['state']='cancelled'
                     grant=self.grants.get(request.get('grant_id'))
                     if grant:
@@ -477,6 +631,8 @@ class Broker:
     def reserve(self, grant_id, item_id, idempotency_key, parameters):
         identifier(idempotency_key)
         with self.lock:
+            if self.replacement_pending():
+                raise ScopeError('replacement-pending')
             grant,row=self._grant(grant_id,item_id)
             submitted=digest({'grant':grant_id,'item':item_id,'parameters':parameters})
             key=digest([grant_id,idempotency_key])
@@ -627,11 +783,14 @@ class Broker:
         if items is not None and (not isinstance(items,list) or any(not isinstance(n,str) for n in items)
                 or not set(items)<=set(grant['items'])):
             raise ScopeError('request-invalid')
-        already=grant['state']=='revoked' or (items is not None and set(items)<=grant['revoked_items'])
-        if items is None:
-            grant['state']='revoked'
-        else:
-            grant['revoked_items'].update(items)
+        with self.publication_lock:
+            if grant['state']=='replaced':
+                return {'state':'replaced','session_closed':self.fenced.is_set(),'auditPending':False}
+            already=grant['state']=='revoked' or (items is not None and set(items)<=grant['revoked_items'])
+            if items is None:
+                grant['state']='revoked'
+            else:
+                grant['revoked_items'].update(items)
         if already:
             return {'state':'revoked','session_closed':self.fenced.is_set(),'auditPending':grant.get('revocation_pending',False)}
         # Authority is fenced first; unrelated slow audit work must not turn

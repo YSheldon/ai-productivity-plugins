@@ -10,10 +10,27 @@ export class WorkerRuntime {
       Object.keys(command).some(key=>!['id','operation','arguments'].includes(key))||
       !command.arguments||typeof command.arguments!=='object'||Array.isArray(command.arguments))throw new Error('invalid-command');
     const args=command.arguments;
+    if(this.network.setupHold&&!['network-status','resolve-setup','register-initialization','hold-setup','release-setup'].includes(command.operation))
+      throw new Error('replacement-pending');
+    if(command.operation==='hold-setup'&&Object.keys(args).length===0){this.network.holdSetup();return {ok:true,held:true};}
+    if(command.operation==='release-setup'&&Object.keys(args).length===0){this.network.releaseSetup();return {ok:true,held:false};}
     if(['observe','navigate','read-result'].includes(command.operation))throw new Error('approval-required');
     if(command.operation==='network-status'&&Object.keys(args).length===0)return {ok:true,descriptors:this.network.list(),phase:this.network.phase};
     if(command.operation==='resolve-setup'&&Object.keys(args).join(',')==='setup')return setupContracts(args.setup,this.network);
+    if(command.operation==='register-initialization'&&Object.keys(args).join(',')==='contracts'){
+      this.network.startupState.register(args.contracts);return {ok:true};
+    }
     if(command.operation==='resume-login'&&Object.keys(args).length===0)return this.resume();
+    if(command.operation==='resume-login'&&Object.keys(args).join(',')==='startup'){
+      const ticket=args.startup;
+      if(!ticket||typeof ticket!=='object'||Array.isArray(ticket)||
+        Object.keys(ticket).sort().join(',')!=='binding_digest,deadline_ms,preauth_lifecycle,resume_id'||
+        !/^[a-f0-9]{32}$/.test(ticket.resume_id)||!/^[a-f0-9]{64}$/.test(ticket.binding_digest)||
+        ticket.preauth_lifecycle!==this.network.preauthLifecycle||!Number.isSafeInteger(ticket.deadline_ms)||
+        ticket.deadline_ms<=Date.now())throw new Error('invalid-command');
+      // Different process clocks must only narrow the original startup budget.
+      return this.resume({...ticket,deadline_ms:Math.min(ticket.deadline_ms,Date.now()+45000)});
+    }
     await this.control.admit();
     if(command.operation==='components'&&Object.keys(args).length===0)return this.registry.scan();
     if(command.operation==='resolve-items'&&Object.keys(args).join(',')==='items'){

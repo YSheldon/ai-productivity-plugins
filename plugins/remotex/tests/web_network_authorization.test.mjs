@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {WorkerAuthority} from '../scripts/web_authorization_ipc.mjs';
+import {StartupState} from '../scripts/web_startup_state.mjs';
 
 let network;
 try {network=await import('../scripts/web_network_authorization.mjs');}catch(error){if(error.code!=='ERR_MODULE_NOT_FOUND')throw error;}
@@ -108,14 +110,79 @@ test('task traffic is denied before arming and after the short dispatch window',
   assert.equal(await policy.authorize(request('{"cmd":"set_group"}')),false);
 });
 
-test('loading a login document is not evidence that credentials were transmitted',()=>{
+test('loading a login document is not evidence that credentials were transmitted',async()=>{
   const policy=new network.NetworkPolicy({origin,secret:'canary',requestPermit:async()=>true});
   policy.setPhase('login-once');
   const document={url:()=>origin+'/',method:()=> 'GET',postData:()=>null,headers:()=>({}),resourceType:()=> 'document'};
-  policy.beginForwarding(document)();
+  await policy.authorize(document);policy.beginForwarding(document)();
   assert.equal(policy.authenticationForwarded,0);
-  policy.beginForwarding(request('{"password":"canary"}'))();
+  const login=request('{"password":"canary"}');await policy.authorize(login);policy.beginForwarding(login)();
   assert.equal(policy.authenticationForwarded,1);
+});
+
+test('forwarding needs the exact authorized request and cannot reuse its receipt',async()=>{
+  const policy=new network.NetworkPolicy({origin,requestPermit:async()=>true});
+  const original=asset();assert.throws(()=>policy.beginForwarding(original));
+  await policy.authorize(original);assert.throws(()=>policy.beginForwarding(asset()));
+  policy.beginForwarding(original)();assert.throws(()=>policy.beginForwarding(original));
+});
+
+test('a caller-shaped initialization receipt cannot suppress authentication accounting',async()=>{
+  const policy=new network.NetworkPolicy({origin,requestPermit:async()=>({kind:'initialization-read'})});
+  policy.setPhase('login-once');const post=request('{"cmd":"info"}');
+  await policy.authorize(post);
+  assert.throws(()=>policy.beginForwarding(post));assert.equal(policy.authenticationForwarded,0);
+});
+
+test('only a current private init receipt avoids possible authentication accounting',async()=>{
+  const frames=[];let context;
+  const authority=new WorkerAuthority({emit:frame=>frames.push(frame),onRevoke:()=>{},startup:()=>context});
+  const policy=new network.NetworkPolicy({origin,requestPermit:(value,options)=>authority.checkNetwork({kind:'network',...value},options),
+    startup:()=>context,consumeReceipt:(receipt,expected)=>authority.consumeNetworkReceipt(receipt,expected)});
+  policy.setPhase('login-once');
+  const state=new StartupState({lifecycle:policy.preauthLifecycle||'a'.repeat(32)});
+  policy.startupState=state;
+  const post=request('{"cmd":"info"}');
+  const descriptor=network.describeRequest(post,origin,[]),checks=[{pointer:'/exist',test:'equals-boolean',expected:true}];
+  state.register({init:{purpose:'initialization-read',descriptor,response_checks:checks,prerequisite_id:'f'.repeat(64)}});
+  context={policy,phase:policy.phase,generation:policy.generation,deadline:Date.now()+45000,
+    signal:new AbortController().signal,preauth_lifecycle:state.lifecycle,resume_id:'b'.repeat(32),
+    document_id:'c'.repeat(32),binding_digest:'d'.repeat(64)};
+  state.open(context);
+  try{
+    const pending=policy.authorize(post),frame=frames[0];
+    const permit={kind:'initialization-read',check_id:frame.id,descriptor_digest:frame.request.digest,
+      binding_digest:context.binding_digest,preauth_lifecycle:state.lifecycle,resume_id:context.resume_id,
+      document_id:context.document_id,generation:context.generation,expires_at_ms:Date.now()+9000,
+      prerequisite_id:'f'.repeat(64),response_checks:checks};
+    assert.equal(authority.handle({authorization_reply:frame.id,allowed:true,permit}),true);
+    assert.equal(await pending,true);
+    const done=policy.beginForwarding(post);
+    assert.equal(policy.initializationForwarded,1);assert.equal(policy.authenticationForwarded,0);
+    state.forward(done.initialization);state.response(done.initialization,{ready:true});done();
+    state.armCredentials();
+    const login=request('{"cmd":"login"}'),allowed=policy.authorize(login),check=frames.at(-1);
+    authority.handle({authorization_reply:check.id,allowed:true});await allowed;
+    policy.beginForwarding(login)();assert.equal(policy.authenticationForwarded,1);
+  }finally{authority.dispose();}
+});
+
+test('setup replacement holds only an idle worker and never interrupts forwarding',async()=>{
+  const policy=new network.NetworkPolicy({origin,requestPermit:async()=>true});
+  assert.equal(typeof policy.holdSetup,'function');
+  const first=asset();await policy.authorize(first);const done=policy.beginForwarding(first);
+  assert.throws(()=>policy.holdSetup(),/operation-in-progress/);done();
+  policy.holdSetup();assert.equal(await policy.authorize(asset()),false);
+  assert.throws(()=>policy.beginForwarding(first));
+  policy.releaseSetup();const second=asset();assert.equal(await policy.authorize(second),true);
+  policy.beginForwarding(second)();
+});
+
+test('an outstanding permission check cannot be stopped to make a replacement idle',async()=>{
+  let release;const policy=new network.NetworkPolicy({origin,requestPermit:()=>new Promise(resolve=>{release=resolve;})});
+  assert.equal(typeof policy.holdSetup,'function');const pending=policy.authorize(asset());
+  assert.throws(()=>policy.holdSetup(),/operation-in-progress/);release(false);await pending;
+  policy.holdSetup();assert.equal(policy.setupHold,true);policy.releaseSetup();
 });
 
 test('a newly denied request replaces its expired reference without authorizing traffic',()=>withTime(async advance=>{

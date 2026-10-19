@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {normalizeResponseChecks,validateInitializationDescriptor,validateStaticDescriptor} from './web_initialization_contracts.mjs';
 
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const ownObject=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(key=>keys.includes(key));
@@ -75,6 +76,7 @@ export function taskContracts(scopes,declarations,network,drafts){
 }
 
 export function setupContracts(setup,network){
+  if(setup?.revision!==undefined)return setupContractsV2(setup,network);
   if(!ownObject(setup,['phase','network_refs','evidence','max_uses'])||
     !['bootstrap','login-once'].includes(setup.phase)||setup.phase!==network.phase||
     !Array.isArray(setup.network_refs)||!setup.network_refs.length||setup.network_refs.length>32||
@@ -93,4 +95,46 @@ export function setupContracts(setup,network){
     items.push(resolved.row);contracts[id]=resolved.contract;
   }
   return {ok:true,items,contracts};
+}
+
+function setupContractsV2(setup,network){
+  const invalid=()=>{throw new Error('request-invalid');};
+  if(!ownObject(setup,['revision','phase','requests','replace_grant_ids'])||setup.revision!==2||
+    !['bootstrap','login-once'].includes(setup.phase)||setup.phase!==network.phase||
+    !/^[a-f0-9]{32}$/.test(network.preauthLifecycle)||!Array.isArray(setup.requests)||
+    !setup.requests.length||setup.requests.length>32)invalid();
+  const sources=setup.replace_grant_ids??[];
+  if(!Array.isArray(sources)||sources.length>2||new Set(sources).size!==sources.length||
+    sources.some(id=>typeof id!=='string'||!/^[a-f0-9]{32}$/.test(id)))invalid();
+  const refs=new Set(),items=[],contracts={},prerequisites=[];
+  const phases=['bootstrap','login-once'];
+  for(const [index,row] of setup.requests.entries()){
+    if(!ownObject(row,['network_ref','purpose','max_uses','evidence','response_checks'])||
+      typeof row.network_ref!=='string'||!/^[a-f0-9]{32}$/.test(row.network_ref)||refs.has(row.network_ref)||
+      !['bootstrap-resource','initialization-read'].includes(row.purpose))invalid();
+    refs.add(row.network_ref);
+    const proof=evidence(row.evidence),uses=row.max_uses??2;
+    if(!Number.isInteger(uses)||uses<1||uses>10)invalid();
+    const descriptor=network.resolve(row.network_ref),init=row.purpose==='initialization-read';
+    if(init)validateInitializationDescriptor(descriptor);
+    else {
+      if(row.response_checks!==undefined)throw new Error('request-contract-unavailable');
+      validateStaticDescriptor(descriptor);
+    }
+    const checks=init?normalizeResponseChecks(row.response_checks):[];
+    const id=`setup.network.${index+1}`,semantics=init?'initialization-read':'bootstrap';
+    const extra={revision:2,purpose:row.purpose,phase_applicability:phases,preauth_lifecycle:network.preauthLifecycle,
+      required:init,response_checks:checks,prerequisite_id:init?hash({lifecycle:network.preauthLifecycle,descriptor,checks}):null};
+    const resolved=networkItem(id,descriptor,{phase:setup.phase,parent:null,semantics,proof,uses});
+    Object.assign(resolved.contract,extra);
+    resolved.row.display.preview=JSON.stringify({...JSON.parse(resolved.row.display.preview),...extra});
+    if(Buffer.byteLength(resolved.row.display.preview)>4096)throw new Error('request-too-large');
+    resolved.row.fingerprint=hash({descriptor,...extra});
+    resolved.row.effect.digest=hash({descriptor,semantics,proof,targets:[],...extra});
+    items.push(resolved.row);contracts[id]=resolved.contract;
+    if(init)prerequisites.push(extra.prerequisite_id);
+  }
+  if(items.reduce((sum,row)=>sum+row.max_uses,0)>200||Buffer.byteLength(JSON.stringify(items))>32768)throw new Error('request-too-large');
+  return {ok:true,items,contracts,setup_revision:2,preauth_lifecycle:network.preauthLifecycle,
+    phase_applicability:phases,prerequisites,replace_grant_ids:[...sources]};
 }

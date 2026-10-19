@@ -1,10 +1,12 @@
 import {randomUUID} from 'node:crypto';
+import {normalizeResponseChecks} from './web_initialization_contracts.mjs';
 
 export class WorkerAuthority {
   constructor({emit,onRevoke,startup}){
     this.emit=emit;this.onRevoke=onRevoke;this.pending=new Map();this.closed=false;this.generation=0;
     this.startup=typeof startup==='function'?startup:null;
     this.retired=new Map();this.staticQueue=[];this.staticActive=null;this.context=null;
+    this.receipts=new WeakMap();
   }
 
   _pruneRetired(){
@@ -21,14 +23,16 @@ export class WorkerAuthority {
       while(this.retired.size>=64)this.retired.delete(this.retired.keys().next().value);
       this.retired.set(id,{deadline:Date.now()+60000,batch:entry.batch});
     }
-    entry.resolve(allowed===true&&!this.closed&&!entry.signal?.aborted&&Date.now()<entry.deadline);
+    const current=!this.closed&&!entry.signal?.aborted&&Date.now()<entry.deadline;
+    entry.resolve(current&&(allowed===true||(allowed&&typeof allowed==='object'&&this.receipts.has(allowed)))?allowed:false);
     this._pump();
   }
 
-  _send(request,signal){
+  _send(request,signal,context=null){
     if(this.closed||this.pending.size>=16||signal?.aborted)return Promise.resolve(false);
     const id=randomUUID().replaceAll('-','');
     const {promise,entry}=this._register(id,signal,null);
+    if(context){entry.request=structuredClone(request);entry.context=context;}
     try {this.emit({event:'authorization-check',id,request});entry.emitted=true;}
     catch{this._settle(id,false);}
     return promise;
@@ -37,7 +41,7 @@ export class WorkerAuthority {
   _register(id,signal,batch){
     let entry;
     const promise=new Promise(resolve=>{
-      entry={resolve,signal,batch,deadline:Date.now()+10000,emitted:false,abort:()=>this._settle(id,false,true)};
+      entry={resolve,signal,batch,deadline:Date.now()+10000,monotonicDeadline:performance.now()+10000,emitted:false,abort:()=>this._settle(id,false,true)};
       entry.timer=setTimeout(entry.abort,10000);
       this.pending.set(id,entry);signal?.addEventListener('abort',entry.abort,{once:true});
     });
@@ -155,8 +159,48 @@ export class WorkerAuthority {
     });
   }
 
+  checkNetwork(request,options={}){
+    if(!request||request.kind!=='network')return Promise.resolve(false);
+    if(this._isStatic(request))return this.check(request,options);
+    if(!request.startup)return this.check(request,options);
+    let context;
+    try{context=this.startup?.();this._bindContext(context);}catch{return Promise.resolve(false);}
+    if(!this._current(context)||request.phase!==context.phase||options.signal?.aborted||options.isCancelled?.()===true)
+      return Promise.resolve(false);
+    return this._send(request,options.signal,context);
+  }
+
+  consumeNetworkReceipt(receipt,expected){
+    const row=this.receipts.get(receipt);
+    this.receipts.delete(receipt);
+    if(!row||!this._current(row.context)||Date.now()>=receipt.expires_at_ms||performance.now()>=row.monotonicDeadline||
+      !expected||Object.keys(expected).sort().join(',')!=='binding_digest,descriptor_digest,document_id,generation,preauth_lifecycle,resume_id'||
+      Object.entries(expected).some(([key,value])=>receipt[key]!==value))throw new Error('scope-mismatch');
+    return Object.freeze({...receipt,dispatch_deadline:row.monotonicDeadline});
+  }
+
+  _typedReply(frame){
+    if(Object.keys(frame).sort().join(',')!=='allowed,authorization_reply,permit'||frame.allowed!==true||
+      typeof frame.authorization_reply!=='string'||!/^[a-f0-9]{32}$/.test(frame.authorization_reply))return false;
+    const entry=this.pending.get(frame.authorization_reply),p=frame.permit;
+    if(!entry){this._pruneRetired();return !this.retired.get(frame.authorization_reply)?.batch&&this.retired.delete(frame.authorization_reply);}
+    if(!entry.context||entry.batch||!this._current(entry.context)||!p||typeof p!=='object'||Array.isArray(p)||
+      Object.keys(p).sort().join(',')!=='binding_digest,check_id,descriptor_digest,document_id,expires_at_ms,generation,kind,preauth_lifecycle,prerequisite_id,response_checks,resume_id'||
+      p.kind!=='initialization-read'||p.check_id!==frame.authorization_reply||p.descriptor_digest!==entry.request.digest||
+      !/^[a-f0-9]{64}$/.test(p.prerequisite_id)||!Number.isSafeInteger(p.expires_at_ms)||
+      p.expires_at_ms<=Date.now()||p.expires_at_ms>entry.context.deadline||
+      ['binding_digest','preauth_lifecycle','resume_id','document_id','generation'].some(key=>p[key]!==entry.context[key])||
+      entry.request.descriptor?.method!=='POST')return false;
+    let checks;
+    try{checks=normalizeResponseChecks(p.response_checks);}catch{return false;}
+    const receipt=Object.freeze({...p,expires_at_ms:Math.min(p.expires_at_ms,entry.deadline),response_checks:checks});
+    this.receipts.set(receipt,{context:entry.context,monotonicDeadline:entry.monotonicDeadline});
+    this._settle(frame.authorization_reply,receipt);return true;
+  }
+
   handle(frame){
     if(!frame||typeof frame!=='object'||Array.isArray(frame))return false;
+    if(Object.hasOwn(frame,'permit'))return this._typedReply(frame);
     if(Object.keys(frame).join(',')==='authorization_batch_reply'&&Array.isArray(frame.authorization_batch_reply)){
       const rows=frame.authorization_batch_reply;
       if(rows.length<2||rows.length>16||rows.some(row=>!row||typeof row!=='object'||Array.isArray(row)||

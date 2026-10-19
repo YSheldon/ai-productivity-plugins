@@ -114,6 +114,14 @@ def test_eof_before_decision_reports_helper_exit_not_operator_rejection():
     assert calls == [('cancel', None)]
 
 
+def test_failed_replacement_decision_closes_only_its_helper_with_a_truthful_reason():
+    prompt,_,_=inert_prompt()
+    prompt.on_decision=lambda value:{'grant_id':None,'state':'replacement-blocked'}
+    prompt._apply_decision(frame())
+    assert prompt.stopped is True
+    assert prompt.status()['exit_reason']=='replacement-blocked'
+
+
 @pytest.mark.parametrize('was_shown', [False, True])
 def test_observed_helper_exit_is_terminal_before_stdout_reader_catches_up(was_shown):
     prompt, _, calls = inert_prompt(data=encoded(receipt()) if was_shown else b'')

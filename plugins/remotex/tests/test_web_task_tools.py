@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
+sys.path.insert(0,str(Path(__file__).resolve().parent))
 import web_adapter
 
 
@@ -18,6 +19,33 @@ def test_typed_task_tools_exist_without_an_approve_or_raw_browser_interface():
         schema=web_adapter.TOOLS[name]['inputSchema']
         assert schema['additionalProperties'] is False
         assert not set(schema['properties']) & {'password','url','selector','script','headers','body','cookies','nonce','decision'}
+
+def test_public_setup_schema_exposes_mutually_exclusive_exact_v2_contracts():
+    setup=web_adapter.TOOLS['remotex_web_authorization_request']['inputSchema']['properties']['setup']
+    variants=setup.get('oneOf',[])
+    assert len(variants)==2,'Clients cannot discover strict legacy and revision2 shapes'
+    modern=next(v for v in variants if v['properties'].get('revision',{}).get('const')==2)
+    assert modern['additionalProperties'] is False
+    assert set(modern['properties'])=={'revision','phase','requests','replace_grant_ids'}
+    assert set(modern['required'])=={'revision','phase','requests'}
+    assert modern['properties']['replace_grant_ids']['maxItems']==2
+    kinds=modern['properties']['requests']['items']['oneOf']
+    assert {v['properties']['purpose']['const'] for v in kinds}=={'bootstrap-resource','initialization-read'}
+    for row in kinds:
+        assert row['additionalProperties'] is False
+        assert not {'url','body','headers','approved_semantics','phase_applicability'}&set(row['properties'])
+    initialization=next(v for v in kinds if v['properties']['purpose']['const']=='initialization-read')
+    assert 'response_checks' in initialization['required']
+    assert initialization['properties']['response_checks']['maxItems']==8
+
+def test_read_only_capabilities_do_not_export_private_startup_context():
+    from test_web_task_service import prepared
+    service,_,_=prepared()
+    result=service.status()
+    assert result['setup_purposes']==['bootstrap-resource','initialization-read']
+    assert result['limits']['active_grants']==4 and result['limits']['pending_requests']==1
+    assert result['initialization']['state']=='not-required'
+    assert not {'resume_id','document_id','check_id','permit','response_checks'}&set(result['initialization'])
 
 
 def test_unknown_or_secret_tool_fields_are_rejected_before_channel_access(monkeypatch):

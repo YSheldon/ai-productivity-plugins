@@ -204,7 +204,7 @@ class ApprovalPrompt:
                 if self.stopped:
                     return
                 if not result.get('grant_id'):
-                    self.stop('operator-rejected')
+                    self.stop('replacement-blocked' if result.get('state')=='replacement-blocked' else 'operator-rejected')
                     return
                 self.timer=threading.Timer(max(1,result.get('expires_in_seconds',1)),lambda:self.stop('grant-expired'))
                 self.timer.daemon=True

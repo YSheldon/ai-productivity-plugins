@@ -18,6 +18,18 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
+Version `0.6.8` adds native **Initialization Read** review for exact non-secret
+pre-login JSON/form POSTs, with required response checks before credential
+insertion. Bootstrap remains static GET/HEAD only; sign-in and page-content
+reads still need separate approvals. Revision-2 static scopes cover both
+pre-auth phases and can be explicitly replaced, carrying all approved rows and
+remaining uses without extending their earliest expiry. Four active grants,
+one pending proposal, all existing timers, credentials, site/trust and queue
+boundaries remain unchanged. The complete new runtime includes the pinned JSON
+parser without overwriting old active runtimes. See
+[Initialization reads](docs/web-task-authorization.md#revision-2-initialization-reads)
+and [static replacement](docs/web-task-authorization.md#bounded-static-grant-replacement).
+
 Version `0.6.7` explains each Effect Review category beside the native dropdown
 and shows the selected row's current classification above its request details.
 Limit and lifetime tooltips clarify finite counts, read-output budgets, the

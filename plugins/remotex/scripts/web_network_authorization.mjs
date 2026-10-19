@@ -75,12 +75,15 @@ export function describeRequest(request,origin,secrets){
 }
 
 export class NetworkPolicy {
-  constructor({origin,secret,requestPermit,clock=Date.now}){
+  constructor({origin,secret,requestPermit,clock=Date.now,startup,consumeReceipt}){
     if(typeof requestPermit!=='function')throw new Error('invalid-job');
     this.origin=origin;this.requestPermit=requestPermit;this.phase='bootstrap';this.generation=0;
     this.activeAttempt=null;this.pending=new Map();
     this.forwarded=new Map();this.inFlight=new Map();this.loginForwarded=0;this.authenticationForwarded=0;
     this.clock=clock;this.dispatchDeadline=0;
+    this.startup=startup;this.consumeReceipt=consumeReceipt;this.forwardingReceipts=new WeakMap();
+    this.preauthLifecycle=randomUUID().replaceAll('-','');this.initializationForwarded=0;
+    this.setupHold=false;this.activeChecks=0;this.activeForwarding=0;
     this.secrets=secret?[secret,encodeURIComponent(secret),Buffer.from(secret).toString('base64')]:[];
   }
 
@@ -101,8 +104,14 @@ export class NetworkPolicy {
 
   beginForwarding(request){
     if(this.phase==='fenced')throw new Error('grant-revoked');
+    if(this.setupHold)throw new Error('replacement-pending');
+    const permit=this.takeForwardingReceipt(request);
     const attempt=this.activeAttempt;
-    if(attempt){
+    let initialization,authentication=false;
+    if(permit.kind==='initialization-read'){
+      if(!this.startupState||this.authenticationForwarded)throw new Error('scope-mismatch');
+      initialization=this.startupState.begin(permit);this.initializationForwarded++;
+    }else if(attempt){
       this.forwarded.set(attempt,(this.forwarded.get(attempt)||0)+1);
       this.inFlight.set(attempt,(this.inFlight.get(attempt)||0)+1);
     }else if(this.phase==='login-once'){
@@ -110,10 +119,58 @@ export class NetworkPolicy {
       const descriptor=describeRequest(request,this.origin,this.secrets);
       const internalAuth=value=>!!(value&&typeof value==='object'&&
         (value.internalAuth===true||Object.values(value).some(internalAuth)));
-      if(!['GET','HEAD'].includes(descriptor.method)||internalAuth(descriptor.body)||internalAuth(descriptor.query))this.authenticationForwarded++;
+      if(!['GET','HEAD'].includes(descriptor.method)||internalAuth(descriptor.body)||internalAuth(descriptor.query)){
+        authentication=true;
+        this.authenticationForwarded++;
+        if(this.startupState?.context){
+          this.startupState.authenticationForwarded=this.authenticationForwarded;
+          this.startupState._event('authentication-forwarded');
+        }
+      }
     }
-    return ()=>{if(attempt)this.inFlight.set(attempt,Math.max(0,(this.inFlight.get(attempt)||1)-1));};
+    const generation=this.generation,context=this.startup?.();
+    this.activeForwarding++;let finished=false;
+    const completed=()=>{
+      if(finished)return;finished=true;this.activeForwarding--;
+      if(attempt)this.inFlight.set(attempt,Math.max(0,(this.inFlight.get(attempt)||1)-1));
+    };
+    completed.initialization=initialization;
+    completed.authentication=authentication;
+    completed.privateStartup=!!context?.binding_digest;
+    completed.startupSignal=context?.signal;
+    completed.startupDeadline=context?.deadline;
+    completed.checkDispatch=()=>{
+      if(this.phase==='fenced'||this.generation!==generation||requestCancelled(request)||
+        (context&&(this.startup?.()!==context||context.signal.aborted||this.clock()>=context.deadline)))throw new Error('scope-mismatch');
+      if(initialization)this.startupState.check(initialization);
+    };
+    return completed;
   }
+
+  takeForwardingReceipt(request){
+    const row=this.forwardingReceipts.get(request);this.forwardingReceipts.delete(request);
+    if(!row||row.generation!==this.generation||row.phase!==this.phase||requestCancelled(request)||
+      signature(describeRequest(request,this.origin,this.secrets))!==row.digest||
+      (row.context&&(this.startup?.()!==row.context||row.context.signal.aborted||this.clock()>=row.context.deadline)))
+      throw new Error('scope-mismatch');
+    if(row.receipt){
+      if(typeof this.consumeReceipt!=='function'||!row.context)throw new Error('scope-mismatch');
+      return this.consumeReceipt(row.receipt,{descriptor_digest:row.digest,binding_digest:row.context.binding_digest,
+        preauth_lifecycle:row.context.preauth_lifecycle,resume_id:row.context.resume_id,
+        document_id:row.context.document_id,generation:row.context.generation});
+    }
+    return {kind:'ordinary'};
+  }
+
+  holdSetup(){
+    if(this.setupHold)return;
+    if(!['bootstrap','login-once'].includes(this.phase)||this.authenticationForwarded)throw new Error('capability-unsupported');
+    if(this.activeChecks||this.activeForwarding||this.startup?.()||this.startupState?.pending.size)
+      throw new Error('operation-in-progress');
+    this.setupHold=true;this.generation++;
+  }
+
+  releaseSetup(){if(this.setupHold){this.setupHold=false;this.generation++;}}
 
   async drain(attempt){
     const deadline=Date.now()+22000;
@@ -123,20 +180,29 @@ export class NetworkPolicy {
   }
 
   async authorize(request){
-    if(this.phase==='fenced'||requestCancelled(request))return false;
+    if(this.setupHold||this.phase==='fenced'||requestCancelled(request))return false;
     if(this.phase==='grant-active'&&(!this.activeAttempt||this.clock()>=this.dispatchDeadline))return false;
-    const generation=this.generation;
+    const generation=this.generation,context=this.startup?.();
     let descriptor;
     try {descriptor=describeRequest(request,this.origin,this.secrets);}
     catch(error){this.lastFailure=error.message;return false;}
     const key=signature(descriptor);
-    let allowed=false;
-    try {allowed=await this.requestPermit({phase:this.phase,attempt_id:this.activeAttempt,descriptor,digest:key},
-      {isCancelled:()=>requestCancelled(request)})===true;}
+    let allowed=false,receipt=null;
+    const startup=context?.binding_digest?{resume_id:context.resume_id,preauth_lifecycle:context.preauth_lifecycle,
+      document_id:context.document_id,generation:context.generation}:undefined;
+    this.activeChecks++;
+    try {
+      const reply=await this.requestPermit({phase:this.phase,attempt_id:this.activeAttempt,descriptor,digest:key,
+        ...(startup?{startup}: {})},{isCancelled:()=>requestCancelled(request)});
+      receipt=reply&&typeof reply==='object'&&reply.kind==='initialization-read'?reply:null;
+      allowed=reply===true||!!receipt;
+    }
     catch{return false;}
+    finally{this.activeChecks--;}
     if(this.phase==='fenced'||this.generation!==generation||requestCancelled(request)||
       (this.phase==='grant-active'&&this.clock()>=this.dispatchDeadline))return false;
     if(!allowed){
+      this.startupState?.deny(descriptor);
       const now=Date.now();
       for(const [pendingKey,row] of this.pending){
         if(now-row.at>120000)this.pending.delete(pendingKey);
@@ -145,6 +211,7 @@ export class NetworkPolicy {
         this.pending.set(key,{ref:randomUUID().replaceAll('-',''),descriptor,at:now});
       }
     }
+    if(allowed)this.forwardingReceipts.set(request,{receipt,digest:key,generation,phase:this.phase,context});
     return allowed;
   }
 

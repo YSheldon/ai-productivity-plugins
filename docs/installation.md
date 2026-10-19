@@ -187,6 +187,14 @@ Start a new owned login session;
 do not try to adopt an old process's session or move cookies between windows.
 Confirm supported-browser access through the host before any web operation.
 
+For RemoteX 0.6.8, run `remotex_web_runtime_setup` again: both pinned Playwright
+Core and jsonc-parser are required. A confirmed install uses a new versioned
+runtime rather than overwriting packages used by existing sessions. Reconnect
+only an idle consumer; old processes do not gain revision-2 setup support just
+because the disk cache changed. Authorization status advertises setup revisions
+and purposes. Use [Initialization Read and static replacement](../plugins/remotex/docs/web-task-authorization.md#revision-2-initialization-reads)
+only in a fresh original-supervisor session with reviewed handler/effect evidence.
+
 ## Troubleshooting
 
 | Symptom | Check |
@@ -198,12 +206,15 @@ Confirm supported-browser access through the host before any web operation.
 | Config rejected after upgrade | Check every client reading the shared config for old runtimes |
 | Browser-control request-header policy error | Diagnose the host browser interface separately from site credentials |
 | Isolated Edge not in the browser list | Use RemoteX task tools in the process that started login; a session ID is not a generic tab ID |
-| Button/form interface absent | Upgrade/reconnect to 0.6.7, discover components, request a local human grant, then use typed execution |
+| Button/form interface absent | Upgrade/reconnect to 0.6.8, discover components, request a local human grant, then use typed execution |
 | Approval categories or limits are unclear | Use 0.6.7 inline Effect Review explanations, selected-row help and limit/lifetime tooltips. Selection/help is not approval; the separate 120-second review and up-to-12-hour grant remain unchanged |
 | Approval window missing or cancelled without a clear cause | Inspect the request's `approval_ui` lifecycle receipt, remaining review seconds, error code and exit reason in 0.6.4. A process ID is not proof of display; `shown` is not permission or proof of foreground. Do not repeatedly open new requests |
 | Startup stalls or closes after a large approved asset batch | Use 0.6.6 bounded static transactions, retaining every audit event and the existing 45-second startup / 55-second resume limits. Inspect the original session state instead of replaying requests or retrying possibly submitted credentials |
 | Long task authorization still ends early | In 0.6.5 or later request up to 43,200 seconds and start a new covering session (default/max 46,800) with a lease at least 45 seconds longer. Old sessions/grants and profile lease defaults are not extended; counts, revocation and server-side login expiry still apply |
 | `authorization-contract-required` | Inspect blocked descriptor refs, review exact startup/login contracts locally, then resume the same UI; never replay raw requests |
+| Login controls need an initialization POST | In 0.6.8 inspect deployed handler/effect and encoding evidence, request exact revision-2 Initialization Read rows with response checks, then obtain independent Login approval. Bootstrap never permits POST |
+| Static setup consumes all four grant slots | Explicitly replace at most two idle revision-2 static-only sources, carrying every approved row and remaining use under the earliest source expiry. Oversized plans fail with `setup-plan-capacity-required`; do not truncate or raise limits |
+| Pinned runtime incomplete after upgrade | Check both Playwright Core 1.62.1 and jsonc-parser 3.3.1 with runtime setup; dependency readiness is checked before credentials are read |
 | Page stays at 1280x720 when resizing Edge | Use a new window-sized session; inspect `remotex_web_components.geometry` to separate viewport behavior from site CSS |
 | Host browser access denied or unknown | Stop web operations; do not use RemoteX, CDP, or shell automation as an alternate route |
 

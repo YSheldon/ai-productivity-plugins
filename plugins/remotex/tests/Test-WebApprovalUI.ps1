@@ -78,7 +78,7 @@ function New-Fixture([string[]]$Kinds) {
     $id.Name = 'Item'; $id.ReadOnly = $true; $null = $grid.Columns.Add($id)
     $effect = New-Object Windows.Forms.DataGridViewComboBoxColumn
     $effect.Name = 'Effect Review'
-    $effect.Items.AddRange(@('Not applicable','Unreviewed','Read','Business Write','Bootstrap','Login'))
+    $effect.Items.AddRange(@('Not applicable','Unreviewed','Read','Business Write','Bootstrap','Login','Initialization Read'))
     $null = $grid.Columns.Add($effect)
     [Console]::Error.WriteLine('ui-stage: columns-created')
     $items = @()
@@ -149,6 +149,67 @@ try {
             Assert-True ($result.ok -and $result.changed -eq 15) 'Bulk effect choice did not cover the 15 checked rows'
             Assert-True (@($fixture.Grid.Rows | Where-Object { $_.Cells['Effect Review'].Value -ne 'Bootstrap' }).Count -eq 0) 'Wrong effect label applied'
             Assert-True (@($fixture.Items | Where-Object { $_.max_uses -ne 2 -or $_.output.bytes -ne 0 }).Count -eq 0) 'Classification widened source limits'
+        }
+        'apply-initialization-read' {
+            $fixture = New-Fixture -Kinds @('initialization-read','initialization-read')
+            Set-ApprovalChecks -Grid $fixture.Grid -Checked $true
+            $result = Set-CheckedEffectReview -Grid $fixture.Grid -Items $fixture.Items -Classification 'Initialization Read'
+            Assert-True ($result.ok -and $result.changed -eq 2) 'Exact initialization reads cannot be independently classified'
+            Assert-True (@($fixture.Grid.Rows | Where-Object { $_.Cells['Effect Review'].Value -cne 'Initialization Read' }).Count -eq 0) 'Initialization classification is not explicit'
+        }
+        'mixed-init-refused' {
+            $fixture = New-Fixture -Kinds @('bootstrap','initialization-read')
+            Set-ApprovalChecks -Grid $fixture.Grid -Checked $true
+            $result = Set-CheckedEffectReview -Grid $fixture.Grid -Items $fixture.Items -Classification 'Initialization Read'
+            Assert-True (-not $result.ok -and $result.changed -eq 0) 'Mixed static/read items were silently reclassified'
+            Assert-True (@($fixture.Grid.Rows | Where-Object { $_.Cells['Effect Review'].Value -cne 'Unreviewed' }).Count -eq 0) 'Mixed refusal partially changed effects'
+        }
+        { $_ -in @('init-hint','replacement-scope','replacement-carried-required','replacement-lifetime') } {
+            $fixture = New-Fixture -Kinds @('bootstrap','bootstrap')
+            if ($Scenario -eq 'init-hint') {
+                $fixture.Grid.Dispose(); $fixture = New-Fixture -Kinds @('initialization-read')
+                $fixture.Items[0].display.label = 'Network: POST /init'
+                $fixture.Items[0].display.preview = (@{purpose='initialization-read';required=$true;
+                    phase_applicability=@('bootstrap','login-once');descriptor=@{method='POST';path='/init';body=@{cmd='info'}};
+                    response_checks=@(@{pointer='/exist';test='equals-boolean';expected=$true})} | ConvertTo-Json -Depth 10 -Compress)
+            }
+            $script:manifest = [pscustomobject]@{
+                request_id=('a'*32);nonce=('b'*64);request_digest=('c'*64)
+                binding=[pscustomobject]@{origin='https://console.example';account='operator'}
+                items=$fixture.Items;ttl_seconds=43200;wait_seconds=120
+            }
+            if ($Scenario -ne 'init-hint') {
+                $manifest | Add-Member -NotePropertyName replacement -NotePropertyValue ([pscustomobject]@{
+                    source_grant_ids=@('d'*32);source_expires_in_seconds=300
+                    carried_items=[pscustomobject]@{'item.0'=[pscustomobject]@{remaining_uses=2;source_grant_id=('d'*32);source_item_id='root'}}})
+            }
+            $script:decided=$false; $script:approved=$false; $script:loadingTargets=$false
+            $script:selectedId=$null; $script:targetSelections=@{}
+            . (Get-NativeFormConstruction)
+            switch ($Scenario) {
+                'init-hint' {
+                    $batchReview.SelectedItem='Initialization Read'
+                    Assert-True ($batchHint.Text.Contains('Exact POST') -and $batchHint.Text.Contains('no authentication')) 'Initialization help is missing its boundary'
+                    Assert-True ($grid.Rows[0].Cells['Scope'].Value.Contains('Required')) 'Required initialization status is not visible'
+                    $grid.ClearSelection(); $grid.Rows[0].Selected=$true
+                    Assert-True ($details.Text.Contains('/exist') -and $details.Text.Contains('pre-login')) 'Readiness and pre-login applicability are not readable'
+                    Assert-True (-not $script:decided -and $captured.ToString().Length -eq 0) 'Viewing initialization help granted authority'
+                }
+                'replacement-scope' {
+                    Assert-True ($heading.Text.Contains('d'*32) -and $heading.Text.Contains('carried')) 'Replacement sources/carried obligation are not visible'
+                    Assert-True ($heading.Text.Contains('no renewal')) 'Replacement appears to extend source expiry'
+                }
+                'replacement-carried-required' {
+                    $check=Test-ReplacementSelection -Manifest $manifest -Choices @(@{item_id='item.1'})
+                    Assert-True (-not $check.ok) 'Omitted carried permissions can reach final approval'
+                    $check=Test-ReplacementSelection -Manifest $manifest -Choices @(@{item_id='item.0'})
+                    Assert-True $check.ok 'Partial new selection wrongly removed valid carried scope'
+                }
+                'replacement-lifetime' {
+                    Assert-True ([int]$ttl.Maximum -eq 300 -and [int]$ttl.Value -eq 300) 'Replacement UI renewed the source lifetime'
+                    Assert-True ([int]$manifest.ttl_seconds -eq 43200 -and [int]$manifest.wait_seconds -eq 120) 'Display changed original review/scope data'
+                }
+            }
         }
         'checked-only' {
             $fixture = New-Fixture -Kinds @('bootstrap','bootstrap','bootstrap','')

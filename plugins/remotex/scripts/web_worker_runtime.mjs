@@ -27,8 +27,9 @@ export class WorkerRuntime {
         Object.keys(ticket).sort().join(',')!=='binding_digest,deadline_ms,preauth_lifecycle,resume_id'||
         !/^[a-f0-9]{32}$/.test(ticket.resume_id)||!/^[a-f0-9]{64}$/.test(ticket.binding_digest)||
         ticket.preauth_lifecycle!==this.network.preauthLifecycle||!Number.isSafeInteger(ticket.deadline_ms)||
-        ticket.deadline_ms<=Date.now()||ticket.deadline_ms>Date.now()+45000)throw new Error('invalid-command');
-      return this.resume(ticket);
+        ticket.deadline_ms<=Date.now())throw new Error('invalid-command');
+      // Different process clocks must only narrow the original startup budget.
+      return this.resume({...ticket,deadline_ms:Math.min(ticket.deadline_ms,Date.now()+45000)});
     }
     await this.control.admit();
     if(command.operation==='components'&&Object.keys(args).length===0)return this.registry.scan();

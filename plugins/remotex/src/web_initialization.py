@@ -280,5 +280,5 @@ class StartupAuthority:
             ready=len(self.ready-self.blocked)
             return {'required':len(self.required),'ready':ready,'pending':len(self.issued),'blocked':len(self.blocked),
                 'controls_ready':bool(self.active and self.active['controls']),
-                'state':'sealed' if self.authentication_forwarded or (self.active and self.active['armed']) else
+                'state':'not-required' if self.lifecycle is None else 'sealed' if self.authentication_forwarded or (self.active and self.active['armed']) else
                     'ready' if self.active and ready==len(self.required) and not self.issued and not self.blocked else 'pending'}

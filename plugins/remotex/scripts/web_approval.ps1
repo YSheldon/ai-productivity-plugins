@@ -60,16 +60,18 @@ try {
     # Standard output is reserved for decision and revocation frames.
     $null = $layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent, 70)))
     $null = $layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent, 30)))
-    $null = $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute, 90)))
+    $null = $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::AutoSize)))
     $null = $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::AutoSize)))
     foreach ($height in @(55, 45)) { $null = $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Percent, $height))) }
     $null = $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute, 76)))
     $form.Controls.Add($layout)
     $heading = New-Object Windows.Forms.Label
-    $heading.Dock = 'Fill'; $heading.Padding = New-Object Windows.Forms.Padding(12)
-    $contextHeading = "Origin: $($manifest.binding.origin)   Account: $($manifest.binding.account)`r`nRequest: $($manifest.request_digest)"
+    $heading.AutoSize = $true; $heading.Dock = 'Top'; $heading.Padding = New-Object Windows.Forms.Padding(12)
+    $heading.MaximumSize = New-Object Drawing.Size([Math]::Max(1, $form.ClientSize.Width - 24), 0)
+    $contextHeading = Get-ApprovalContextText $manifest
     $heading.Text = $contextHeading + "`r`n" + (Get-ApprovalReviewText -WaitSeconds $manifest.wait_seconds -ElapsedSeconds 0 -Decided $false -Approved $false)
     $layout.Controls.Add($heading, 0, 0); $layout.SetColumnSpan($heading, 2)
+    $layout.Add_SizeChanged({ $heading.MaximumSize = New-Object Drawing.Size([Math]::Max(1, $layout.ClientSize.Width - $heading.Margin.Horizontal), 0) })
 
     $grid = New-Object Windows.Forms.DataGridView
     $grid.Dock = 'Fill'; $grid.AllowUserToAddRows = $false; $grid.AllowUserToDeleteRows = $false
@@ -84,7 +86,8 @@ try {
     }
     $semanticColumn = New-Object Windows.Forms.DataGridViewComboBoxColumn
     $semanticColumn.Name = 'Effect Review'; $semanticColumn.FillWeight = 170
-    $semanticColumn.Items.AddRange(@('Not applicable', 'Unreviewed', 'Read', 'Business Write', 'Bootstrap', 'Login'))
+    $semanticColumn.Items.AddRange(@('Not applicable', 'Unreviewed', 'Read', 'Business Write', 'Bootstrap', 'Login', 'Initialization Read'))
+    $semanticColumn.MinimumWidth = 145
     $null = $grid.Columns.Add($semanticColumn)
     $limitHints = @{
         Uses = 'Maximum executions for this item. You may reduce, but not increase, the requested count.'
@@ -132,7 +135,7 @@ try {
         if ($grid.SelectedRows.Count -eq 0) { return }
         $script:selectedId = [string]$grid.SelectedRows[0].Cells['Item'].Value
         $item = @($manifest.items | Where-Object { $_.item_id -eq $script:selectedId })[0]
-        $details.Text = $item | ConvertTo-Json -Depth 24
+        $details.Text = Get-ApprovalDetailsText $item
         $script:loadingTargets = $true; $targetList.Items.Clear()
         foreach ($target in @($item.targets)) { $null = $targetList.Items.Add([string]$target, ($script:targetSelections[$script:selectedId] -contains $target)) }
         $script:loadingTargets = $false
@@ -153,8 +156,8 @@ try {
     $reviewLabel.Text = 'Effect Review'; $reviewLabel.AutoSize = $true; $reviewLabel.Padding = New-Object Windows.Forms.Padding(10, 6, 0, 0)
     $batchTools.Controls.Add($reviewLabel)
     $batchReview = New-Object Windows.Forms.ComboBox
-    $batchReview.DropDownStyle = 'DropDownList'; $batchReview.Width = 130
-    $batchReview.Items.AddRange(@('Unreviewed','Read','Business Write','Bootstrap','Login'))
+    $batchReview.DropDownStyle = 'DropDownList'; $batchReview.Width = 170
+    $batchReview.Items.AddRange(@('Unreviewed','Read','Business Write','Bootstrap','Login','Initialization Read'))
     $batchReview.SelectedIndex = 0
     $batchTools.Controls.Add($batchReview)
     $batchHint = New-Object Windows.Forms.Label
@@ -188,7 +191,10 @@ try {
     $ttlLabel.Text = 'Lifetime (seconds)'; $ttlLabel.AutoSize = $true
     $buttons.Controls.Add($ttlLabel)
     $ttl = New-Object Windows.Forms.NumericUpDown
-    $ttl.Minimum = 1; $ttl.Maximum = [int]$manifest.ttl_seconds; $ttl.Value = [int]$manifest.ttl_seconds
+    $lifetimeCap = [int]$manifest.ttl_seconds
+    if ($manifest.replacement) { $lifetimeCap = [Math]::Min($lifetimeCap, [int]$manifest.replacement.source_expires_in_seconds) }
+    if ($lifetimeCap -lt 1) { throw 'The original source lifetime is unavailable' }
+    $ttl.Minimum = 1; $ttl.Maximum = $lifetimeCap; $ttl.Value = $lifetimeCap
     $buttons.Controls.Add($ttl)
     $approveButton = New-Object Windows.Forms.Button
     $approveButton.Text = 'Approve Selected'; $approveButton.AutoSize = $true
@@ -201,7 +207,7 @@ try {
     $buttons.Controls.Add($revokeButton)
     $helpTips = New-Object Windows.Forms.ToolTip
     $helpTips.AutoPopDelay = 15000; $helpTips.ShowAlways = $true
-    $helpTips.SetToolTip($ttl, 'Lifetime in seconds, capped by this request/session/lease. Task grants: up to 12 hours; one-use action confirmations: up to 30 seconds. Separate from the 120-second review deadline.')
+    $helpTips.SetToolTip($ttl, 'Lifetime in seconds, capped by this request/session/lease and original replacement source expiry. Task grants: up to 12 hours; one-use action confirmations: up to 30 seconds. Separate from the 120-second review deadline. Replacement never renews a source deadline.')
     $helpTips.SetToolTip($ttlLabel, $helpTips.GetToolTip($ttl))
     $helpTips.SetToolTip($selectAllButton, 'Checks the requested items only; does not classify or approve them.')
     $helpTips.SetToolTip($clearSelectionButton, 'Unchecks items without changing their reviewed classification.')
@@ -240,6 +246,8 @@ try {
             $choices += $choice
         }
         if ($choices.Count -eq 0) { return }
+        $replacementCheck = Test-ReplacementSelection -Manifest $manifest -Choices $choices
+        if (-not $replacementCheck.ok) { $null = [Windows.Forms.MessageBox]::Show($replacementCheck.reason, 'RemoteX'); return }
         Send-Frame 'decision' $choices ([int]$ttl.Value)
         $script:decided = $true; $script:approved = $true
         $grid.Enabled = $false; $targetList.Enabled = $false; $ttl.Enabled = $false

@@ -28,5 +28,16 @@ test('only private setup registration and original resume tickets reach the work
   await runtime.dispatch({operation:'resume-login',arguments:{startup:request}});assert.deepEqual(ticket,request);
   await assert.rejects(()=>runtime.dispatch({operation:'resume-login',arguments:{startup:request,script:'bad'}}));
   await assert.rejects(()=>runtime.dispatch({operation:'resume-login',arguments:{startup:{...request,script:'bad'}}}));
-  await assert.rejects(()=>runtime.dispatch({operation:'resume-login',arguments:{startup:{...request,deadline_ms:Date.now()+46000}}}));
+  await assert.rejects(()=>runtime.dispatch({operation:'resume-login',arguments:{startup:{...request,deadline_ms:Date.now()-1}}}));
+});
+
+test('a supervisor clock one millisecond ahead is narrowed rather than extending startup',async t=>{
+  t.mock.method(Date,'now',()=>1000);
+  const {WorkerRuntime}=await import('../scripts/web_worker_runtime.mjs');let received;
+  const runtime=new WorkerRuntime({network:{preauthLifecycle:'b'.repeat(32)},
+    resume:async ticket=>{received=ticket;return {ok:true};}});
+  const ticket={resume_id:'a'.repeat(32),preauth_lifecycle:'b'.repeat(32),binding_digest:'c'.repeat(64),deadline_ms:46001};
+  await runtime.dispatch({operation:'resume-login',arguments:{startup:ticket}});
+  assert.equal(received.deadline_ms,46000);
+  assert.equal(ticket.deadline_ms,46001,'The original supervisor ticket remains immutable');
 });

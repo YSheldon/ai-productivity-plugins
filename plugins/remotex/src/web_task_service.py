@@ -260,6 +260,8 @@ class Service:
         result['pending_network']=network.get('descriptors',[])
         result['phase']=network.get('phase')
         result['setup_revisions']=[1,2]
+        result['setup_purposes']=['bootstrap-resource','initialization-read']
+        result['limits']={'active_grants':4,'pending_requests':1,'setup_items':32,'setup_bytes':32768}
         result['initialization']=self.startup.status()
         if result['phase'] in {'discovery-only','grant-active'}:
             self._retire_startup()

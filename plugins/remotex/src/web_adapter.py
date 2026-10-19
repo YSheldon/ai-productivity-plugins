@@ -611,6 +611,22 @@ _EVIDENCE={'type':'array','minItems':1,'maxItems':8,'items':_schema({
     'kind':{'type':'string','enum':['source-review','api-document','verified-record','operator-inspected']},
     'reference':{'type':'string','minLength':1,'maxLength':512}},['kind','reference'])}
 _LITERAL={'type':['string','boolean','integer']}
+_POINTER={'type':'string','minLength':2,'maxLength':512,'pattern':'^/'}
+_CHECK={'oneOf':[
+    _schema({'pointer':_POINTER,'test':{'const':'type'},'expected':{'type':'string','enum':['object','array','string','boolean','integer','null']}},['pointer','test','expected']),
+    _schema({'pointer':_POINTER,'test':{'const':'nonempty-string'}},['pointer','test']),
+    _schema({'pointer':_POINTER,'test':{'const':'equals-boolean'},'expected':{'type':'boolean'}},['pointer','test','expected']),
+    _schema({'pointer':_POINTER,'test':{'const':'equals-integer'},'expected':{'type':'integer','minimum':-9007199254740991,'maximum':9007199254740991}},['pointer','test','expected'])]}
+_SETUP_USE={'type':'integer','minimum':1,'maximum':10,'default':2}
+_SETUP_PHASE={'type':'string','enum':['bootstrap','login-once']}
+_LEGACY_SETUP=_schema({'phase':_SETUP_PHASE,'network_refs':_REFS,'evidence':_EVIDENCE,'max_uses':_SETUP_USE},['phase','network_refs','evidence'])
+_SETUP_REQUEST={'oneOf':[
+    _schema({'network_ref':_ID,'purpose':{'const':'bootstrap-resource'},'max_uses':_SETUP_USE,'evidence':_EVIDENCE},['network_ref','purpose','evidence']),
+    _schema({'network_ref':_ID,'purpose':{'const':'initialization-read'},'max_uses':_SETUP_USE,'evidence':_EVIDENCE,
+        'response_checks':{'type':'array','minItems':1,'maxItems':8,'items':_CHECK}},['network_ref','purpose','evidence','response_checks'])]}
+_MODERN_SETUP=_schema({'revision':{'type':'integer','const':2},'phase':_SETUP_PHASE,
+    'requests':{'type':'array','minItems':1,'maxItems':32,'items':_SETUP_REQUEST},
+    'replace_grant_ids':{'type':'array','maxItems':2,'uniqueItems':True,'items':_ID}},['revision','phase','requests'])
 _ITEM=_schema({'item_id':_TEXT,'capability':{'type':'string','enum':sorted(web_authorization.CAPABILITIES)},
     'observation_id':_ID,'component_ref':_ID,'max_uses':{'type':'integer','minimum':1,'maximum':50},
     'depends_on':{'type':'array','items':_TEXT,'maxItems':32,'uniqueItems':True},
@@ -641,10 +657,9 @@ _TASKS={
         ['observation_id','component_ref','target_refs','read_receipts','changes','effect','network_refs'],
         'Prepare an immutable write preview from approved reads and observed controls. Does not change the page or send requests. Show actual targets and before/after values before requesting real business writes.'),
     'remotex_web_authorization_request':('request',{'items':{'type':'array','items':_ITEM,'minItems':1,'maxItems':32},
-        'setup':_schema({'phase':{'type':'string','enum':['bootstrap','login-once']},'network_refs':_REFS,'evidence':_EVIDENCE,
-            'max_uses':{'type':'integer','minimum':1,'maximum':10}},['phase','network_refs','evidence']),
+        'setup':{'oneOf':[_LEGACY_SETUP,_MODERN_SETUP]},
         'idempotency_key':_TEXT,'ttl_seconds':{'type':'integer','minimum':60,'maximum':web_authorization.MAX_GRANT_SECONDS,'default':web_authorization.MAX_GRANT_SECONDS,'description':'Requested task grant lifetime, default/maximum 43200 seconds (12 hours); human may lower it, and the existing session deadline still caps it.'}},['idempotency_key'],
-        'Request exact observed operations OR blocked startup contracts through the local human window. Inspect approval_ui and remaining review time; shown is diagnostic, not permission or foreground proof. Never self-approves. Network sub-items may be rejected separately. No credentials or raw requests.'),
+        'Request exact observed operations OR blocked startup contracts through the local human window. Revision2 supports independently reviewed pre-login Initialization Read POSTs and bounded static-only replacement within four active grants. Inspect approval_ui; shown is not authority. No credentials, raw requests or self-approval.'),
     'remotex_web_authorization_status':('status',{'request_id':_ID},[],
         'Read decisions, expiry, quotas, blocked descriptors and approval_ui lifecycle/remaining review/exit diagnostics. Shown is not authority or proof of foreground. No approval or request transmission.'),
     'remotex_web_execute':('execute',{'grant_id':_ID,'item_id':_TEXT,'idempotency_key':_TEXT,

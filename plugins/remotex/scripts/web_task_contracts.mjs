@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {normalizeResponseChecks,validateInitializationDescriptor} from './web_initialization_contracts.mjs';
+import {normalizeResponseChecks,validateInitializationDescriptor,validateStaticDescriptor} from './web_initialization_contracts.mjs';
 
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const ownObject=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(key=>keys.includes(key));
@@ -117,8 +117,10 @@ function setupContractsV2(setup,network){
     if(!Number.isInteger(uses)||uses<1||uses>10)invalid();
     const descriptor=network.resolve(row.network_ref),init=row.purpose==='initialization-read';
     if(init)validateInitializationDescriptor(descriptor);
-    else if(row.response_checks!==undefined||!['GET','HEAD'].includes(descriptor.method)||descriptor.body!==null||
-      !['document','stylesheet','script','image','font'].includes(descriptor.resourceType))throw new Error('request-contract-unavailable');
+    else {
+      if(row.response_checks!==undefined)throw new Error('request-contract-unavailable');
+      validateStaticDescriptor(descriptor);
+    }
     const checks=init?normalizeResponseChecks(row.response_checks):[];
     const id=`setup.network.${index+1}`,semantics=init?'initialization-read':'bootstrap';
     const extra={revision:2,purpose:row.purpose,phase_applicability:phases,preauth_lifecycle:network.preauthLifecycle,

@@ -96,3 +96,10 @@ def test_possible_authentication_is_monotonic_and_never_reopens_init():
     value.end(ticket['resume_id'])
     with pytest.raises(ScopeError):value.begin(lifecycle=LIFE,session_deadline_ms=1_900_000)
     assert value.authentication_forwarded==1
+
+def test_expired_resume_can_only_report_its_end_without_extending_authority():
+    value,clock=authority();ticket=opened(value);clock[0]+=46
+    value.event(event(ticket,'resume-ended'))
+    assert value.active is None
+    new=opened(value)
+    assert new['resume_id']!=ticket['resume_id']

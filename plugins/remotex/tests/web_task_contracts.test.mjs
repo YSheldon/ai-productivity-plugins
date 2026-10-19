@@ -28,6 +28,23 @@ test('revision2 exact init purpose keeps legacy Bootstrap POST denied',()=>{
     assert.throws(()=>setupContracts(changed,network));
 });
 
+test('revision2 static resources cannot carry internal authentication slots',()=>{
+  const descriptor={method:'GET',path:'/app.js',query:{token:{internalAuth:true}},
+    contentType:'',body:null,resourceType:'script'};
+  assert.throws(()=>setupContracts({revision:2,phase:'bootstrap',requests:[{network_ref:'b'.repeat(32),
+    purpose:'bootstrap-resource',evidence:proof}]},{phase:'bootstrap',preauthLifecycle:'a'.repeat(32),resolve:()=>descriptor}));
+});
+
+test('equivalent readiness check key ordering keeps the prerequisite identity stable',()=>{
+  const descriptor={method:'POST',path:'/init',query:{},contentType:'application/json',body:{cmd:'info'},resourceType:'xhr'};
+  const network={phase:'bootstrap',preauthLifecycle:'a'.repeat(32),resolve:()=>descriptor};
+  const setup=check=>({revision:2,phase:'bootstrap',requests:[{network_ref:'b'.repeat(32),purpose:'initialization-read',
+    evidence:proof,response_checks:[check]}]});
+  const first=setupContracts(setup({pointer:'/exist',test:'equals-boolean',expected:true}),network);
+  const second=setupContracts(setup({expected:true,test:'equals-boolean',pointer:'/exist'}),network);
+  assert.deepEqual(first.prerequisites,second.prerequisites);
+});
+
 test('bootstrap contracts never authorize business requests or credential submission',()=>{
   const network={phase:'bootstrap',resolve:()=>descriptor};
   assert.throws(()=>setupContracts({phase:'bootstrap',network_refs:['a'],evidence:proof},network),/request-contract-unavailable/);

@@ -64,3 +64,8 @@ test('initialization response headers and size are checked before release',()=>{
   assert.throws(()=>evaluate(response(' '.repeat(65537))));
   assert.throws(()=>evaluate({...response('{}'),body:Buffer.from([0xff])}));
 });
+
+test('known JSON authentication negotiation cannot be fulfilled as an initialization read',()=>{
+  functions();
+  assert.throws(()=>evaluate(response('{"exist":true,"access_token":"not-an-init-value"}')));
+});

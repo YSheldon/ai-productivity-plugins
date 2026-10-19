@@ -2,10 +2,11 @@ import {normalizeResponseChecks} from './web_initialization_contracts.mjs';
 const signature=value=>JSON.stringify(value);
 
 export class StartupState {
-  constructor({lifecycle,clock=Date.now,emit=()=>{}}){
+  constructor({lifecycle,clock=Date.now,monotonic=()=>performance.now(),emit=()=>{}}){
     this.lifecycle=lifecycle;this.clock=clock;this.emit=emit;this.required=new Map();this.context=null;
     this.pending=new Map();this.ready=new Set();this.blocked=new Set();this.seen=new Set();
     this.armed=false;this.authenticationForwarded=0;
+    this.monotonic=monotonic;
   }
 
   register(contracts){
@@ -34,11 +35,25 @@ export class StartupState {
       ['preauth_lifecycle','resume_id','document_id','generation'].some(key=>receipt[key]!==c[key]))throw new Error('scope-mismatch');
   }
 
+  updateContext(context){
+    const old=this.context;
+    if(!this.canInsertCredentials()||!old||context.resume_id!==old.resume_id||context.document_id!==old.document_id||
+      context.preauth_lifecycle!==old.preauth_lifecycle||context.deadline!==old.deadline||context.signal!==old.signal||
+      context.phase!=='login-once'||context.generation!==old.generation+1)throw new Error('scope-mismatch');
+    this.context=context;
+  }
+
+  deny(descriptor){
+    if(this.context&&!this.armed)for(const [id,c] of this.required)
+      if(signature(c.descriptor)===signature(descriptor))this.blocked.add(id);
+  }
+
   begin(permit){
     this.check(permit);
     if(permit.kind!=='initialization-read'||!this.required.has(permit.prerequisite_id)||
       this.clock()>=permit.expires_at_ms||this.seen.has(permit.check_id))throw new Error('scope-mismatch');
-    const receipt=Object.freeze({...permit});this.seen.add(permit.check_id);
+    const deadline=Math.min(permit.dispatch_deadline??Infinity,this.monotonic()+Math.max(0,Math.min(10000,permit.expires_at_ms-this.clock())));
+    const receipt=Object.freeze({...permit,dispatch_deadline:deadline});this.seen.add(permit.check_id);
     this.pending.set(receipt,{forwarded:false});return receipt;
   }
 
@@ -51,7 +66,7 @@ export class StartupState {
 
   forward(receipt){
     this.check(receipt);const row=this.pending.get(receipt);
-    if(!row||row.forwarded||this.clock()>=receipt.expires_at_ms)throw new Error('scope-mismatch');
+    if(!row||row.forwarded||this.clock()>=receipt.expires_at_ms||this.monotonic()>=receipt.dispatch_deadline)throw new Error('scope-mismatch');
     row.forwarded=true;this._event('initialization-forwarded',receipt);
   }
 

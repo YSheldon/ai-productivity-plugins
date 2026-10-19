@@ -61,3 +61,12 @@ test('supervisor expiry is narrowed to the original emitted ten-second deadline'
     assert.equal(value.consumeNetworkReceipt(permit,expected(context)).expires_at_ms,11000);
   }finally{value.dispose();}
 });
+
+test('moving the wall clock backwards cannot extend a typed forwarding permit',async t=>{
+  let wall=1000,mono=1000;t.mock.method(Date,'now',()=>wall);t.mock.method(performance,'now',()=>mono);
+  const {value,context,request,frames}=prepared();
+  try{
+    const pending=value.checkNetwork(request);value.handle(reply(frames[0],context));const permit=await pending;
+    wall=0;mono=11001;assert.throws(()=>value.consumeNetworkReceipt(permit,expected(context)));
+  }finally{value.dispose();}
+});

@@ -30,6 +30,8 @@ import web_task_service
 
 
 PLAYWRIGHT_VERSION = "1.62.1"
+JSONC_VERSION = "3.3.1"
+WEB_RUNTIME_REVISION = "1.62.1-init-read-1"
 MAX_SESSION_SECONDS = web_authorization.MAX_GRANT_SECONDS + 3600
 PLUGIN = Path(__file__).resolve().parents[1]
 STATE_FIELDS = {"state","loginSubmitted","authenticationVerified","failureCode","updatedAt"}
@@ -47,7 +49,8 @@ def state_root() -> Path:
 
 
 def _module_path() -> Path | None:
-    candidates = [state_root() / "runtime" / PLAYWRIGHT_VERSION / "node_modules" / "playwright-core",
+    candidates = [state_root() / "runtime" / WEB_RUNTIME_REVISION / "node_modules" / "playwright-core",
+                  state_root() / "runtime" / PLAYWRIGHT_VERSION / "node_modules" / "playwright-core",
                   Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node" / "node_modules" / "playwright-core"]
     if os.environ.get("REMOTEX_PLAYWRIGHT_MODULE"):
         candidates.insert(0, core.expand_path(os.environ["REMOTEX_PLAYWRIGHT_MODULE"], "REMOTEX_PLAYWRIGHT_MODULE"))
@@ -56,6 +59,21 @@ def _module_path() -> Path | None:
             if json.loads((path / "package.json").read_text(encoding="utf-8")).get("version") == PLAYWRIGHT_VERSION:
                 return path
         except (OSError, ValueError):
+            pass
+    return None
+
+
+def _parser_module_path() -> Path | None:
+    module=_module_path()
+    candidates=[state_root() / 'runtime' / WEB_RUNTIME_REVISION / 'node_modules' / 'jsonc-parser',
+                PLUGIN / 'scripts' / 'web-runtime' / 'node_modules' / 'jsonc-parser']
+    if module:
+        candidates.append(module.parent / 'jsonc-parser')
+    for path in candidates:
+        try:
+            if json.loads((path/'package.json').read_text(encoding='utf-8')).get('version')==JSONC_VERSION:
+                return path
+        except (OSError,ValueError):
             pass
     return None
 
@@ -76,11 +94,12 @@ def runtime_setup(args: dict[str, Any]) -> dict[str, Any]:
         raise core.ToolError("Unsupported web runtime argument")
     node = _node()
     module = _module_path()
-    if module:
-        return core.tool_result({"ok":True,"ready":True,"playwrightVersion":PLAYWRIGHT_VERSION,"installedNow":False})
+    if module and _parser_module_path():
+        return core.tool_result({"ok":True,"ready":True,"playwrightVersion":PLAYWRIGHT_VERSION,"jsoncVersion":JSONC_VERSION,"installedNow":False})
     if args.get("confirm") is not True:
-        return core.tool_result({"ok":True,"preview":True,"ready":False,"package":"playwright-core","version":PLAYWRIGHT_VERSION,"nextStep":"rerun-with-confirm-true"})
-    root = state_root() / "runtime" / PLAYWRIGHT_VERSION
+        return core.tool_result({"ok":True,"preview":True,"ready":False,"package":"playwright-core","version":PLAYWRIGHT_VERSION,
+            "packages":{"playwright-core":PLAYWRIGHT_VERSION,"jsonc-parser":JSONC_VERSION},"nextStep":"rerun-with-confirm-true"})
+    root = state_root() / "runtime" / WEB_RUNTIME_REVISION
     secure_paths.ensure_private_directory(root)
     for name in ("package.json","package-lock.json"):
         shutil.copyfile(PLUGIN / "scripts" / "web-runtime" / name, root / name)
@@ -94,9 +113,9 @@ def runtime_setup(args: dict[str, Any]) -> dict[str, Any]:
             cwd=root,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=_environment(),timeout=180,check=False)
     except (OSError, subprocess.SubprocessError) as exc:
         raise core.ToolError("Unable to install the pinned web runtime") from exc
-    if result.returncode != 0 or not _module_path():
+    if result.returncode != 0 or not _module_path() or not _parser_module_path():
         raise core.ToolError("Pinned web runtime installation failed")
-    return core.tool_result({"ok":True,"ready":True,"playwrightVersion":PLAYWRIGHT_VERSION,"installedNow":True})
+    return core.tool_result({"ok":True,"ready":True,"playwrightVersion":PLAYWRIGHT_VERSION,"jsoncVersion":JSONC_VERSION,"installedNow":True})
 
 
 SETUP_FIELDS = {"profile","url","account","credential_ref","username_selector","password_selector","submit_selector","success_selector","certificate_sha256","confirm","timeout_seconds"}
@@ -296,15 +315,15 @@ def _environment() -> dict[str, str]:
 def probe_config(raw: dict[str, Any]) -> dict[str, Any]:
     if os.name != "nt":
         raise core.ToolError("Web browser probing requires Windows")
-    node, module = _node(), _module_path()
-    if not module:
+    node, module, parser = _node(), _module_path(), _parser_module_path()
+    if not module or not parser:
         raise core.ToolError("Run remotex_web_runtime_setup before browser probing")
     directory = state_root() / "probes" / uuid.uuid4().hex
     secure_paths.ensure_private_directory(directory)
     packet = json.dumps({"config":raw,"mode":"probe","deadline":int((time.time()+60)*1000)}).encode()
     process = job = None
     try:
-        process = subprocess.Popen([node,"--use-system-ca",str(PLUGIN / "scripts" / "web_login_worker.mjs"),str(directory),str(module)],
+        process = subprocess.Popen([node,"--use-system-ca",str(PLUGIN / "scripts" / "web_login_worker.mjs"),str(directory),str(module),str(parser)],
             stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=_environment(),creationflags=subprocess.CREATE_NO_WINDOW)
         job = execution._WindowsJob(process,memory_limit_mb=None,cpu_time_seconds=None,max_processes=None)
         if not job.assigned:
@@ -342,8 +361,8 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
     name, raw, bundle = core.select_profile("web",args.get("profile"))
     reference = credential_store.resolve_profile_reference(bundle,name,raw,"web")
     web_policy.validate_binding(raw,reference.reference_dict())
-    node, module = _node(), _module_path()
-    if not module:
+    node, module, parser = _node(), _module_path(), _parser_module_path()
+    if not module or not parser:
         raise core.ToolError("Run remotex_web_runtime_setup before web login")
     requester = vm_queue.validate_requester(args.get("requester"))
     resource = raw["queue_resource"]
@@ -369,7 +388,7 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
         _write(directory / "state.json",{"state":"starting","loginSubmitted":False,"authenticationVerified":False,"failureCode":None,"updatedAt":datetime.now(timezone.utc).isoformat().replace("+00:00","Z")})
         process = job = None
         try:
-            process = subprocess.Popen([node,"--use-system-ca",str(PLUGIN / "scripts" / "web_login_worker.mjs"),str(directory),str(module)],
+            process = subprocess.Popen([node,"--use-system-ca",str(PLUGIN / "scripts" / "web_login_worker.mjs"),str(directory),str(module),str(parser)],
                 stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env=_environment(),close_fds=True,
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
             job = execution._WindowsJob(process,memory_limit_mb=None,cpu_time_seconds=None,max_processes=None)

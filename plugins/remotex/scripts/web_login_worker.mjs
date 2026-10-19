@@ -4,7 +4,10 @@ import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import net from 'node:net';
 import dgram from 'node:dgram';
-import {pinnedResponse} from './web_tls.mjs';
+import {randomUUID} from 'node:crypto';
+import {pinnedResponse,guardedResponse,initializationResponse} from './web_tls.mjs';
+import {evaluateInitializationResponse} from './web_initialization_contracts.mjs';
+import {StartupState} from './web_startup_state.mjs';
 import {SessionControl, projectResponse, readFrames} from './web_control.mjs';
 import {Components} from './web_components.mjs';
 import {TaskControl} from './web_task_control.mjs';
@@ -98,8 +101,25 @@ export async function guardRoute(route, origin, failed, certificateSha256, signa
     }
     if(signal?.aborted||requestCancelled(request)){await route.abort();return;}
     completed=policy?.beginForwarding?.(route.request());
+    const activeSignal=completed?.startupSignal?(signal?AbortSignal.any([signal,completed.startupSignal]):completed.startupSignal):signal;
+    if(completed?.initialization){
+      const receipt=completed.initialization;
+      const response=await initializationResponse(request,origin,certificateSha256,activeSignal,
+        completed.startupDeadline??Date.now()+45000,()=>{
+          completed.checkDispatch?.();policy.startupState.forward(receipt);
+        });
+      evaluateInitializationResponse(response,receipt.response_checks,policy.parseTree);
+      completed.checkDispatch?.();policy.startupState.check(receipt);
+      await route.fulfill(response);policy.startupState.response(receipt,{ready:true});return;
+    }
+    if(completed?.privateStartup){
+      const response=await guardedResponse(request,origin,certificateSha256,activeSignal,
+        {deadline:completed.startupDeadline,beforeSend:completed.checkDispatch});
+      if(response.status>=300&&response.status<400&&response.status!==304){failed('redirect-blocked');await route.abort();return;}
+      await route.fulfill(response);return;
+    }
     if (certificateSha256 !== undefined) {
-      const response = await pinnedResponse(route.request(), origin, certificateSha256, signal);
+      const response = await pinnedResponse(route.request(), origin, certificateSha256, activeSignal,{beforeSend:completed?.checkDispatch});
       if (response.status >= 300 && response.status < 400 && response.status !== 304) {
         failed('redirect-blocked');await route.abort();return;
       }
@@ -117,6 +137,11 @@ export async function guardRoute(route, origin, failed, certificateSha256, signa
       const summary=projectResponse(route.request(),response.status(),await response.body());if(summary)observed(summary);
     }
   } catch (error) {
+    if(completed?.initialization&&['initialization-response-rejected','response-too-large'].includes(error?.message)){
+      try{policy.startupState.response(completed.initialization,{ready:false});}catch{}
+      await route.abort().catch(()=>{});return;
+    }
+    if(error?.message==='scope-mismatch'){await route.abort().catch(()=>{});return;}
     const allowed = new Set(['invalid-job','origin-blocked','certificate-pin-mismatch','certificate-validity-failed','request-too-large','response-too-large']);
     failed(allowed.has(error?.message)?error.message:'tls-or-navigation-failed');
     await route.abort().catch(()=>{});
@@ -175,8 +200,17 @@ async function main() {
     authority=new WorkerAuthority({emit,startup:()=>startupContext,
       onRevoke:()=>{network?.fence();cancellation?.abort();void context?.close().catch(()=>{});}});
     network=new NetworkPolicy({origin:cfg.origin,secret:job.password,
-      requestPermit:(value,options)=>authority.check({kind:'network',...value},options)});
+      startup:()=>startupContext,consumeReceipt:(receipt,expected)=>authority.consumeNetworkReceipt(receipt,expected),
+      requestPermit:(value,options)=>authority.checkNetwork({kind:'network',...value},options)});
+    network.startupState=new StartupState({lifecycle:network.preauthLifecycle,emit:frame=>{
+      if(startupContext?.binding_digest)emit({event:'startup-state',state:frame});
+    }});
     const require = createRequire(import.meta.url);
+    const parserModule=process.argv[4]||path.join(modulePath,'..','jsonc-parser');
+    const parserVersion=JSON.parse(await fs.readFile(path.join(parserModule,'package.json'),'utf8')).version;
+    if(parserVersion!=='3.3.1')throw new Error('invalid-job');
+    network.parseTree=require(parserModule).parseTree;
+    if(typeof network.parseTree!=='function')throw new Error('invalid-job');
     const pw = require(modulePath);
     ({browser,deny}=await launchEdge(pw));
     await verifyNetworkGuard(browser);
@@ -200,14 +234,32 @@ async function main() {
     registry=new Components(page,{admit:()=>control.admit(),redact:value=>control.redact(value),geometryRoot:cfg.success_selector||'main'});
     const task=new TaskControl({registry,authorize:value=>authority.check(value),readResult:()=>control.readResult(),network});
     let successVisibleBefore=null;
-    const resume=async()=>{
+    const resume=async(ticket=null)=>{
       check();
       if(state.authenticationVerified)throw new Error('authentication-already-verified');
+      if(network.authenticationForwarded>0){
+        const verified=!!(state.loginSubmitted&&cfg.success_selector&&sameOrigin(page.url(),cfg.origin)&&
+          !await page.locator(cfg.password_selector).isVisible()&&await page.locator(cfg.success_selector).isVisible());
+        if(verified){network.setPhase('discovery-only');job.password='';await write({state:'verified',authenticationVerified:true,failureCode:null});}
+        return {ok:true,authenticationVerified:verified,...(!verified?{loginOutcomeUnknown:true,doNotResubmit:true}:{})};
+      }
+      if(ticket&&(ticket.preauth_lifecycle!==network.preauthLifecycle||ticket.deadline_ms>job.deadline))throw new Error('invalid-command');
       const startupAbort=new AbortController();
       const snapshot=Object.freeze({policy:network,phase:network.phase,generation:network.generation,
-        deadline:Math.min(job.deadline,Date.now()+45000),signal:startupAbort.signal});
+        deadline:Math.min(job.deadline,Date.now()+45000,ticket?.deadline_ms??Infinity),signal:startupAbort.signal,
+        preauth_lifecycle:network.preauthLifecycle,resume_id:ticket?.resume_id,
+        binding_digest:ticket?.binding_digest,document_id:randomUUID().replaceAll('-','')});
       const startupTimer=setTimeout(()=>startupAbort.abort(),Math.max(0,snapshot.deadline-Date.now()));
       startupContext=snapshot;
+      network.startupState.open(snapshot);
+      network.startupState._event('document-opening');
+      let committed=false;
+      const documentCommitted=frame=>{
+        if(!committed&&frame===page.mainFrame()&&startupContext===snapshot){
+          committed=true;network.startupState._event('document-committed');
+        }
+      };
+      page.on('framenavigated',documentCommitted);
       try {
         await write({state:'opening',failureCode:null});
         try {await loadConfiguredDocument(page,cfg,{deadline:snapshot.deadline});}
@@ -218,28 +270,43 @@ async function main() {
           await write({state:'verified',authenticationVerified:true,failureCode:null});
           return {ok:true,authenticationVerified:true};
         }
-        try {for(const name of ['username_selector','password_selector','submit_selector'])await page.locator(cfg[name]).waitFor({state:'visible',timeout:2000});}
-        catch {check();await write({state:'needs-user-check',failureCode:'authorization-contract-required'});return {ok:true,authenticationVerified:false,contractRequired:true};}
+        let ready=false;
+        const readinessDeadline=Math.min(snapshot.deadline,Date.now()+(network.startupState.required.size?45000:6000));
+        while(Date.now()<readinessDeadline&&!startupAbort.signal.aborted){
+          check();
+          if(network.startupState.status().blocked)break;
+          const visible=await Promise.all(['username_selector','password_selector','submit_selector'].map(name=>page.locator(cfg[name]).isVisible()));
+          if(committed&&visible.every(Boolean)&&network.startupState.canInsertCredentials()){ready=true;break;}
+          await new Promise(resolve=>setTimeout(resolve,20));
+        }
+        if(!ready){check();await write({state:'needs-user-check',failureCode:'authorization-contract-required'});return {ok:true,authenticationVerified:false,contractRequired:true};}
         if(job.mode==='probe'){await write({state:'ready'});return {ok:true,authenticationVerified:false};}
         if(state.loginSubmitted&&network.authenticationForwarded>0){
           await write({state:'needs-user-check',failureCode:null});
           return {ok:true,authenticationVerified:false,loginOutcomeUnknown:true,doNotResubmit:true};
         }
         if(successVisibleBefore===null)successVisibleBefore=cfg.success_selector?await page.locator(cfg.success_selector).isVisible():false;
-        if(network.phase==='bootstrap')network.setPhase('login-once');
+        // A seal invalidates all pre-credential checks without extending this resume.
+        network.setPhase('login-once');
+        const sealedContext=Object.freeze({...snapshot,phase:network.phase,generation:network.generation});
+        network.startupState.updateContext(sealedContext);startupContext=sealedContext;
+        network.startupState.armCredentials();
         await submitLogin(page,cfg,job.username,job.password,check);
         await write({state:'submitted',loginSubmitted:true});
         try {await secret.waitFor({state:'hidden',timeout:3000});}catch{}
         check();
         const verified=!!(cfg.success_selector&&!successVisibleBefore&&!await secret.isVisible()&&
           await page.locator(cfg.success_selector).isVisible()&&sameOrigin(page.url(),cfg.origin));
-        if(verified){network.setPhase('discovery-only');job.password='';}
+        if(verified){network.startupState._event('authentication-verified');network.setPhase('discovery-only');job.password='';}
         if(await secret.isVisible())await secret.fill('');
         await write({state:verified?'verified':'needs-user-check',authenticationVerified:verified,
           failureCode:!verified&&network.list().length?'authorization-contract-required':null});
         return {ok:true,authenticationVerified:verified,contractRequired:!verified&&network.list().length>0};
       } finally {
-        if(startupContext===snapshot)startupContext=null;
+        page.off('framenavigated',documentCommitted);
+        if(startupContext?.document_id===snapshot.document_id){
+          network.startupState._event('resume-ended');network.startupState.end(startupContext);startupContext=null;
+        }
         clearTimeout(startupTimer);startupAbort.abort();
       }
     };

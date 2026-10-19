@@ -13,7 +13,19 @@ export class WorkerRuntime {
     if(['observe','navigate','read-result'].includes(command.operation))throw new Error('approval-required');
     if(command.operation==='network-status'&&Object.keys(args).length===0)return {ok:true,descriptors:this.network.list(),phase:this.network.phase};
     if(command.operation==='resolve-setup'&&Object.keys(args).join(',')==='setup')return setupContracts(args.setup,this.network);
+    if(command.operation==='register-initialization'&&Object.keys(args).join(',')==='contracts'){
+      this.network.startupState.register(args.contracts);return {ok:true};
+    }
     if(command.operation==='resume-login'&&Object.keys(args).length===0)return this.resume();
+    if(command.operation==='resume-login'&&Object.keys(args).join(',')==='startup'){
+      const ticket=args.startup;
+      if(!ticket||typeof ticket!=='object'||Array.isArray(ticket)||
+        Object.keys(ticket).sort().join(',')!=='binding_digest,deadline_ms,preauth_lifecycle,resume_id'||
+        !/^[a-f0-9]{32}$/.test(ticket.resume_id)||!/^[a-f0-9]{64}$/.test(ticket.binding_digest)||
+        ticket.preauth_lifecycle!==this.network.preauthLifecycle||!Number.isSafeInteger(ticket.deadline_ms)||
+        ticket.deadline_ms<=Date.now()||ticket.deadline_ms>Date.now()+45000)throw new Error('invalid-command');
+      return this.resume(ticket);
+    }
     await this.control.admit();
     if(command.operation==='components'&&Object.keys(args).length===0)return this.registry.scan();
     if(command.operation==='resolve-items'&&Object.keys(args).join(',')==='items'){

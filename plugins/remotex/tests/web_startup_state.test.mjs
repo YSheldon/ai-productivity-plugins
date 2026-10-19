@@ -41,3 +41,20 @@ test('no private response values are included in readiness events or status',()=
   assert.deepEqual(state.status(),{required:1,ready:1,pending:0,blocked:0,state:'ready'});
   assert.ok(!JSON.stringify(events).includes('response_checks'));
 });
+
+test('credential sealing advances only the same owned document generation',()=>{
+  const {state,context}=prepared(),receipt=state.begin(permit(context));
+  state.forward(receipt);state.response(receipt,{ready:true});
+  assert.equal(typeof state.updateContext,'function');
+  state.updateContext({...context,phase:'login-once',generation:1});state.armCredentials();
+  assert.throws(()=>state.check(receipt));assert.equal(state.status().state,'sealed');
+});
+
+test('a wall clock rollback cannot extend initialization dispatch',()=>{
+  assert.equal(typeof api.StartupState,'function');let wall=1000,mono=1000;
+  const state=new api.StartupState({lifecycle:'b'.repeat(32),clock:()=>wall,monotonic:()=>mono});
+  const context={resume_id:'c'.repeat(32),document_id:'d'.repeat(32),preauth_lifecycle:'b'.repeat(32),
+    phase:'bootstrap',generation:0,deadline:46000,signal:new AbortController().signal};
+  state.register({init:contract});state.open(context);const receipt=state.begin(permit(context));
+  wall=0;mono=11001;assert.throws(()=>state.forward(receipt));
+});

@@ -114,6 +114,8 @@ def validate_setup_context(resolved,binding):
         elif (c['response_checks']!=[] or c['prerequisite_id'] is not None or c['descriptor'].get('method') not in {'GET','HEAD'} or
               c['descriptor'].get('body') is not None or c['descriptor'].get('resourceType') not in {'document','script','stylesheet','image','font'}):
             raise ScopeError('request-contract-unavailable')
+        if not init:
+            _literals(c['descriptor'].get('query'))
         try:
             preview=json.loads(row['display']['preview'])
         except (ValueError,KeyError,TypeError):
@@ -173,9 +175,10 @@ class StartupAuthority:
             self.ready.clear();self.blocked.clear();self.issued.clear();self.seen.clear();self.used_grants.clear()
             return ticket
 
-    def _current(self):
+    def _current(self,allow_expired=False):
         a=self.active
-        if not a or self.clock()>=a['deadline'] or self.clock()>=self.binding['deadline'] or self.wall_clock()*1000>=a['deadline_ms']:
+        if not a or self.clock()>=self.binding['deadline'] or (not allow_expired and
+                (self.clock()>=a['deadline'] or self.wall_clock()*1000>=a['deadline_ms'])):
             raise ScopeError('session-unavailable')
         return a
 
@@ -207,7 +210,7 @@ class StartupAuthority:
 
     def event(self,frame):
         with self.lock:
-            a=self._current()
+            a=self._current(allow_expired=frame.get('kind')=='resume-ended')
             base={'kind','resume_id','preauth_lifecycle','document_id','phase','generation','authentication_forwarded'}
             kind=frame.get('kind')
             extra={'check_id','prerequisite_id','ready'} if kind=='prerequisite-response' else (
@@ -221,7 +224,7 @@ class StartupAuthority:
             if frame['document_id']!=a['document_id']:
                 raise ScopeError('scope-mismatch')
             if (frame['phase'],frame['generation'])!=(a['phase'],a['generation']):
-                if kind=='controls-ready' and a['phase']=='bootstrap' and frame['phase']=='login-once' and frame['generation']==a['generation']+1:
+                if kind=='controls-ready' and a['phase'] in PHASES and frame['phase']=='login-once' and frame['generation']==a['generation']+1:
                     a.update(phase=frame['phase'],generation=frame['generation'])
                 else:
                     raise ScopeError('scope-mismatch')

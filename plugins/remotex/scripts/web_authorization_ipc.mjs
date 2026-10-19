@@ -41,7 +41,7 @@ export class WorkerAuthority {
   _register(id,signal,batch){
     let entry;
     const promise=new Promise(resolve=>{
-      entry={resolve,signal,batch,deadline:Date.now()+10000,emitted:false,abort:()=>this._settle(id,false,true)};
+      entry={resolve,signal,batch,deadline:Date.now()+10000,monotonicDeadline:performance.now()+10000,emitted:false,abort:()=>this._settle(id,false,true)};
       entry.timer=setTimeout(entry.abort,10000);
       this.pending.set(id,entry);signal?.addEventListener('abort',entry.abort,{once:true});
     });
@@ -173,10 +173,10 @@ export class WorkerAuthority {
   consumeNetworkReceipt(receipt,expected){
     const row=this.receipts.get(receipt);
     this.receipts.delete(receipt);
-    if(!row||!this._current(row.context)||Date.now()>=receipt.expires_at_ms||
+    if(!row||!this._current(row.context)||Date.now()>=receipt.expires_at_ms||performance.now()>=row.monotonicDeadline||
       !expected||Object.keys(expected).sort().join(',')!=='binding_digest,descriptor_digest,document_id,generation,preauth_lifecycle,resume_id'||
       Object.entries(expected).some(([key,value])=>receipt[key]!==value))throw new Error('scope-mismatch');
-    return receipt;
+    return Object.freeze({...receipt,dispatch_deadline:row.monotonicDeadline});
   }
 
   _typedReply(frame){
@@ -194,7 +194,7 @@ export class WorkerAuthority {
     let checks;
     try{checks=normalizeResponseChecks(p.response_checks);}catch{return false;}
     const receipt=Object.freeze({...p,expires_at_ms:Math.min(p.expires_at_ms,entry.deadline),response_checks:checks});
-    this.receipts.set(receipt,{context:entry.context});
+    this.receipts.set(receipt,{context:entry.context,monotonicDeadline:entry.monotonicDeadline});
     this._settle(frame.authorization_reply,receipt);return true;
   }
 

@@ -32,7 +32,8 @@ export function normalizeResponseChecks(value){
       }else invalid();
     }
   }
-  return freeze(structuredClone(value));
+  return freeze(value.map(row=>({pointer:row.pointer,test:row.test,
+    ...(row.test==='nonempty-string'?{}:{expected:row.expected})})));
 }
 
 function literals(value,depth=0){
@@ -63,6 +64,14 @@ export function validateInitializationDescriptor(descriptor){
   return structuredClone(descriptor);
 }
 
+export function validateStaticDescriptor(descriptor){
+  if(!exact(descriptor,['method','path','query','contentType','body','resourceType'])||
+    !['GET','HEAD'].includes(descriptor.method)||descriptor.body!==null||
+    !/^\/[A-Za-z0-9/_.~-]{0,511}$/.test(descriptor.path)||typeof descriptor.contentType!=='string'||
+    !['document','script','stylesheet','image','font'].includes(descriptor.resourceType)||!object(descriptor.query))invalid();
+  literals(descriptor.query);return structuredClone(descriptor);
+}
+
 export function evaluateInitializationResponse(response,checks,parseTree){
   const fail=()=>{throw new Error('initialization-response-rejected');};
   try{
@@ -86,7 +95,8 @@ export function evaluateInitializationResponse(response,checks,parseTree){
         const seen=new Set();
         for(const prop of node.children||[]){
           const key=prop.children?.[0]?.value;
-          if(typeof key!=='string'||seen.has(key)||['__proto__','constructor','prototype'].includes(key))fail();
+          if(typeof key!=='string'||seen.has(key)||['__proto__','constructor','prototype'].includes(key)||
+            /^(?:password|passwd|credential|cookie|authorization|access.?token|refresh.?token|token|session.?id|csrf.?token|nonce|signature|ticket|challenge|authentication)$/i.test(key))fail();
           seen.add(key);visit(prop.children[1],depth+1);
         }
       }else if(node.type==='array')for(const child of node.children||[])visit(child,depth+1);

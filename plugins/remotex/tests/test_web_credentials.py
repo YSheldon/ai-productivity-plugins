@@ -134,6 +134,17 @@ class WebCredentialTests(unittest.TestCase):
             with self.assertRaisesRegex(core.ToolError, 'cover session_seconds plus 45'):
                 web_adapter.login({'profile': 'web-lab', 'requester': 'owner', 'confirm': True, 'session_seconds': 46800})
 
+    def test_incomplete_parser_runtime_blocks_login_before_credential_read(self):
+        import web_adapter, queue_leases
+        self.path.write_text(json.dumps(self.prepared().candidate))
+        queue_leases.queue_acquire({'profile':'web-lab','requester':'owner','lease_seconds':1800})
+        with (mock.patch.object(web_adapter,'_node',return_value='node'),
+              mock.patch.object(web_adapter,'_module_path',return_value=self.root),
+              mock.patch.object(web_adapter,'_parser_module_path',return_value=None,create=True),
+              mock.patch.object(core,'read_windows_generic_credential',side_effect=AssertionError('incomplete runtime must not read a credential'))):
+            with self.assertRaisesRegex(core.ToolError,'runtime_setup'):
+                web_adapter.login({'profile':'web-lab','requester':'owner','confirm':True,'session_seconds':900})
+
     def test_default_long_session_packet_and_public_result_share_the_thirteen_hour_bound(self):
         import web_adapter, queue_leases
         self.path.write_text(json.dumps(self.prepared().candidate))

@@ -129,6 +129,8 @@ export class NetworkPolicy {
     const completed=()=>{if(attempt)this.inFlight.set(attempt,Math.max(0,(this.inFlight.get(attempt)||1)-1));};
     completed.initialization=initialization;
     completed.privateStartup=!!context?.binding_digest;
+    completed.startupSignal=context?.signal;
+    completed.startupDeadline=context?.deadline;
     completed.checkDispatch=()=>{
       if(this.phase==='fenced'||this.generation!==generation||requestCancelled(request)||
         (context&&(this.startup?.()!==context||context.signal.aborted||this.clock()>=context.deadline)))throw new Error('scope-mismatch');
@@ -180,6 +182,7 @@ export class NetworkPolicy {
     if(this.phase==='fenced'||this.generation!==generation||requestCancelled(request)||
       (this.phase==='grant-active'&&this.clock()>=this.dispatchDeadline))return false;
     if(!allowed){
+      this.startupState?.deny(descriptor);
       const now=Date.now();
       for(const [pendingKey,row] of this.pending){
         if(now-row.at>120000)this.pending.delete(pendingKey);

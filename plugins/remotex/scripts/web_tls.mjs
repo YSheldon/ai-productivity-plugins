@@ -7,6 +7,10 @@ const HOP_HEADERS = new Set(['connection','keep-alive','proxy-authenticate','pro
 const MAX_BODY = 32 * 1024 * 1024;
 
 function verifyPeer(socket, pin) {
+  if(pin===undefined){
+    if(!socket.authorized)throw new Error('tls-or-navigation-failed');
+    return;
+  }
   const raw = socket.getPeerCertificate()?.raw;
   if (!raw || !timingSafeEqual(createHash('sha256').update(raw).digest(), Buffer.from(pin,'hex'))) {
     throw new Error('certificate-pin-mismatch');
@@ -18,18 +22,20 @@ function verifyPeer(socket, pin) {
   }
 }
 
-class PinnedAgent extends https.Agent {
-  constructor(url, pin) {
+class GuardedAgent extends https.Agent {
+  constructor(url, pin, beforeSend) {
     super({keepAlive:false,maxCachedSessions:0});
     this.endpoint = url;
     this.pin = pin;
+    this.beforeSend=beforeSend;
     this.ownedSockets = new Set();
   }
 
   createConnection(_options, callback) {
     const host = this.endpoint.hostname.replace(/^\[|\]$/g,''), port = Number(this.endpoint.port || 443);
     const socket = tls.connect({host,port,servername:net.isIP(host)?undefined:host,
-      rejectUnauthorized:false,minVersion:'TLSv1.2',ALPNProtocols:['http/1.1']});
+      rejectUnauthorized:this.pin===undefined,minVersion:'TLSv1.2',ALPNProtocols:['http/1.1'],
+      ...(this.pin===undefined?{checkServerIdentity:(_name,cert)=>tls.checkServerIdentity(host,cert)}:{})});
     this.ownedSockets.add(socket);
     let completed = false;
     const finish = (error) => {
@@ -41,7 +47,7 @@ class PinnedAgent extends https.Agent {
     socket.once('close',()=>{this.ownedSockets.delete(socket);finish(new Error('tls-or-navigation-failed'));});
     socket.once('error',()=>finish(new Error('tls-or-navigation-failed')));
     socket.once('secureConnect',()=>{
-      try {verifyPeer(socket,this.pin);finish(null);}
+      try {verifyPeer(socket,this.pin);this.beforeSend?.();finish(null);}
       catch(error) {finish(error);}
     });
     // Do not return the socket: HTTP may attach only after pin/validity verification.
@@ -53,10 +59,19 @@ class PinnedAgent extends https.Agent {
   }
 }
 
-export async function pinnedResponse(request, origin, pin, signal) {
+export function pinnedResponse(request, origin, pin, signal, options={}) {
+  if(typeof pin!=='string'||!/^[a-f0-9]{64}$/.test(pin))throw new Error('invalid-job');
+  return guardedResponse(request,origin,pin,signal,options);
+}
+
+export function initializationResponse(request,origin,pin,signal,deadline,beforeSend){
+  return guardedResponse(request,origin,pin,signal,{deadline,beforeSend,maxBody:65536,initialization:true});
+}
+
+export async function guardedResponse(request, origin, pin, signal, options={}) {
   const url = new URL(request.url());
   if (url.protocol !== 'https:' || url.origin !== origin || url.username || url.password) throw new Error('origin-blocked');
-  if (typeof pin !== 'string' || !/^[a-f0-9]{64}$/.test(pin)) throw new Error('invalid-job');
+  if (pin!==undefined&&(typeof pin !== 'string' || !/^[a-f0-9]{64}$/.test(pin))) throw new Error('invalid-job');
   const body = request.postDataBuffer();
   if (body && body.length > 1024 * 1024) throw new Error('request-too-large');
   const headers = Object.fromEntries(Object.entries(await request.allHeaders()).filter(([key])=>!HOP_HEADERS.has(key.toLowerCase())));
@@ -65,17 +80,31 @@ export async function pinnedResponse(request, origin, pin, signal) {
   headers['accept-encoding'] = 'identity';
   if (body) headers['content-length'] = String(body.length);
   else delete headers['content-length'];
-  const agent = new PinnedAgent(url,pin);
+  const maxBody=Math.min(MAX_BODY,options.maxBody??MAX_BODY);
+  if(!Number.isSafeInteger(maxBody)||maxBody<1)throw new Error('invalid-job');
+  const remaining=options.deadline===undefined?20000:Math.min(20000,options.deadline-Date.now());
+  if(!Number.isFinite(remaining)||remaining<=0)throw new Error('scope-mismatch');
+  const agent = new GuardedAgent(url,pin,options.beforeSend);
   const abort = () => agent.destroy();
   signal?.addEventListener('abort',abort,{once:true});
   let timer;
   try {
     return await new Promise((resolve,reject)=>{
       const outgoing = https.request(url,{agent,method:request.method(),headers,signal},response=>{
+        if(options.initialization){
+          const rawNames=response.rawHeaders.filter((_,index)=>index%2===0).map(name=>name.toLowerCase());
+          const critical=['content-type','content-length','set-cookie','www-authenticate','proxy-authenticate'];
+          const rejected=response.statusCode<200||response.statusCode>=300||
+            critical.some(name=>rawNames.filter(value=>value===name).length>1)||
+            ['set-cookie','www-authenticate','proxy-authenticate','authentication-info','proxy-authentication-info','location','upgrade']
+              .some(name=>Object.hasOwn(response.headers,name))||
+            (response.headers['content-encoding']&&response.headers['content-encoding'].toLowerCase()!=='identity');
+          if(rejected){const error=new Error('initialization-response-rejected');reject(error);outgoing.destroy(error);return;}
+        }
         const chunks = [];let bytes = 0;
         response.on('data',chunk=>{
           bytes += chunk.length;
-          if (bytes > MAX_BODY) {outgoing.destroy(new Error('response-too-large'));return;}
+          if (bytes > maxBody) {const error=new Error('response-too-large');reject(error);outgoing.destroy(error);return;}
           chunks.push(chunk);
         });
         response.once('error',()=>reject(new Error('tls-or-navigation-failed')));
@@ -91,7 +120,7 @@ export async function pinnedResponse(request, origin, pin, signal) {
         });
       });
       outgoing.once('error',reject);
-      timer = setTimeout(()=>{agent.destroy();outgoing.destroy(new Error('tls-or-navigation-failed'));},20000);
+      timer = setTimeout(()=>{agent.destroy();outgoing.destroy(new Error('tls-or-navigation-failed'));},remaining);
       outgoing.end(body || undefined);
     });
   } finally {clearTimeout(timer);signal?.removeEventListener('abort',abort);agent.destroy();}

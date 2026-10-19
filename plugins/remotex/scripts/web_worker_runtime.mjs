@@ -10,6 +10,10 @@ export class WorkerRuntime {
       Object.keys(command).some(key=>!['id','operation','arguments'].includes(key))||
       !command.arguments||typeof command.arguments!=='object'||Array.isArray(command.arguments))throw new Error('invalid-command');
     const args=command.arguments;
+    if(this.network.setupHold&&!['network-status','resolve-setup','register-initialization','hold-setup','release-setup'].includes(command.operation))
+      throw new Error('replacement-pending');
+    if(command.operation==='hold-setup'&&Object.keys(args).length===0){this.network.holdSetup();return {ok:true,held:true};}
+    if(command.operation==='release-setup'&&Object.keys(args).length===0){this.network.releaseSetup();return {ok:true,held:false};}
     if(['observe','navigate','read-result'].includes(command.operation))throw new Error('approval-required');
     if(command.operation==='network-status'&&Object.keys(args).length===0)return {ok:true,descriptors:this.network.list(),phase:this.network.phase};
     if(command.operation==='resolve-setup'&&Object.keys(args).join(',')==='setup')return setupContracts(args.setup,this.network);

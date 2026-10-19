@@ -167,6 +167,24 @@ test('only a current private init receipt avoids possible authentication account
   }finally{authority.dispose();}
 });
 
+test('setup replacement holds only an idle worker and never interrupts forwarding',async()=>{
+  const policy=new network.NetworkPolicy({origin,requestPermit:async()=>true});
+  assert.equal(typeof policy.holdSetup,'function');
+  const first=asset();await policy.authorize(first);const done=policy.beginForwarding(first);
+  assert.throws(()=>policy.holdSetup(),/operation-in-progress/);done();
+  policy.holdSetup();assert.equal(await policy.authorize(asset()),false);
+  assert.throws(()=>policy.beginForwarding(first));
+  policy.releaseSetup();const second=asset();assert.equal(await policy.authorize(second),true);
+  policy.beginForwarding(second)();
+});
+
+test('an outstanding permission check cannot be stopped to make a replacement idle',async()=>{
+  let release;const policy=new network.NetworkPolicy({origin,requestPermit:()=>new Promise(resolve=>{release=resolve;})});
+  assert.equal(typeof policy.holdSetup,'function');const pending=policy.authorize(asset());
+  assert.throws(()=>policy.holdSetup(),/operation-in-progress/);release(false);await pending;
+  policy.holdSetup();assert.equal(policy.setupHold,true);policy.releaseSetup();
+});
+
 test('a newly denied request replaces its expired reference without authorizing traffic',()=>withTime(async advance=>{
   const policy=new network.NetworkPolicy({origin,requestPermit:async()=>false});
   assert.equal(await policy.authorize(asset()),false);

@@ -83,6 +83,7 @@ export class NetworkPolicy {
     this.clock=clock;this.dispatchDeadline=0;
     this.startup=startup;this.consumeReceipt=consumeReceipt;this.forwardingReceipts=new WeakMap();
     this.preauthLifecycle=randomUUID().replaceAll('-','');this.initializationForwarded=0;
+    this.setupHold=false;this.activeChecks=0;this.activeForwarding=0;
     this.secrets=secret?[secret,encodeURIComponent(secret),Buffer.from(secret).toString('base64')]:[];
   }
 
@@ -103,6 +104,7 @@ export class NetworkPolicy {
 
   beginForwarding(request){
     if(this.phase==='fenced')throw new Error('grant-revoked');
+    if(this.setupHold)throw new Error('replacement-pending');
     const permit=this.takeForwardingReceipt(request);
     const attempt=this.activeAttempt;
     let initialization;
@@ -126,7 +128,11 @@ export class NetworkPolicy {
       }
     }
     const generation=this.generation,context=this.startup?.();
-    const completed=()=>{if(attempt)this.inFlight.set(attempt,Math.max(0,(this.inFlight.get(attempt)||1)-1));};
+    this.activeForwarding++;let finished=false;
+    const completed=()=>{
+      if(finished)return;finished=true;this.activeForwarding--;
+      if(attempt)this.inFlight.set(attempt,Math.max(0,(this.inFlight.get(attempt)||1)-1));
+    };
     completed.initialization=initialization;
     completed.privateStartup=!!context?.binding_digest;
     completed.startupSignal=context?.signal;
@@ -154,6 +160,16 @@ export class NetworkPolicy {
     return {kind:'ordinary'};
   }
 
+  holdSetup(){
+    if(this.setupHold)return;
+    if(!['bootstrap','login-once'].includes(this.phase)||this.authenticationForwarded)throw new Error('capability-unsupported');
+    if(this.activeChecks||this.activeForwarding||this.startup?.()||this.startupState?.pending.size)
+      throw new Error('operation-in-progress');
+    this.setupHold=true;this.generation++;
+  }
+
+  releaseSetup(){if(this.setupHold){this.setupHold=false;this.generation++;}}
+
   async drain(attempt){
     const deadline=Date.now()+22000;
     while((this.inFlight.get(attempt)||0)>0&&Date.now()<deadline&&this.phase!=='fenced')await new Promise(resolve=>setTimeout(resolve,20));
@@ -162,7 +178,7 @@ export class NetworkPolicy {
   }
 
   async authorize(request){
-    if(this.phase==='fenced'||requestCancelled(request))return false;
+    if(this.setupHold||this.phase==='fenced'||requestCancelled(request))return false;
     if(this.phase==='grant-active'&&(!this.activeAttempt||this.clock()>=this.dispatchDeadline))return false;
     const generation=this.generation,context=this.startup?.();
     let descriptor;
@@ -172,6 +188,7 @@ export class NetworkPolicy {
     let allowed=false,receipt=null;
     const startup=context?.binding_digest?{resume_id:context.resume_id,preauth_lifecycle:context.preauth_lifecycle,
       document_id:context.document_id,generation:context.generation}:undefined;
+    this.activeChecks++;
     try {
       const reply=await this.requestPermit({phase:this.phase,attempt_id:this.activeAttempt,descriptor,digest:key,
         ...(startup?{startup}: {})},{isCancelled:()=>requestCancelled(request)});
@@ -179,6 +196,7 @@ export class NetworkPolicy {
       allowed=reply===true||!!receipt;
     }
     catch{return false;}
+    finally{this.activeChecks--;}
     if(this.phase==='fenced'||this.generation!==generation||requestCancelled(request)||
       (this.phase==='grant-active'&&this.clock()>=this.dispatchDeadline))return false;
     if(!allowed){

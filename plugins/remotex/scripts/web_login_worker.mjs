@@ -325,7 +325,8 @@ async function main() {
             const allowed=new Set(['invalid-command','authentication-required','origin-blocked','session-unavailable',
               'approval-required','request-invalid','request-too-large','component-stale','component-ambiguous','scope-mismatch',
               'target-state-changed','request-contract-unavailable','capability-unsupported','precondition-unenforceable',
-              'grant-revoked','target-selection-unavailable','response-too-large','outcome-unknown','authentication-already-verified']);
+              'grant-revoked','target-selection-unavailable','response-too-large','outcome-unknown','authentication-already-verified',
+              'replacement-pending','operation-in-progress','initialization-required']);
             result={ok:false,failureCode:allowed.has(error?.message)?error.message:'control-failed'};
           }
           const id=typeof command?.id==='string'&&/^[a-f0-9]{32}$/.test(command.id)?command.id:null;

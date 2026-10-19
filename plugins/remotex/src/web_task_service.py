@@ -24,6 +24,7 @@ class Service:
         self.receipt_authorities={}
         self.execute_lock = threading.RLock()
         self.startup=StartupAuthority(binding,clock=clock)
+        self.setup_hold=False
         self.channel.authorize = self._authorize
         self.channel.authorize_network = self._authorize_network
         self.channel.authorize_batch = self._authorize_batch
@@ -51,6 +52,8 @@ class Service:
 
     def _worker_locked(self, operation, args):
         self.broker._valid()
+        if self.broker.replacement_pending() and operation not in {'network-status','resolve-setup','register-initialization','release-setup'}:
+            raise ScopeError('replacement-pending')
         options={}
         ticket=None
         if operation=='resume-login':
@@ -96,6 +99,43 @@ class Service:
         return {**result,'approval_ui':ui}
 
     def request(self, args):
+        replacement=isinstance(args,dict) and isinstance(args.get('setup'),dict) and bool(args['setup'].get('replace_grant_ids'))
+        if not replacement:
+            return self._request(args)
+        if not self.execute_lock.acquire(blocking=False):
+            raise ScopeError('operation-in-progress')
+        try:
+            if self.startup.active is not None or self.executing:
+                raise ScopeError('operation-in-progress')
+            if not self.setup_hold:
+                result=self._worker('hold-setup',{})
+                if result.get('held') is not True:
+                    self.broker.emergency_revoke()
+                    raise ScopeError('control-failed')
+                self.setup_hold=True
+            try:
+                return self._request(args)
+            finally:
+                self._sync_setup_hold()
+        finally:
+            self.execute_lock.release()
+
+    def _sync_setup_hold(self):
+        if not self.setup_hold or self.broker.replacement_pending():
+            return
+        if self.broker.fenced.is_set():
+            self.setup_hold=False
+            return
+        try:
+            result=self._worker('release-setup',{})
+            if result.get('held') is not False:
+                raise ScopeError('control-failed')
+            self.setup_hold=False
+        except Exception:
+            self.broker.emergency_revoke()
+            raise
+
+    def _request(self, args):
         if not isinstance(args, dict) or set(args)-{'items','setup','idempotency_key','ttl_seconds'}:
             raise ScopeError('request-invalid')
         if ('items' in args) == ('setup' in args):
@@ -105,23 +145,26 @@ class Service:
         setup_context=None
         if resolved.get('setup_revision') is not None:
             setup_context=validate_setup_context(resolved,self.broker.binding)
-            if resolved.get('replace_grant_ids'):
-                raise ScopeError('capability-unsupported')
+            if resolved.get('replace_grant_ids',[])!=args.get('setup',{}).get('replace_grant_ids',[]) or (
+                resolved.get('replace_grant_ids') and not self.setup_hold):
+                raise ScopeError('scope-mismatch')
         elif any(isinstance(c,dict) and (c.get('revision')==2 or c.get('semantics')=='initialization-read')
                  for c in resolved.get('contracts',{}).values()):
             raise ScopeError('request-invalid')
         result = self.broker.request(resolved.get('items'), idempotency_key=args.get('idempotency_key'),
-                                     ttl_seconds=args.get('ttl_seconds',MAX_GRANT_SECONDS),setup_context=setup_context)
+            ttl_seconds=args.get('ttl_seconds',MAX_GRANT_SECONDS),setup_context=setup_context,
+            replacement_source_ids=resolved.get('replace_grant_ids',[]))
         request_id = result['request_id']
         if request_id in self.contexts:
             return self._ui_result(result,request_id)
-        contracts = resolved.get('contracts', {})
+        private_context=self.broker.requests[request_id].get('setup_context')
+        contracts = private_context['contracts'] if private_context else resolved.get('contracts', {})
         if not isinstance(contracts,dict) or len(canonical(contracts))>65536:
             raise ScopeError('request-invalid')
         self.contexts[request_id] = copy.deepcopy(contracts)
-        if setup_context:
+        if private_context:
             try:
-                self.startup.register(setup_context)
+                self.startup.register(private_context)
                 self._worker('register-initialization',{'contracts':contracts})
             except Exception:
                 self.broker.cancel(request_id)
@@ -142,12 +185,24 @@ class Service:
             digest=frame['request_digest'],choices=frame['choices'],ttl_seconds=frame['ttl_seconds'])
         if result['grant_id']:
             self.grant_contexts[result['grant_id']] = self.contexts[request_id]
+        request=self.broker.requests[request_id]
+        if request.get('replacement'):
+            if result['grant_id']:
+                snapshots=request['replacement']['snapshots']
+                self.retired.update(s['request_id'] for s in snapshots)
+                for source in snapshots:
+                    self.grant_contexts.pop(source['grant_id'],None)
+                    prompt=self.prompts.get(source['request_id'])
+                    if prompt is not None:
+                        prompt.stop('grant-replaced')
+            self._sync_setup_hold()
         return result
 
     def _prompt_revoked(self, request_id):
         if request_id in self.retired:
             return
         self.broker.revoke_request(request_id)
+        self._sync_setup_hold()
         grant_id=self.broker.requests.get(request_id,{}).get('grant_id')
         if self.startup.active and grant_id in self.startup.used_grants:
             self.broker.emergency_revoke()
@@ -200,6 +255,7 @@ class Service:
 
     def status(self, request_id=None):
         result = self.broker.status(request_id) if request_id else {'state':'no-request'}
+        self._sync_setup_hold()
         network=self._worker('network-status',{})
         result['pending_network']=network.get('descriptors',[])
         result['phase']=network.get('phase')

@@ -105,6 +105,20 @@ function Invoke-TestClick($Button) {
     $null = $method.Invoke($Button,@([EventArgs]::Empty))
 }
 
+function Get-NativeFormConstruction {
+    $sourcePath = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\web_approval.ps1'
+    $source = Get-Content -LiteralPath $sourcePath -Raw
+    $tokens = $null; $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$parseErrors)
+    Assert-True ($parseErrors.Count -eq 0) 'The actual native helper cannot be parsed'
+    $begin = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Send-Frame' },$true))[0]
+    $dialog = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member.Value -eq 'ShowDialog' },$true))[0]
+    $end = $dialog
+    while ($end -and $end -isnot [Management.Automation.Language.AssignmentStatementAst]) { $end = $end.Parent }
+    Assert-True ($null -ne $begin -and $null -ne $end) 'The native form construction cannot be exercised'
+    return [scriptblock]::Create($source.Substring($begin.Extent.StartOffset,$end.Extent.StartOffset-$begin.Extent.StartOffset))
+}
+
 $fixture = $null
 $console = [Console]::Out
 $captured = New-Object IO.StringWriter
@@ -205,18 +219,8 @@ try {
             }
             $script:decided = $false; $script:approved = $false; $script:loadingTargets = $false
             $script:selectedId = $null; $script:targetSelections = @{}
-            $sourcePath = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\web_approval.ps1'
-            $source = Get-Content -LiteralPath $sourcePath -Raw
-            $tokens = $null; $parseErrors = $null
-            $ast = [Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$parseErrors)
-            Assert-True ($parseErrors.Count -eq 0) 'The actual native helper cannot be parsed'
-            $begin = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Send-Frame' },$true))[0]
-            $dialog = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member.Value -eq 'ShowDialog' },$true))[0]
-            $end = $dialog
-            while ($end -and $end -isnot [Management.Automation.Language.AssignmentStatementAst]) { $end = $end.Parent }
-            Assert-True ($null -ne $begin -and $null -ne $end) 'The native form construction cannot be exercised'
             # Construct the production form in memory; never open or approve a real task.
-            . ([scriptblock]::Create($source.Substring($begin.Extent.StartOffset,$end.Extent.StartOffset-$begin.Extent.StartOffset)))
+            . (Get-NativeFormConstruction)
             Assert-True ($grid.Columns.Contains('Scope') -and $grid.Columns['Scope'].ReadOnly) 'The native form does not show read-only request scopes'
             Assert-True ($grid.Rows[0].Cells['Scope'].Value -ceq 'Network: GET /assets/app.js') 'The native scope label is absent'
             Assert-True ($heading.Text.Contains('Review expires in')) 'The native review countdown is absent'
@@ -239,6 +243,104 @@ try {
             Assert-True ($script:approved -and -not $batchTools.Enabled -and $revokeButton.Enabled) 'Active approval left batch choices editable'
             $null = $captured.GetStringBuilder().Clear()
         }
+        { $_ -in @('hint-selection','hint-row','hint-tooltips','hint-resize','hint-action-context') } {
+            $fixture = New-Fixture -Kinds @('bootstrap','login','unclassified','write','')
+            if ($Scenario -eq 'hint-action-context') {
+                $fixture.Grid.Dispose()
+                $fixture = New-Fixture -Kinds @('')
+                $fixture.Items[0].capability = 'web.business_action'
+                $fixture.Items[0].effect.class = 'action-time'
+                $fixture.Items[0].max_uses = 1
+                $fixture.Items[0].targets = @('node-1')
+            }
+            $script:manifest = [pscustomobject]@{
+                request_id=('a'*32);nonce=('b'*64);request_digest=('c'*64)
+                binding=[pscustomobject]@{origin='https://console.example';account='operator'}
+                items=$fixture.Items;ttl_seconds=43200;wait_seconds=120
+            }
+            if ($Scenario -eq 'hint-action-context') { $manifest.ttl_seconds = 30 }
+            $script:decided = $false; $script:approved = $false; $script:loadingTargets = $false
+            $script:selectedId = $null; $script:targetSelections = @{}
+            . (Get-NativeFormConstruction)
+            $before = $manifest | ConvertTo-Json -Depth 24 -Compress
+            Assert-True ($batchHint -is [Windows.Forms.Label]) 'The dropdown has no adjacent effect explanation'
+            Assert-True ($rowHint -is [Windows.Forms.Label]) 'The selected item has no effect explanation'
+            switch ($Scenario) {
+                'hint-selection' {
+                    foreach ($case in @(
+                        @{label='Bootstrap';boundary='no POST'},
+                        @{label='Login';boundary='sign-in'},
+                        @{label='Read';boundary='no business changes'},
+                        @{label='Business Write';boundary='preview'},
+                        @{label='Unreviewed';boundary='no network permission'}
+                    )) {
+                        $batchReview.SelectedItem = $case.label
+                        Assert-True ($batchHint.Text.StartsWith($case.label + ':')) 'Dropdown explanation is stale or has the wrong category'
+                        Assert-True ($batchHint.Text.ToLowerInvariant().Contains($case.boundary.ToLowerInvariant())) 'The selected category does not explain its effect boundary'
+                        Assert-True ($batchReview.SelectedItem -ceq $case.label) 'Showing help changed the chosen category'
+                    }
+                    Assert-True (@($grid.Rows | Where-Object { $_.Cells['Approve'].Value -eq $true }).Count -eq 0) 'Showing help selected approval items'
+                    Assert-True (@($grid.Rows | Where-Object { $_.Cells['Effect Review'].Value -ne 'Unreviewed' -and $_.Cells['Effect Review'].Value -ne 'Not applicable' }).Count -eq 0) 'Showing help classified request items'
+                }
+                'hint-row' {
+                    $grid.ClearSelection(); $grid.Rows[0].Selected = $true
+                    Assert-True ($rowHint.Text.Contains('Unreviewed:')) 'A newly selected network row appeared reviewed'
+                    $grid.Rows[0].Cells['Effect Review'].Value = 'Bootstrap'
+                    Assert-True ($rowHint.Text.Contains('Bootstrap:')) 'Editing the selected row left its explanation stale'
+                    $grid.ClearSelection(); $grid.Rows[1].Selected = $true
+                    Assert-True ($rowHint.Text.Contains('Unreviewed:')) 'Changing rows retained the previous classification explanation'
+                    $grid.Rows[1].Cells['Effect Review'].Value = 'Login'
+                    Assert-True ($rowHint.Text.Contains('Login:')) 'The sign-in row explanation is stale'
+                    $grid.ClearSelection(); $grid.Rows[4].Selected = $true
+                    Assert-True ($rowHint.Text.Contains('Not applicable:')) 'A non-network row inherited a network classification explanation'
+                    $batchReview.SelectedItem = 'Read'
+                    Assert-True ($rowHint.Text.Contains('Not applicable:')) 'The batch choice overwrote the selected row explanation'
+                    $grid.ClearSelection()
+                    Assert-True ($rowHint.Text.StartsWith('Select an item')) 'An empty selection retained another item explanation'
+                }
+                'hint-tooltips' {
+                    foreach ($name in @('Uses','Rows','Columns','Bytes')) {
+                        Assert-True ($grid.Columns[$name].HeaderCell.ToolTipText.Length -gt 20) 'A limit header has no explanation'
+                        Assert-True ($grid.Rows[0].Cells[$name].ToolTipText.Length -gt 20) 'A limit cell has no explanation'
+                    }
+                    Assert-True ($helpTips.GetToolTip($ttl).Contains('12 hours')) 'The lifetime field does not explain its units and task bound'
+                    Assert-True ($helpTips.GetToolTip($ttl).Contains('120-second')) 'The task lifetime is confused with the review deadline'
+                    Assert-True ($helpTips.GetToolTip($applyCheckedButton).Contains('does not approve')) 'Batch classification help implies immediate authority'
+                    Assert-True ($helpTips.GetToolTip($revokeButton).Contains('cannot undo')) 'Revocation help implies rollback'
+                }
+                'hint-action-context' {
+                    Assert-True ([int]$ttl.Maximum -eq 30 -and [int]$ttl.Value -eq 30) 'An action confirmation gained task-grant lifetime'
+                    Assert-True ($helpTips.GetToolTip($ttl).Contains('one-use action confirmations: up to 30 seconds')) 'Help does not distinguish the short action-confirmation lifetime'
+                    Assert-True ($helpTips.GetToolTip($revokeButton).Contains('does not revoke its parent grant')) 'Help falsely implies cancelling a confirmation revokes the parent grant'
+                    Assert-True ($helpTips.GetToolTip($revokeButton).Contains('in-flight')) 'Help omits the in-flight safety-fencing boundary'
+                    $batchReview.SelectedItem = 'Business Write'
+                    Assert-True ([int]$grid.Rows[0].Cells['Uses'].Value -eq 1) 'Help widened a one-use confirmation'
+                }
+                'hint-resize' {
+                    $batchReview.SelectedItem = 'Business Write'
+                    $grid.ClearSelection(); $grid.Rows[3].Selected = $true
+                    $grid.Rows[3].Cells['Effect Review'].Value = 'Business Write'
+                    $form.CreateControl()
+                    foreach ($size in @(@(1050,720),@(1250,860),@(1600,1000),@(1050,720))) {
+                        $form.Size = New-Object Drawing.Size($size[0],$size[1])
+                        $form.PerformLayout(); $layout.PerformLayout(); $batchTools.PerformLayout(); $detailsPanel.PerformLayout()
+                        foreach ($control in @($batchHint,$rowHint)) {
+                            $preferred = $control.GetPreferredSize((New-Object Drawing.Size($control.Width,0)))
+                            Assert-True ($control.Height -ge $preferred.Height) 'An effect explanation is vertically clipped'
+                            Assert-True ($control.Left -ge 0 -and $control.Right -le $control.Parent.ClientSize.Width) 'An effect explanation extends beyond its panel'
+                        }
+                        foreach ($button in @($selectAllButton,$clearSelectionButton,$applyCheckedButton)) {
+                            Assert-True (-not $batchHint.Bounds.IntersectsWith($button.Bounds)) 'Help overlaps a batch command'
+                            Assert-True ($button.Bottom -le $batchTools.ClientSize.Height) 'A wrapped command is clipped'
+                        }
+                        Assert-True ($details.Bounds.Top -ge $rowHint.Bottom) 'Selected-row help overlaps the request details'
+                    }
+                }
+            }
+            Assert-True (($manifest | ConvertTo-Json -Depth 24 -Compress) -ceq $before) 'Help changed the original scope or limits'
+            Assert-True ([int]$ttl.Value -eq [int]$manifest.ttl_seconds -and [int]$manifest.wait_seconds -eq 120) 'Help changed a lifetime or review deadline'
+            Assert-True (-not $script:approved -and -not $script:decided) 'Help granted authority'
+        }
         default { throw 'Unknown test scenario' }
     }
     Assert-True ($captured.ToString().Length -eq 0) 'Selection/classification emitted a decision or unsolicited console output'
@@ -248,6 +350,7 @@ try {
     $captured.Dispose()
     if ($timer) { $timer.Stop(); $timer.Dispose() }
     if ($form) { $form.Dispose() }
+    if ($helpTips) { $helpTips.Dispose() }
     if ($fixture) { $fixture.Grid.Dispose() }
 }
 [Console]::WriteLine('{"implemented":true,"passed":true}')

@@ -6,6 +6,15 @@ import * as worker from '../scripts/web_login_worker.mjs';
 import {SessionControl} from '../scripts/web_control.mjs';
 
 const cfg = {url:'https://console.example:6868/#/',origin:'https://console.example:6868',account:'security',username_selector:'#user',password_selector:'#pass',submit_selector:'#login',success_selector:null};
+
+function assertViewportTracksWindow(view) {
+  // CSS rectangles can be fractional while innerWidth/innerHeight are integers.
+  for(const [content,viewport] of [[view.contentWidth,view.width],[view.contentHeight,view.height]]) {
+    assert.ok(Number.isFinite(content) && Number.isFinite(viewport) && content>0 && viewport>0,'viewport dimensions must be positive finite numbers');
+    assert.ok(Math.abs(content-viewport)<=1,`${content} vs ${viewport}: content must follow the viewport within one CSS pixel`);
+  }
+}
+
 test('origin matching rejects scheme, port, userinfo and sibling-host changes',()=>{
   assert.equal(sameOrigin(cfg.url,cfg.origin),true);
   for(const url of ['http://console.example:6868/','https://console.example/','https://console.example.evil:6868/','https://u:p@console.example:6868/'])assert.equal(sameOrigin(url,cfg.origin),false);
@@ -66,6 +75,28 @@ test('real Edge fixture sends exact keyboard input and masks legacy text field',
   } finally { await browser.close();deny.close(); }
 });
 
+test('viewport comparison accepts at most one CSS pixel of rounding on each axis',()=>{
+  assert.equal(typeof assertViewportTracksWindow,'function');
+  assert.doesNotThrow(()=>assertViewportTracksWindow({width:578,height:369,contentWidth:578,contentHeight:369.3333435058594}));
+  assert.doesNotThrow(()=>assertViewportTracksWindow({width:578,height:369,contentWidth:579,contentHeight:368}));
+});
+
+test('viewport comparison rejects differences over one pixel and fixed-size content',()=>{
+  assert.equal(typeof assertViewportTracksWindow,'function');
+  for(const [contentWidth,contentHeight] of [[579.01,369],[578,370.01],[576.99,369],[578,367.99],[1280,720]]) {
+    assert.throws(()=>assertViewportTracksWindow({width:578,height:369,contentWidth,contentHeight}));
+  }
+});
+
+test('viewport comparison rejects missing nonfinite and zero dimensions',()=>{
+  assert.equal(typeof assertViewportTracksWindow,'function');
+  for(const key of ['width','height','contentWidth','contentHeight']) {
+    for(const value of [undefined,NaN,Infinity,0,-1]) {
+      assert.throws(()=>assertViewportTracksWindow({...{width:578,height:369,contentWidth:578,contentHeight:369},[key]:value}));
+    }
+  }
+});
+
 test('visible Edge content follows actual window enlargement and shrinking', {timeout:30000},async()=>{
   assert.equal(typeof worker.createWebContext,'function');
   const require=createRequire(import.meta.url);
@@ -90,7 +121,7 @@ test('visible Edge content follows actual window enlargement and shrinking', {ti
         await new Promise(resolve=>setTimeout(resolve,100));
       }
       assert.equal(bounds.width,width);assert.equal(bounds.height,height);
-      assert.equal(view.contentWidth,view.width);assert.equal(view.contentHeight,view.height);
+      assertViewportTracksWindow(view);
       return view;
     };
     // Keep the test windows within the small desktop available on hosted runners.
@@ -104,7 +135,8 @@ test('visible Edge content follows actual window enlargement and shrinking', {ti
       const observation=await control.observe();
       assert.equal(observation.geometry.mode,'window');
       assert.deepEqual(observation.geometry.viewport,{width:shrunk.width,height:shrunk.height});
-      assert.deepEqual(observation.geometry.content,{width:shrunk.contentWidth,height:shrunk.contentHeight});
+      // The public geometry contract rounds dimensions to bounded integer pixels.
+      assert.deepEqual(observation.geometry.content,{width:Math.round(shrunk.contentWidth),height:Math.round(shrunk.contentHeight)});
       assert.ok(observation.geometry.window.width>=observation.geometry.viewport.width);
     } finally {await control.dispose();}
   } finally {await browser.close();deny.close();}

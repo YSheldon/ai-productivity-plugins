@@ -14,6 +14,14 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.6.7
+
+- The native Effect Review dropdown now shows an adjacent English explanation of the selected category. Selecting a request row shows its current classification above the full details; editing that row updates the explanation immediately without applying the batch dropdown to it.
+- Added tooltips for execution counts, read-output limits, grant lifetime and approval/revocation controls. Help distinguishes the 120-second review, task grants of up to 12 hours and one-use confirmations of up to 30 seconds. Cancelling a confirmation does not itself revoke its parent grant; in-flight safety fencing and the inability to undo server-accepted work remain explicit.
+- Approval help wraps with the window, preserving visible commands and request details at supported small and large sizes. Real WinForms regressions cover selection, row changes, tooltips, shrink/enlarge/restore, silent output and unchanged request bounds.
+- Corrected the offline Edge resize fixture for fractional CSS pixels: at most one pixel of content/viewport rounding difference, with larger mismatches, fixed-size content and invalid dimensions still rejected. Exact window bounds, resize deltas, viewport mode and rounded public geometry readback remain checked; no production viewport code changed.
+- Help, selection and classification do not approve anything. Explicit final approval, partial selection, target/change previews, revocation, exact request matching, credentials, certificates, cooperative queue ownership and all existing time limits are unchanged. No center business code or shared profile/credential migration.
+
 ## RemoteX 0.6.6
 
 - Already queued startup JS/CSS GET checks use bounded private transactions of at most 16 checks and 32 KiB, without waiting to fill a batch. Each request still needs its own exact active human-approved contract, remaining count and original session/trust/queue binding. Root documents, images, login exchanges and business operations retain their existing paths.

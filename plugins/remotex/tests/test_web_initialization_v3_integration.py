@@ -30,6 +30,58 @@ from web_task_service import Service
 SECRET='synthetic-v3-password-only-canary'
 
 
+def write_manual_public_review_packet(directory,reference):
+    if not isinstance(reference,dict) or set(reference)!={'profile_id','target_text','content_type','body_text','public_headers'}:
+        raise ValueError('Synthetic source must supply only the five public reference fields')
+    source=PLUGIN/'tests/fixtures/web_initialization_v3_worker.mjs'
+    packet={'schema':'RemoteXPublicReview/v1','reference':reference,'evidence':{
+        'kind':'source-review','source_ref':'plugins/remotex/tests/fixtures/web_initialization_v3_worker.mjs',
+        'revision_ref':'sha256:'+hashlib.sha256(source.read_bytes()).hexdigest(),
+        'deployment_ref':'isolated-owned-loopback synthetic manual fixture',
+        'basis':'Fixed fixture source defines public mode/userSession constants and initialization handlers that return '
+            'ready=true without business writes or authentication. Public headers come from a separate offline browser, '
+            'not intercepted requests. Review the source and original response predicate before confirming.'},
+        'cookie_evidence':'The fixture source sets fixture_preauth on the root response; it is not used for authentication '
+            'by the initialization or login handlers. Review only the original synthetic prelogin cookie context.'}
+    raw=json.dumps(packet,ensure_ascii=False,allow_nan=False,indent=2).encode('utf-8',errors='strict')
+    if len(raw)>24000:raise ValueError('Synthetic public review packet exceeds the 24000-byte import bound')
+    path=directory/'public-review.json';path.write_bytes(raw)
+    (directory/'public-reference.json').write_text(json.dumps(reference,ensure_ascii=False,allow_nan=False,indent=2),encoding='utf-8')
+    return path
+
+
+def test_manual_public_review_packet_is_source_bound_and_non_authorizing(tmp_path):
+    reference={'profile_id':'form-json-name-view-v1','target_text':'/init/one',
+        'content_type':'application/x-www-form-urlencoded',
+        'body_text':'{"mode":"one","userSession":"PUBLIC_V3_MARKER"}',
+        'public_headers':[{'name':'origin','value':'https://127.0.0.1:32100'}]}
+    path=write_manual_public_review_packet(tmp_path,reference)
+    raw=path.read_bytes();packet=json.loads(raw.decode('utf-8',errors='strict'))
+    assert len(raw)<=24000 and not raw.startswith(b'\xef\xbb\xbf')
+    assert set(packet)=={'schema','reference','evidence','cookie_evidence'}
+    assert packet['schema']=='RemoteXPublicReview/v1' and packet['reference']==reference
+    assert set(packet['evidence'])=={'kind','source_ref','revision_ref','deployment_ref','basis'}
+    assert packet['evidence']['kind']=='source-review'
+    source=PLUGIN/'tests/fixtures/web_initialization_v3_worker.mjs'
+    assert packet['evidence']['source_ref']=='plugins/remotex/tests/fixtures/web_initialization_v3_worker.mjs'
+    assert packet['evidence']['revision_ref']=='sha256:'+hashlib.sha256(source.read_bytes()).hexdigest()
+    assert 'offline browser' in packet['evidence']['basis']
+    assert 'not used for authentication' in packet['cookie_evidence']
+    assert json.loads((tmp_path/'public-reference.json').read_text(encoding='utf-8'))==reference
+
+
+@pytest.mark.parametrize('invalid',['oversized','invalid-utf8','authority-field'])
+def test_manual_public_review_packet_rejects_invalid_source_before_writing(tmp_path,invalid):
+    reference={'profile_id':'form-json-name-view-v1','target_text':'/init/one',
+        'content_type':'application/x-www-form-urlencoded','body_text':'{}','public_headers':[]}
+    if invalid=='oversized':reference['body_text']='\u20ac'*8000
+    elif invalid=='invalid-utf8':reference['body_text']='\ud800'
+    else:reference['approved']=True
+    with pytest.raises(ValueError):write_manual_public_review_packet(tmp_path,reference)
+    assert not (tmp_path/'public-review.json').exists()
+    assert not (tmp_path/'public-reference.json').exists()
+
+
 @contextmanager
 def v3_runtime(tmp_path,mode,*,manual=False):
     node=shutil.which('node');assert node
@@ -44,7 +96,7 @@ def v3_runtime(tmp_path,mode,*,manual=False):
         line=server.stdout.readline();assert line,server.stderr.read(4000)
         peer=json.loads(line);assert urlsplit(peer['origin']).hostname=='127.0.0.1'
         if manual:
-            (tmp_path/'public-reference.json').write_text(json.dumps(peer['references'][0],indent=2),encoding='utf-8')
+            public_review_file=write_manual_public_review_packet(tmp_path,peer['references'][0])
         cfg={key:peer[key] for key in ('origin','certificate_sha256')}
         cfg.update(url=peer['origin']+'/#/',account='operator',username_selector='#user',
             password_selector='#pass',submit_selector='#login',success_selector='#main')
@@ -111,7 +163,8 @@ def v3_runtime(tmp_path,mode,*,manual=False):
                 row=service.broker.requests[request_id]['items'][0]
                 stage='public-reference' if (service.broker.requests[request_id].get('setup_context') or {}).get('revision')==3 else row['parameters'].get('review_kind','read')
                 (tmp_path/'native-request.json').write_text(json.dumps({
-                    'digest':request['request_digest'][:8],'stage':stage,'public_reference_file':str(tmp_path/'public-reference.json'),
+                    'digest':request['request_digest'][:8],'stage':stage,'public_review_file':str(public_review_file),
+                    'public_reference_file':str(tmp_path/'public-reference.json'),
                     'scope':'Synthetic loopback only; no real credentials, shared queue or business writes'},indent=2),encoding='utf-8')
                 until=time.monotonic()+180
                 while time.monotonic()<until:
@@ -231,6 +284,12 @@ def run_flow(r,mode):
     read=service.request({'items':[{'item_id':'read','capability':'web.read_region','observation_id':view['observationId'],
         'component_ref':region['ref'],'limits':{'bytes':4096}}],'idempotency_key':'read'})
     read_grant=approve(read)
+    # Human review can outlive a 30-second observation; the grant still binds the original fingerprint and route.
+    view=service.components()
+    current=[row for row in view['components'] if row.get('id')==region['id'] and
+        row.get('kind')==region['kind'] and not row.get('ambiguous')]
+    assert len(current)==1,'Approved read target is no longer uniquely observable'
+    region=current[0]
     output=service.execute({'grant_id':read_grant['grant_id'],'item_id':'read','idempotency_key':'read-once',
         'observation_id':view['observationId'],'component_ref':region['ref']})
     assert 'Synthetic V3 Center' in output['result']['text'];r['public'].append(output)
@@ -258,3 +317,21 @@ def test_original_v3_pipeline_synthetic_prompt(tmp_path,mode):
 @pytest.mark.skipif(os.name!='nt' or os.environ.get('REMOTEX_TEST_MANUAL_V3')!='1',reason='Explicit human native review opt-in')
 def test_manual_native_original_supervisor_v3(tmp_path):
     with v3_runtime(tmp_path,'manual',manual=True) as r:run_flow(r,'manual')
+
+
+@pytest.mark.skipif(os.name!='nt',reason='Original Windows Job and real isolated Edge')
+def test_synthetic_read_review_outlives_observation_without_renewing_authority(tmp_path):
+    with v3_runtime(tmp_path,'complete') as r:
+        original_approve=r['approve'];delayed=[]
+        def approve_after_review(request,**kwargs):
+            items=r['service'].broker.requests[request['request_id']]['items']
+            if any(item['capability']=='web.read_region' for item in items):
+                # Exercise real worker expiry, not a production test clock or a larger TTL.
+                started=time.monotonic()
+                time.sleep(31)
+                delayed.append(time.monotonic()-started)
+            return original_approve(request,**kwargs)
+        r['approve']=approve_after_review
+        run_flow(r,'complete')
+        assert len(delayed)==1 and delayed[0]>=31
+        assert r['stats']()['logins']==1 and r['stats']()['writes']==0

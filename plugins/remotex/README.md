@@ -29,6 +29,15 @@ reference review is capped at 32 units/request, 96/proposal and 32 KiB; four
 active grants and the separate 120-second observation TTL are unchanged.
 See [Public-reference review](docs/web-task-authorization.md#revision-3-public-reference-review).
 
+Use **Load Public Review** in the native reference dialog to choose an independently
+prepared `RemoteXPublicReview/v1` JSON file; no manual JSON copying is needed.
+Inspect the summary, then make the three initially unchecked public/non-auth,
+effects/response-check and original prelogin-cookie confirmations as applicable.
+**Compare Public Reference**, return with **Back to Request**, review/apply the
+recommendation, then separately **Approve Selected**. Full reference and expert
+fields remain available. Loading replaces proposed values and clears every
+confirmation and comparison proof; it grants nothing and never resets the timer.
+
 Each approval item also shows a recommended effect and its reason. After reviewing
 the scope, use **Apply Recommendations to Checked** to classify mixed known
 items individually, then **Approve Selected**. Unknown kinds stay unresolved;

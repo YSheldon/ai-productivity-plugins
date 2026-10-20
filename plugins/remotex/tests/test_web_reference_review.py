@@ -81,7 +81,8 @@ def test_a_late_decision_ack_cannot_create_native_active_state():
     assert all(value.get('state')!='active' for value in frames)
 
 @pytest.mark.skipif(os.name!='nt',reason='Native Windows reference state and bounded async reader')
-@pytest.mark.parametrize('scenario',['state','foreign','typed','unit-boundaries','controls','queue','queue-limit','line-limit','reference-json'])
+@pytest.mark.parametrize('scenario',['state','foreign','typed','unit-boundaries','controls','queue','queue-limit','line-limit','reference-json',
+    'public-packet','public-packet-files','public-packet-controls'])
 def test_native_reference_state_and_bounded_reader(scenario):
     import credential_store
     result=subprocess.run([credential_store._powershell_path(),'-NoLogo','-NoProfile','-STA','-File',

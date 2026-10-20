@@ -398,18 +398,38 @@ no raw public request values, caller approval flags, resources or replacement ID
 Do not mix V2 and V3 initialization contracts within one preauth lifecycle;
 existing V2 static and separately approved Login scopes remain usable.
 
-In **Review Public Reference**, the human independently supplies complete public
-wire-reference JSON: `profile_id`, `target_text`, `content_type`, `body_text`,
-`public_headers` (ordered name/value rows). Include exact supported spelling,
-spacing, ordering, escaping and every non-fixed effective header. The reference
-does not come from copying an unknown intercepted value, and cannot change the
-outgoing request. Separately review public invariance, non-auth role, deployed
-initialization-read effects, source/revision/deployment/basis and response
-predicates. A sensitive-name acknowledgment and original cookie-role evidence
-are required where indicated. Real secrets must never be entered here.
+Prepare an independent public review packet before opening the approval request.
+In **Review Public Reference**, choose **Load Public Review** and select its local
+JSON file. No manual JSON copying is needed. Inspect the target/method, public
+fields, effects, response predicates and source/revision/deployment/basis summary.
+The three confirmations start unchecked: public/non-auth data and roles (including
+sensitive-looking names), initialization effects and response checks, and original
+non-auth prelogin cookie role when applicable. Confirm only what the independent
+evidence supports. **Show Full Reference / Expert Fields** retains the complete
+JSON and editable advanced controls. Real secrets must never be entered here.
 
-**Compare Public Reference** is a bounded private comparison, not approval. Edits
-invalidate its proof. Only a complete current match enables **Approve Selected**;
+The packet has exactly `schema: "RemoteXPublicReview/v1"`, `reference`, `evidence`
+and `cookie_evidence`. `reference` contains only `profile_id`, `target_text`,
+`content_type`, `body_text` and `public_headers` (ordered name/value rows).
+`evidence` contains only `kind`, `source_ref`, `revision_ref`, `deployment_ref`
+and `basis`; `cookie_evidence` is a string or null. Include exact supported wire
+spelling, spacing, ordering, escaping and every non-fixed effective header.
+Use independently reviewed source/API/public material, never unknown intercepted
+values. Loading cannot change the outgoing request or supply request, grant,
+proof, cookie-context identifiers, approval flags or attestations.
+
+Import accepts at most 24,000 bytes of strict UTF-8 JSON. Unsupported local paths
+or encodings, duplicate keys, unknown fields, incompatible profiles and invalid
+metadata are rejected without partially importing a packet. A successful load
+or replacement resets every human confirmation and invalidates any comparison
+proof. Proposed evidence is not a human attestation; the original request still
+supplies every authority and cookie-context binding.
+
+**Compare Public Reference** is a bounded private comparison, not approval. After
+a current successful comparison, choose **Back to Request**, inspect the
+Initialization Read recommendation, select the intended row(s), apply the
+recommendations and separately choose **Approve Selected**. Edits invalidate the
+proof. Only a complete current match enables **Approve Selected**;
 Select All, Apply to Checked and Apply Recommendations to Checked cannot create
 reference judgments. Partial
 approval leaves all declared prerequisites required. The original supervisor
@@ -420,8 +440,9 @@ view, context and native manifest, 32 items, 200 uses, four active grants, one
 pending review. Path segments, keys, values, containers and all non-fixed public
 header names/values count. Fixed transport headers are still exactly bound.
 Split an oversized plan without dropping fields or increasing ceilings. The
-original 180-second maximum includes reference comparisons and final commit;
-comparisons are at most 10 seconds, one outstanding and eight attempts/proposal.
+original 180-second maximum includes import, reference comparisons and final commit;
+loading or editing never restarts it and creates no authority.
+Comparisons are at most 10 seconds, one outstanding and eight attempts/proposal.
 
 Forwarding consumes the newly captured immutable request, not a reconstructed
 payload or a replay. Private memory-only proofs bind source and effective headers,

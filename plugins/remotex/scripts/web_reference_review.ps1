@@ -5,7 +5,41 @@ using System.IO;
 using System.Text;
 using System.Collections.Concurrent;
 using System.Threading.Tasks;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 namespace RemoteX {
+    public static class PublicReviewFile {
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern uint GetFinalPathNameByHandle(SafeFileHandle file, StringBuilder path, uint length, uint flags);
+        public static string Read(string path) {
+            if (String.IsNullOrEmpty(path) || !System.Text.RegularExpressions.Regex.IsMatch(path, @"^[A-Za-z]:\\") ||
+                path.IndexOf(':', 2) >= 0 || path.IndexOf('/') >= 0)
+                throw new IOException("Unsupported public review file");
+            string full = Path.GetFullPath(path);
+            if (!String.Equals(full, path, StringComparison.OrdinalIgnoreCase) ||
+                new DriveInfo(Path.GetPathRoot(full)).DriveType != DriveType.Fixed)
+                throw new IOException("Unsupported public review file");
+            for (string part = full; !String.IsNullOrEmpty(part); part = Path.GetDirectoryName(part)) {
+                if ((File.GetAttributes(part) & FileAttributes.ReparsePoint) != 0)
+                    throw new IOException("Unsupported public review file");
+            }
+            using (var stream = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+                var final = new StringBuilder(32768);
+                uint length = GetFinalPathNameByHandle(stream.SafeFileHandle, final, (uint)final.Capacity, 0);
+                if (length == 0 || length >= final.Capacity ||
+                    !String.Equals(final.ToString(), @"\\?\" + full, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("Unsupported public review file");
+                var bytes = new byte[24001];
+                int count = 0, read;
+                while (count < bytes.Length && (read = stream.Read(bytes, count, bytes.Length-count)) > 0) count += read;
+                if (count > 24000) throw new IOException("Public review file too large");
+                int start = count >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf ? 3 : 0;
+                string text = new UTF8Encoding(false, true).GetString(bytes, start, count-start);
+                if (text.IndexOf('\0') >= 0) throw new IOException("Unsupported public review encoding");
+                return text;
+            }
+        }
+    }
     public sealed class V3ReplyQueue : IDisposable {
         private readonly StreamReader reader;
         private readonly ConcurrentQueue<string> queue = new ConcurrentQueue<string>();
@@ -133,6 +167,80 @@ function ConvertFrom-UniqueReferenceJson([string]$Text) {
     return $Text | ConvertFrom-Json
 }
 
+function Read-V3PublicReviewFile([string]$Path) {
+    try { return [RemoteX.PublicReviewFile]::Read($Path) }
+    catch { throw 'Cannot load public review: use a local regular UTF-8 JSON file of at most 24000 bytes.' }
+}
+
+function Test-V3ExactObject($Value,[string[]]$Keys) {
+    if ($Value -isnot [pscustomobject]) { return $false }
+    $names=@($Value.PSObject.Properties.Name)
+    return ($names.Count -eq $Keys.Count -and @($names | Where-Object {$_ -cnotin $Keys}).Count -eq 0)
+}
+
+function Test-V3EvidenceText($Value) {
+    return ($Value -is [string] -and $Value.Length -gt 0 -and
+        [Text.Encoding]::UTF8.GetByteCount($Value) -le 512 -and $Value -notmatch '[\x00-\x1f\x7f]')
+}
+
+function ConvertFrom-V3PublicReviewPacket {
+    param([string]$Text,$ReferenceItem)
+    try {
+        $value=ConvertFrom-UniqueReferenceJson $Text
+        if (-not (Test-V3ExactObject $value @('schema','reference','evidence','cookie_evidence')) -or
+            $value.schema -isnot [string] -or $value.schema -cne 'RemoteXPublicReview/v1') { throw 'Invalid packet' }
+        $reference=$value.reference
+        if (-not (Test-V3ExactObject $reference @('profile_id','target_text','content_type','body_text','public_headers')) -or
+            $reference.profile_id -isnot [string] -or $reference.profile_id -cne $ReferenceItem.profile_id -or
+            $reference.profile_id -cnotin @('json-utf8-v1','form-utf8-v1','form-json-name-view-v1')) { throw 'Invalid reference' }
+        foreach ($key in @('target_text','content_type','body_text')) {
+            if ($reference.$key -isnot [string]) { throw 'Invalid wire text' }
+        }
+        if ($reference.public_headers -isnot [array] -or $reference.public_headers.Count -gt 32) { throw 'Invalid headers' }
+        foreach ($header in $reference.public_headers) {
+            if (-not (Test-V3ExactObject $header @('name','value')) -or $header.name -isnot [string] -or
+                $header.name.Length -eq 0 -or $header.value -isnot [string]) { throw 'Invalid header' }
+        }
+        $evidence=$value.evidence
+        if (-not (Test-V3ExactObject $evidence @('kind','source_ref','revision_ref','deployment_ref','basis')) -or
+            $evidence.kind -isnot [string] -or $evidence.kind -cnotin @('source-review','api-document','verified-record','operator-inspected')) { throw 'Invalid evidence' }
+        foreach ($key in @('source_ref','revision_ref','deployment_ref','basis')) {
+            if (-not (Test-V3EvidenceText $evidence.$key)) { throw 'Invalid evidence text' }
+        }
+        if ($null -ne $value.cookie_evidence -and -not (Test-V3EvidenceText $value.cookie_evidence)) { throw 'Invalid cookie evidence' }
+        if ($ReferenceItem.cookie_context_ref -and $null -eq $value.cookie_evidence) { throw 'Missing cookie evidence' }
+        return $value
+    } catch { throw 'Invalid public review packet. Check its schema, profile, public reference and evidence; no fields were loaded.' }
+}
+
+function Reset-V3PublicConfirmations($Panel) {
+    $Panel.PublicConfirmed.Checked=$false; $Panel.Reviewed.Checked=$false; $Panel.CookieConfirmed.Checked=$false
+    $Panel.Sensitive.Checked=$false
+    foreach ($name in @('DataStatus','Role','Effect')) { $Panel[$name].SelectedIndex=0 }
+    if ($Panel.ReferenceItem.cookie_context_ref) { $Panel.CookieRole.SelectedIndex=0 }
+}
+
+function Set-V3PublicReviewPacket {
+    param($Panel,[string]$Text)
+    if ($Panel.State.pending -or (& $Panel.RemainingSeconds) -le 0) { throw 'Review is unavailable or expired.' }
+    $packet=ConvertFrom-V3PublicReviewPacket -Text $Text -ReferenceItem $Panel.ReferenceItem
+    $referenceJson=$packet.reference | ConvertTo-Json -Depth 16
+    if ($Panel.State.pending -or (& $Panel.RemainingSeconds) -le 0) { throw 'Review is unavailable or expired.' }
+    # Parse everything before touching controls. Import never carries human attestations.
+    Invalidate-V3ReferenceState $Panel.State
+    $Panel.Loading=$true
+    try {
+        Reset-V3PublicConfirmations $Panel
+        $Panel.PublicReference.Text=$referenceJson; $Panel.Profile.SelectedItem=$packet.reference.profile_id
+        $Panel.EvidenceKind.SelectedItem=$packet.evidence.kind
+        $Panel.Source.Text=$packet.evidence.source_ref; $Panel.Revision.Text=$packet.evidence.revision_ref
+        $Panel.Deployment.Text=$packet.evidence.deployment_ref; $Panel.Basis.Text=$packet.evidence.basis
+        $Panel.CookieEvidence.Text=if ($null -eq $packet.cookie_evidence) {''} else {$packet.cookie_evidence}
+        $Panel.ImportStatus.Text='Public draft loaded. Confirm only what you independently verified.'
+    } finally { $Panel.Loading=$false }
+    & $Panel.Update
+}
+
 function Get-V3NativeReferenceInput {
     param($Panel,$ReferenceItem)
     if ($Panel.Profile.SelectedItem -cne $ReferenceItem.profile_id -or
@@ -171,10 +279,10 @@ function Get-V3NativeReferenceInput {
 }
 
 function New-V3PublicReferencePanel {
-    param($State,$ReferenceItem,[scriptblock]$SendFrame,[scriptblock]$RemainingSeconds)
+    param($State,$ReferenceItem,[scriptblock]$SendFrame,[scriptblock]$RemainingSeconds,$Binding=$null)
     $form = New-Object Windows.Forms.Form
     $form.Text = 'RemoteX Independent Public Reference Review'
-    $form.Size = New-Object Drawing.Size(1120, 960); $form.MinimumSize = New-Object Drawing.Size(900, 700)
+    $form.Size = New-Object Drawing.Size(1050, 760); $form.MinimumSize = New-Object Drawing.Size(900, 700)
     $form.StartPosition = 'CenterParent'; $form.Font = [Drawing.SystemFonts]::MessageBoxFont
     $scroll = New-Object Windows.Forms.Panel
     $scroll.Dock = 'Fill'; $scroll.AutoScroll = $true; $form.Controls.Add($scroll)
@@ -183,12 +291,33 @@ function New-V3PublicReferencePanel {
     $null = $table.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent, 28)))
     $null = $table.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent, 72)))
     $scroll.Controls.Add($table)
-    $panel = @{Form=$form;State=$State;ReferenceItem=$ReferenceItem;Table=$table;Timer=$null}
+    $panel = @{Form=$form;State=$State;ReferenceItem=$ReferenceItem;Table=$table;Timer=$null;Loading=$false;RemainingSeconds=$RemainingSeconds}
     $heading = New-Object Windows.Forms.Label
-    $heading.AutoSize = $true; $heading.Dock = 'Top'; $heading.Text = 'Independent PUBLIC reference only. Do not enter credentials. Comparison cannot change or send the observed request.'
+    $heading.AutoSize = $true; $heading.Dock = 'Top'
+    $heading.Text = 'PUBLIC review only. Never load credentials. Imported evidence is a proposal, not verified authority.'
+    if ($Binding) { $heading.Text = "Original request: $($Binding.origin) | Account: $($Binding.account) | POST`r`n" + $heading.Text }
     $table.Controls.Add($heading,0,0); $table.SetColumnSpan($heading,2)
     $form.Add_SizeChanged({ $heading.MaximumSize = New-Object Drawing.Size([Math]::Max(1,$form.ClientSize.Width - 48),0) }.GetNewClosure())
     $heading.MaximumSize = New-Object Drawing.Size(1000,0)
+    $load = New-Object Windows.Forms.Button
+    $load.Text='Load Public Review'; $load.AutoSize=$true; $panel.Load=$load
+    $importStatus=New-Object Windows.Forms.Label
+    $importStatus.Text='No public review loaded.'; $importStatus.AutoSize=$true; $panel.ImportStatus=$importStatus
+    $loadBar=New-Object Windows.Forms.FlowLayoutPanel
+    $loadBar.AutoSize=$true; $loadBar.Dock='Fill'; $loadBar.Controls.Add($load); $loadBar.Controls.Add($importStatus)
+    $table.Controls.Add($loadBar,0,1); $table.SetColumnSpan($loadBar,2)
+    $summary=New-Object Windows.Forms.TextBox
+    $summary.Multiline=$true; $summary.ReadOnly=$true; $summary.ScrollBars='Vertical'; $summary.Dock='Fill'; $summary.Height=245
+    $panel.Summary=$summary
+    $table.Controls.Add($summary,0,2); $table.SetColumnSpan($summary,2)
+    $panel.PublicConfirmed=New-Object Windows.Forms.CheckBox
+    $panel.PublicConfirmed.AutoSize=$true
+    $panel.PublicConfirmed.Text='I verified these public values do not authenticate anyone, including every sensitive-looking field.'
+    $panel.CookieConfirmed=New-Object Windows.Forms.CheckBox
+    $panel.CookieConfirmed.AutoSize=$true
+    $panel.CookieConfirmed.Text='I verified the original prelogin cookie context has no authentication authority.'
+    $panel.CookieConfirmed.Enabled=[bool]$ReferenceItem.cookie_context_ref
+    if (-not $ReferenceItem.cookie_context_ref) { $panel.CookieConfirmed.Text='No original cookie context requires review.' }
     $public = New-Object Windows.Forms.TextBox
     $public.Multiline = $true; $public.ScrollBars = 'Both'; $public.WordWrap = $false
     $public.Dock = 'Fill'; $public.Height = 190; $public.MaxLength = 24000
@@ -206,7 +335,7 @@ function New-V3PublicReferencePanel {
     $panel.Basis.Multiline = $true; $panel.Basis.Height = 60; $panel.Basis.ScrollBars = 'Vertical'
     $panel.Reviewed = New-Object Windows.Forms.CheckBox
     $panel.Reviewed.AutoSize = $true
-    $panel.Reviewed.Text = 'Independently reviewed deployed effects and public response predicates'
+    $panel.Reviewed.Text = 'I verified initialization only reads information, and the readiness checks match the independent source.'
     $panel.Sensitive = New-Object Windows.Forms.CheckBox
     $panel.Sensitive.AutoSize = $true
     $panel.Sensitive.Text = 'Non-auth role reviewed for every sensitive-looking key in this complete reference'
@@ -219,21 +348,35 @@ function New-V3PublicReferencePanel {
     $checks = New-Object Windows.Forms.TextBox
     $checks.Multiline = $true; $checks.ReadOnly = $true; $checks.Dock = 'Fill'; $checks.Height = 65; $checks.ScrollBars = 'Both'
     $checks.Text = (@($ReferenceItem.response_checks) | ConvertTo-Json -Depth 16)
+    $advanced=New-Object Windows.Forms.TableLayoutPanel
+    $advanced.AutoSize=$true; $advanced.Dock='Top'; $advanced.ColumnCount=2; $advanced.Visible=$false
+    $null=$advanced.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent,28)))
+    $null=$advanced.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent,72)))
+    $panel.Advanced=$advanced
     $rows = @(
         @('Public wire reference JSON',$public),@('Representation',$panel.Profile),@('Data status',$panel.DataStatus),
         @('Security role',$panel.Role),@('Operation effect',$panel.Effect),@('Evidence kind',$panel.EvidenceKind),
         @('Independent source',$panel.Source),@('Source revision',$panel.Revision),@('Deployment applicability',$panel.Deployment),
-        @('Review basis',$panel.Basis),@('Public readiness predicates',$checks),@('Effect evidence',$panel.Reviewed),
+        @('Review basis',$panel.Basis),@('Public readiness predicates',$checks),
         @('Sensitive-name acknowledgment',$panel.Sensitive),@('Original cookie-context role',$panel.CookieRole),
         @('Cookie-context evidence',$panel.CookieEvidence)
     )
-    $index = 1
+    $index = 0
     foreach ($entry in $rows) {
         $label = New-Object Windows.Forms.Label
         $label.Text = [string]$entry[0]; $label.AutoSize = $false; $label.Height = 32; $label.Dock = 'Fill'
-        $null = $table.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::AutoSize)))
-        $table.Controls.Add($label,0,$index); $table.Controls.Add($entry[1],1,$index); $index++
+        $null = $advanced.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::AutoSize)))
+        $advanced.Controls.Add($label,0,$index); $advanced.Controls.Add($entry[1],1,$index); $index++
     }
+    $index=3
+    foreach ($control in @($panel.PublicConfirmed,$panel.Reviewed,$panel.CookieConfirmed)) {
+        $table.Controls.Add($control,0,$index); $table.SetColumnSpan($control,2); $index++
+    }
+    $form.Add_SizeChanged({
+        foreach ($control in @($panel.PublicConfirmed,$panel.Reviewed,$panel.CookieConfirmed)) {
+            $control.MaximumSize=New-Object Drawing.Size([Math]::Max(1,$form.ClientSize.Width-60),0)
+        }
+    }.GetNewClosure())
     $status = New-Object Windows.Forms.Label
     $status.AutoSize = $true; $status.Dock = 'Top'; $status.Text = 'Unreviewed. No authority.'; $panel.Status = $status
     $table.Controls.Add($status,0,$index); $table.SetColumnSpan($status,2); $index++
@@ -245,18 +388,112 @@ function New-V3PublicReferencePanel {
     $back.Text = 'Back to Request'; $back.AutoSize = $true
     $buttons.Controls.Add($compare); $buttons.Controls.Add($back)
     $table.Controls.Add($buttons,0,$index); $table.SetColumnSpan($buttons,2)
+    $expand=New-Object Windows.Forms.Button
+    $expand.Text='Show Full Reference / Expert Fields'; $expand.AutoSize=$true; $panel.Expand=$expand
+    $buttons.Controls.Add($expand)
+    $index++; $table.Controls.Add($advanced,0,$index); $table.SetColumnSpan($advanced,2)
     $update = {
+        if ($panel.Loading) { return }
         $remaining = & $RemainingSeconds
+        $panel.Load.Enabled=(-not $State.pending -and $remaining -gt 0)
         $panel.Compare.Enabled = (-not $State.pending -and $remaining -gt 0 -and $null -ne (Get-V3NativeReferenceInput -Panel $panel -ReferenceItem $ReferenceItem))
         $panel.Status.Text = "$($State.status). Review remaining: $remaining seconds. Comparison is not authorization."
+        $reference=$null
+        try {$reference=ConvertFrom-UniqueReferenceJson $panel.PublicReference.Text} catch {}
+        $origin=if ($Binding) {[string]$Binding.origin} else {'Not supplied'}
+        $account=if ($Binding) {[string]$Binding.account} else {'Not supplied'}
+        $body=[string]$reference.body_text
+        $bodyLabel='Public body'
+        if ($reference.profile_id -cin @('form-utf8-v1','form-json-name-view-v1')) {
+            try {$body=[Uri]::UnescapeDataString($body.Replace('+',' ')); $bodyLabel='Public form (decoded preview; exact wire text in full reference)'} catch {}
+        }
+        $predicates=@($ReferenceItem.response_checks | ForEach-Object {
+            "$($_.pointer) $($_.test) $($_.expected | ConvertTo-Json -Depth 8 -Compress)"
+        }) -join '; '
+        $headers=@($reference.public_headers | ForEach-Object {"$($_.name): $($_.value)"}) -join "`r`n"
+        $panel.Summary.Text=(@(
+            "Original request: $origin | Account: $account | POST"
+            "Proposed target: $($reference.target_text)"
+            "${bodyLabel}: $body"
+            "Content type: $($reference.content_type)"
+            "Proposed effect: Initialization Read. No credential submission or business changes."
+            "Original readiness checks: $predicates"
+            "Evidence ($($panel.EvidenceKind.SelectedItem)): $($panel.Source.Text)"
+            "Revision: $($panel.Revision.Text) | Deployment: $($panel.Deployment.Text)"
+            "Basis: $($panel.Basis.Text)"
+            "Original cookie context evidence: $($panel.CookieEvidence.Text)"
+            "Public headers ($(@($reference.public_headers).Count)):`r`n$headers"
+        ) -join "`r`n")
     }.GetNewClosure()
+    $panel.Update=$update
     $changed = {
+        if ($panel.Loading) { return }
         Invalidate-V3ReferenceState -State $State
+        $panel.Loading=$true
+        try { Reset-V3PublicConfirmations $panel } finally { $panel.Loading=$false }
         & $update
     }.GetNewClosure()
     foreach ($name in @('PublicReference','Source','Revision','Deployment','Basis','CookieEvidence')) { $panel[$name].Add_TextChanged($changed) }
-    foreach ($name in @('Profile','DataStatus','Role','Effect','EvidenceKind','CookieRole')) { $panel[$name].Add_SelectedIndexChanged($changed) }
-    foreach ($name in @('Reviewed','Sensitive')) { $panel[$name].Add_CheckedChanged($changed) }
+    foreach ($name in @('Profile','EvidenceKind')) { $panel[$name].Add_SelectedIndexChanged($changed) }
+    $confirmationChanged={
+        if ($panel.Loading) {return}
+        Invalidate-V3ReferenceState $State
+        & $update
+    }.GetNewClosure()
+    $expertChanged={
+        if ($panel.Loading) {return}
+        $panel.Loading=$true
+        try {
+            $panel.PublicConfirmed.Checked=($panel.DataStatus.SelectedItem -ceq 'Public invariant' -and
+                $panel.Role.SelectedItem -ceq 'Non-auth' -and (-not $panel.Sensitive.Enabled -or $panel.Sensitive.Checked))
+            $panel.CookieConfirmed.Checked=($panel.CookieRole.SelectedItem -ceq 'Non-auth prelogin')
+            if ($panel.Effect.SelectedItem -cne 'Initialization Read') {$panel.Reviewed.Checked=$false}
+        } finally {$panel.Loading=$false}
+        & $confirmationChanged
+    }.GetNewClosure()
+    foreach ($name in @('DataStatus','Role','Effect','CookieRole')) {$panel[$name].Add_SelectedIndexChanged($expertChanged)}
+    $panel.Sensitive.Add_CheckedChanged($expertChanged)
+    $panel.PublicConfirmed.Add_CheckedChanged({
+        if ($panel.Loading) {return}
+        $panel.Loading=$true
+        try {
+            $index=if ($panel.PublicConfirmed.Checked) {1} else {0}
+            $panel.DataStatus.SelectedIndex=$index; $panel.Role.SelectedIndex=$index
+            $panel.Sensitive.Checked=($panel.PublicConfirmed.Checked -and $panel.Sensitive.Enabled)
+        } finally {$panel.Loading=$false}
+        & $confirmationChanged
+    }.GetNewClosure())
+    $panel.Reviewed.Add_CheckedChanged({
+        if ($panel.Loading) {return}
+        $panel.Loading=$true
+        try {$panel.Effect.SelectedIndex=if ($panel.Reviewed.Checked) {1} else {0}} finally {$panel.Loading=$false}
+        & $confirmationChanged
+    }.GetNewClosure())
+    $panel.CookieConfirmed.Add_CheckedChanged({
+        if ($panel.Loading) {return}
+        if ($ReferenceItem.cookie_context_ref) {
+            $panel.Loading=$true
+            try {$panel.CookieRole.SelectedIndex=if ($panel.CookieConfirmed.Checked) {1} else {0}} finally {$panel.Loading=$false}
+        }
+        & $confirmationChanged
+    }.GetNewClosure())
+    $expand.Add_Click({
+        $advanced.Visible=-not $advanced.Visible
+        $expand.Text=if ($advanced.Visible) {'Hide Full Reference / Expert Fields'} else {'Show Full Reference / Expert Fields'}
+    }.GetNewClosure())
+    $load.Add_Click({
+        if ($State.pending -or (& $RemainingSeconds) -le 0) {return}
+        $picker=New-Object Windows.Forms.OpenFileDialog
+        $picker.Title='Load independent PUBLIC review (no credentials)'
+        $picker.Filter='Public review JSON (*.json)|*.json'; $picker.CheckFileExists=$true; $picker.Multiselect=$false
+        try {
+            if ($picker.ShowDialog($form) -ne [Windows.Forms.DialogResult]::OK) {return}
+            if ($State.pending -or (& $RemainingSeconds) -le 0) {throw 'Review expired'}
+            $text=Read-V3PublicReviewFile $picker.FileName
+            Set-V3PublicReviewPacket -Panel $panel -Text $text
+        } catch {$panel.ImportStatus.Text='Not loaded. Use valid local public JSON; the draft and original deadline are unchanged.'}
+        finally {$picker.Dispose()}
+    }.GetNewClosure())
     $compare.Add_Click({
         try {
             $native = Get-V3NativeReferenceInput -Panel $panel -ReferenceItem $ReferenceItem

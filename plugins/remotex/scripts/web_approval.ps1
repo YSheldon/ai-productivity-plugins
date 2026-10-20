@@ -320,7 +320,7 @@ try {
             $meta = @($manifest.reference_items | Where-Object { $_.item_id -ceq $itemId })[0]
             if (-not $state -or @($script:v3States.Values | Where-Object { $_.pending }).Count -gt 0) { return }
             Invalidate-V3ReferenceState -State $state
-            $panel = New-V3PublicReferencePanel -State $state -ReferenceItem $meta -RemainingSeconds { Get-V3RemainingSeconds } -SendFrame {
+            $panel = New-V3PublicReferencePanel -State $state -ReferenceItem $meta -Binding $manifest.binding -RemainingSeconds { Get-V3RemainingSeconds } -SendFrame {
                 param($frame)
                 if ($script:v3ReferenceAttempts -ge 8 -or (Get-V3RemainingSeconds) -le 0) { return $false }
                 $script:v3ReferenceAttempts++; Send-PrivateFrame $frame; return $true

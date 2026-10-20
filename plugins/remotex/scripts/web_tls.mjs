@@ -2,6 +2,7 @@ import https from 'node:https';
 import tls from 'node:tls';
 import net from 'node:net';
 import {createHash, timingSafeEqual, X509Certificate} from 'node:crypto';
+import {privateIntentFrame,withInitializationIntent,verifyInitializationCookieContext} from './web_outgoing_intent.mjs';
 
 const HOP_HEADERS = new Set(['connection','keep-alive','proxy-authenticate','proxy-authorization','te','trailer','transfer-encoding','upgrade']);
 const MAX_BODY = 32 * 1024 * 1024;
@@ -46,8 +47,13 @@ class GuardedAgent extends https.Agent {
     };
     socket.once('close',()=>{this.ownedSockets.delete(socket);finish(new Error('tls-or-navigation-failed'));});
     socket.once('error',()=>finish(new Error('tls-or-navigation-failed')));
-    socket.once('secureConnect',()=>{
-      try {verifyPeer(socket,this.pin);this.beforeSend?.();finish(null);}
+    socket.once('secureConnect',async()=>{
+      try {
+        verifyPeer(socket,this.pin);
+        await this.beforeSend?.();
+        if(socket.destroyed)throw new Error('tls-or-navigation-failed');
+        finish(null);
+      }
       catch(error) {finish(error);}
     });
     // Do not return the socket: HTTP may attach only after pin/validity verification.
@@ -68,6 +74,21 @@ export function initializationResponse(request,origin,pin,signal,deadline,before
   return guardedResponse(request,origin,pin,signal,{deadline,beforeSend,maxBody:65536,initialization:true});
 }
 
+export async function initializationIntentResponse(intent,origin,pin,signal,deadline,beforeSend){
+  return withInitializationIntent(intent,frozen=>{
+    const url=new URL(frozen.url);
+    if(url.origin!==origin||url.protocol!=='https:'||url.username||url.password)throw new Error('origin-blocked');
+    const check=async()=>{
+      await verifyInitializationCookieContext(intent);
+      await beforeSend?.();
+      const frame=privateIntentFrame(intent);
+      if(frame.body_b64!==frozen.body.toString('base64'))throw new Error('scope-mismatch');
+    };
+    return sendSnapshot(url,frozen.method,frozen.headers,frozen.body,pin,signal,
+      {deadline,beforeSend:check,maxBody:65536,initialization:true});
+  });
+}
+
 export async function guardedResponse(request, origin, pin, signal, options={}) {
   const url = new URL(request.url());
   if (url.protocol !== 'https:' || url.origin !== origin || url.username || url.password) throw new Error('origin-blocked');
@@ -80,6 +101,12 @@ export async function guardedResponse(request, origin, pin, signal, options={}) 
   headers['accept-encoding'] = 'identity';
   if (body) headers['content-length'] = String(body.length);
   else delete headers['content-length'];
+  return sendSnapshot(url,request.method(),headers,body,pin,signal,options);
+}
+
+async function sendSnapshot(url,method,headers,body,pin,signal,options){
+  if(pin!==undefined&&(typeof pin!=='string'||!/^[a-f0-9]{64}$/.test(pin)))throw new Error('invalid-job');
+  if(signal?.aborted)throw new Error('tls-or-navigation-failed');
   const maxBody=Math.min(MAX_BODY,options.maxBody??MAX_BODY);
   if(!Number.isSafeInteger(maxBody)||maxBody<1)throw new Error('invalid-job');
   const remaining=options.deadline===undefined?20000:Math.min(20000,options.deadline-Date.now());
@@ -90,7 +117,7 @@ export async function guardedResponse(request, origin, pin, signal, options={}) 
   let timer;
   try {
     return await new Promise((resolve,reject)=>{
-      const outgoing = https.request(url,{agent,method:request.method(),headers,signal},response=>{
+      const outgoing = https.request(url,{agent,method,headers,signal},response=>{
         if(options.initialization){
           const rawNames=response.rawHeaders.filter((_,index)=>index%2===0).map(name=>name.toLowerCase());
           const critical=['content-type','content-length','set-cookie','www-authenticate','proxy-authenticate'];

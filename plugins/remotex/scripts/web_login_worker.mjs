@@ -5,7 +5,8 @@ import {fileURLToPath} from 'node:url';
 import net from 'node:net';
 import dgram from 'node:dgram';
 import {randomUUID} from 'node:crypto';
-import {pinnedResponse,guardedResponse,initializationResponse} from './web_tls.mjs';
+import {pinnedResponse,guardedResponse,initializationResponse,initializationIntentResponse} from './web_tls.mjs';
+import {createOwnedCookieContext} from './web_outgoing_intent.mjs';
 import {evaluateInitializationResponse} from './web_initialization_contracts.mjs';
 import {StartupState} from './web_startup_state.mjs';
 import {SessionControl, projectResponse, readFrames} from './web_control.mjs';
@@ -14,6 +15,7 @@ import {TaskControl} from './web_task_control.mjs';
 import {NetworkPolicy,requestCancelled} from './web_network_authorization.mjs';
 import {WorkerAuthority} from './web_authorization_ipc.mjs';
 import {WorkerRuntime} from './web_worker_runtime.mjs';
+import {initializationProtocol} from './web_initialization_capabilities.mjs';
 
 export async function launchEdge(pw, headless = false) {
   const deny = net.createServer(socket=>socket.destroy());
@@ -125,10 +127,17 @@ export async function guardRoute(route, origin, failed, certificateSha256, signa
       (signal?AbortSignal.any([signal,completed.startupSignal]):completed.startupSignal):signal;
     if(completed?.initialization){
       const receipt=completed.initialization;
-      const response=await initializationResponse(request,origin,certificateSha256,activeSignal,
-        completed.startupDeadline??Date.now()+45000,()=>{
-          completed.checkDispatch?.();policy.startupState.forward(receipt);
-        });
+      const beforeSend=()=>{completed.checkDispatch?.();policy.startupState.forward(receipt);};
+      let response;
+      if(receipt.kind==='initialization-permit-v3'){
+        const remaining=receipt.dispatch_deadline-performance.now();
+        if(!completed.intent||!Number.isFinite(remaining)||remaining<=0)throw new Error('scope-mismatch');
+        const deadline=Math.min(completed.startupDeadline??Date.now()+45000,receipt.expires_at_ms,Date.now()+remaining);
+        response=await initializationIntentResponse(completed.intent,origin,certificateSha256,activeSignal,deadline,beforeSend);
+      }else{
+        response=await initializationResponse(request,origin,certificateSha256,activeSignal,
+          completed.startupDeadline??Date.now()+45000,beforeSend);
+      }
       evaluateInitializationResponse(response,receipt.response_checks,policy.parseTree);
       completed.checkDispatch?.();policy.startupState.check(receipt);
       await route.fulfill(response);policy.startupState.response(receipt,{ready:true});return;
@@ -238,6 +247,8 @@ async function main() {
     ({browser,deny}=await launchEdge(pw));
     await verifyNetworkGuard(browser);
     context = await createWebContext(browser);
+    network.cookieContext=createOwnedCookieContext(context,cfg.origin,
+      ()=>network.phase==='fenced'||network.startupState.armed||network.authenticationForwarded>0);
     cancellation = browserCancellation(context);
     browser.once('disconnected',()=>cancellation.abort());
     await context.setOffline(true);
@@ -382,5 +393,6 @@ async function main() {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   // Never print browser errors: call logs can include fill/keypress argument values.
-  main().catch(()=>{process.exitCode=1;});
+  if(process.argv.length===3&&process.argv[2]==='--describe-protocol')process.stdout.write(JSON.stringify(initializationProtocol())+'\n');
+  else main().catch(()=>{process.exitCode=1;});
 }

@@ -3,10 +3,48 @@ import assert from 'node:assert/strict';
 import {setupContracts,taskContracts} from '../scripts/web_task_contracts.mjs';
 import * as contracts from '../scripts/web_task_contracts.mjs';
 import {guardRoute} from '../scripts/web_login_worker.mjs';
+import {sampleCapture,parseTree} from './fixtures/v3_test_support.mjs';
 
 const descriptor={method:'POST',path:'/dispatch',query:{},contentType:'application/json',
   body:{cmd:'move',ids:['host-one'],group:'New Group'},resourceType:'xhr'};
 const proof=[{kind:'operator-inspected',reference:'Reviewed synthetic handler only'}];
+
+function v3SetupCase(){
+  const refs=Array.from({length:5},(_,i)=>(i+3).toString(16).padStart(32,'0'));
+  const capture=sampleCapture({bodyText:'{"private-low-entropy-canary":true}'});
+  const network={phase:'bootstrap',preauthLifecycle:'a'.repeat(32),parseTree,
+    resolveV3:(ref,representation,fields)=>{
+      assert.equal(ref,'b'.repeat(32));assert.equal(representation,'c'.repeat(32));assert.deepEqual(fields,refs);
+      return {capture,profile_id:'json-utf8-v1',representation_ref:representation,literal_review_refs:refs};
+    }};
+  const setup={revision:3,phase:'bootstrap',requests:[{network_ref:'b'.repeat(32),representation_ref:'c'.repeat(32),
+    literal_review_refs:refs,purpose:'initialization-read',max_uses:2,evidence:proof,
+    response_checks:[{pointer:'/ready',test:'equals-boolean',expected:true}]}]};
+  return {setup,network,capture};
+}
+
+test('revision3 exposes safe exact-ref contracts and sends private captures only on private resolution',()=>{
+  const {setup,network,capture}=v3SetupCase();
+  const result=setupContracts(setup,network),contract=result.contracts['setup.network.1'];
+  assert.equal(result.setup_revision,3);assert.equal(contract.revision,3);assert.equal(contract.required,true);
+  assert.equal(contract.intent_ref,'c'.repeat(32));assert.equal(contract.profile_id,'json-utf8-v1');
+  assert.deepEqual(result.private_initialization['setup.network.1'],capture);
+  const publicScope=JSON.stringify({items:result.items,contracts:result.contracts,prerequisites:result.prerequisites});
+  assert.equal(publicScope.includes('private-low-entropy-canary'),false);
+  assert.equal(publicScope.includes(capture.body_b64),false);
+  assert.equal(publicScope.includes('target_b64'),false);
+  assert.deepEqual(setupContracts(setup,network),result,'Idempotent resolution must not invent new scope IDs');
+});
+test('revision3 public declarations cannot supply raw values, verdicts, replacements or partial coverage',()=>{
+  const {setup,network}=v3SetupCase();
+  for(const change of [{...setup,replace_grant_ids:[]},{...setup,resources:[]},{...setup,revision:4},
+    {...setup,requests:[{...setup.requests[0],body:'public'}]},
+    {...setup,requests:[{...setup.requests[0],public_invariant:true}]},
+    {...setup,requests:[{...setup.requests[0],profile_id:'json-utf8-v1'}]},
+    {...setup,requests:[{...setup.requests[0],purpose:'bootstrap-resource'}]},
+    {...setup,requests:[{...setup.requests[0],literal_review_refs:[]}]},
+    {...setup,requests:[setup.requests[0],setup.requests[0]]}])assert.throws(()=>setupContracts(change,network));
+});
 
 test('revision2 exact init purpose keeps legacy Bootstrap POST denied',()=>{
   const post={...descriptor,body:{cmd:'database_info'}};

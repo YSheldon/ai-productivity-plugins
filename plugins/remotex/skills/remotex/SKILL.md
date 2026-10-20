@@ -135,11 +135,47 @@ still-valid sources. See [Initialization and replacement](../../docs/web-task-au
 
 ### Native Review And Login Outcome
 
+For 0.6.9+, use revision 3 when discovery offers only opaque named-profile and
+literal refs. Inspect the original loaded `setup_revisions` and profile metadata;
+an installed file or an old tool schema is not loaded capability. Request only
+`revision`, `phase`, and `requests` containing `network_ref`,
+`purpose:"initialization-read"`, `representation_ref`, every ordered
+`literal_review_refs`, proposed evidence/checks and optional finite `max_uses`.
+Never put raw path/header/body/reference values or approval flags in public tools.
+
+The original native **Review Public Reference** panel accepts independent PUBLIC
+wire-reference JSON and separate public/non-auth/initialization-effect evidence.
+Only named `json-utf8-v1`, `form-utf8-v1` or `form-json-name-view-v1` is supported;
+structured form-name data cannot use the ordinary form view to hide auth slots.
+Do not infer public meaning from `userSession`, frontend calls or a `get_*` name.
+Real tokens, API keys, private/credential data, unsupported encodings or missing
+deployed evidence remain blocked even when a value is constant.
+
+Reference comparison is private and does not approve or transmit. Edits invalidate
+proof; only a complete current match can reach final native approval and durable
+supervisor commit. Require exact complete wire/header spelling and an independently
+reviewed original cookie role. All proposed prerequisites remain required after
+partial approval. No raw response, match verdict or secret-derived hash is public.
+
+Limits remain four active grants, one pending proposal, 32 KiB including private
+records/manifests, with 32 reference units/request and 96/proposal. Do not truncate
+fields or raise caps. Split proposals only when the grant layout fits. V3 cannot
+replace static grants or mix with V2 initialization in the same lifecycle; V2
+static scopes and separate Login/Read remain supported. Frozen current-request
+dispatch, cookie epoch/security attributes, response checks, site/trust, queues
+and no-resubmit rules still apply. See
+[Public-reference review](../../docs/web-task-authorization.md#revision-3-public-reference-review).
+
 For 0.6.4 or later, inspect the request's `approval_ui` in request/status results.
 `starting` is not a shown window. A `shown` receipt records the native form event,
 not foreground, physical human presence or permission. Tell the operator the
 actual `review_remaining_seconds`; showing the form does not restart the
-original 120-second review. On `closed`/`error`, report the fixed `exit_reason`
+original deadline (new 0.6.9 reviews: at most 180 seconds; no retroactive extension).
+The denied-observation TTL remains 120 seconds. A one-shot Windows notification
+contains only RemoteX, short digest and remaining time; a click only focuses the
+same pending unexpired window. `notification_state` is advisory: requested is not
+shown, shown is not human visibility/approval, and suppression never grants access.
+Do not change system notification settings. On `closed`/`error`, report the fixed `exit_reason`
 and `error_code` rather than calling every cancellation a rejection. If the
 operator cannot see it, stop repeated prompts and inspect the lifecycle; never
 manufacture a decision or weaken host/browser policy. Action-time confirmation

@@ -9,6 +9,8 @@ import time
 from web_authorization import Broker, ScopeError, MAX_GRANT_SECONDS, canonical, digest
 from web_approval import ApprovalPrompt
 from web_initialization import StartupAuthority, validate_setup_context
+from web_initialization_v3 import V3Authority, validate_setup_context_v3
+from web_component_protocol import V3_WORKER_PROTOCOL
 
 
 class Service:
@@ -22,8 +24,11 @@ class Service:
         self.executing, self.dispatched = set(), set()
         self.retired=set()
         self.receipt_authorities={}
+        self.initialization_ready={}
         self.execute_lock = threading.RLock()
         self.startup=StartupAuthority(binding,clock=clock)
+        self.initialization_v3=V3Authority(binding,clock=clock)
+        self.broker.initialization_v3=self.initialization_v3
         self.setup_hold=False
         self.channel.authorize = self._authorize
         self.channel.authorize_network = self._authorize_network
@@ -32,6 +37,7 @@ class Service:
         self.channel.on_close = self.broker.emergency_revoke
 
     def _close(self):
+        self.initialization_v3.close()
         self.channel.close()
         for prompt in list(self.prompts.values()):
             prompt.stop()
@@ -52,7 +58,7 @@ class Service:
 
     def _worker_locked(self, operation, args):
         self.broker._valid()
-        if self.broker.replacement_pending() and operation not in {'network-status','resolve-setup','register-initialization','release-setup'}:
+        if (self.broker.replacement_pending() or self._v3_pending()) and operation not in {'network-status','resolve-setup','register-initialization','release-setup'}:
             raise ScopeError('replacement-pending')
         options={}
         ticket=None
@@ -64,6 +70,7 @@ class Service:
             options['timeout']=min(55,remaining)
             if self.startup.lifecycle and not self.startup.authentication_forwarded:
                 ticket=self.startup.begin(lifecycle=self.startup.lifecycle,session_deadline_ms=self.channel.deadline)
+                self.initialization_ready.clear()
                 args={'startup':ticket}
         try:
             result = self.channel.request(operation, args, **options)
@@ -104,7 +111,8 @@ class Service:
 
     def request(self, args):
         replacement=isinstance(args,dict) and isinstance(args.get('setup'),dict) and bool(args['setup'].get('replace_grant_ids'))
-        if not replacement:
+        v3=isinstance(args,dict) and isinstance(args.get('setup'),dict) and args['setup'].get('revision')==3
+        if not replacement and not v3:
             return self._request(args)
         if not self.execute_lock.acquire(blocking=False):
             raise ScopeError('operation-in-progress')
@@ -112,7 +120,7 @@ class Service:
             if self.startup.active is not None or self.executing:
                 raise ScopeError('operation-in-progress')
             if not self.setup_hold:
-                result=self._worker('hold-setup',{})
+                result=self._worker('hold-setup',{'revision':3} if v3 else {})
                 if result.get('held') is not True:
                     self.broker.emergency_revoke()
                     raise ScopeError('control-failed')
@@ -125,7 +133,7 @@ class Service:
             self.execute_lock.release()
 
     def _sync_setup_hold(self):
-        if not self.setup_hold or self.broker.replacement_pending():
+        if not self.setup_hold or self.broker.replacement_pending() or self._v3_pending():
             return
         if self.broker.fenced.is_set():
             self.setup_hold=False
@@ -139,6 +147,11 @@ class Service:
             self.broker.emergency_revoke()
             raise
 
+    def _v3_pending(self):
+        return any(request.get('setup_context',{}).get('revision')==3 and request['state']=='pending' and
+            not request['fence'].is_set() and self.broker.clock()<request['review_deadline']
+            for request in self.broker.requests.values() if request.get('setup_context'))
+
     def _request(self, args):
         if not isinstance(args, dict) or set(args)-{'items','setup','idempotency_key','ttl_seconds'}:
             raise ScopeError('request-invalid')
@@ -146,9 +159,13 @@ class Service:
             raise ScopeError('request-invalid')
         resolved = self._worker('resolve-setup' if 'setup' in args else 'resolve-items',
             {'setup':args['setup']} if 'setup' in args else {'items':args['items']})
-        setup_context=None
+        setup_context=None;v3_context=None
         if resolved.get('setup_revision') is not None:
-            setup_context=validate_setup_context(resolved,self.broker.binding)
+            if resolved['setup_revision']==3:
+                v3_context=validate_setup_context_v3(resolved,self.broker.binding,args.get('setup'))
+                setup_context=v3_context['context']
+            else:
+                setup_context=validate_setup_context(resolved,self.broker.binding)
             if resolved.get('replace_grant_ids',[])!=args.get('setup',{}).get('replace_grant_ids',[]) or (
                 resolved.get('replace_grant_ids') and not self.setup_hold):
                 raise ScopeError('scope-mismatch')
@@ -166,23 +183,48 @@ class Service:
         if not isinstance(contracts,dict) or len(canonical(contracts))>65536:
             raise ScopeError('request-invalid')
         self.contexts[request_id] = copy.deepcopy(contracts)
+        manifest = self.broker.approval_manifest(request_id)
+        if v3_context:
+            manifest.update(protocol_revision=3,reference_items=v3_context['native_items'])
+            try:
+                self.initialization_v3.register_plan(request_id,v3_context['captures'],v3_context['locators'],
+                    review_deadline=self.broker.requests[request_id]['review_deadline'],
+                    external_bytes=len(canonical(manifest))+len(canonical(setup_context)))
+            except Exception:
+                self.broker.cancel(request_id)
+                self.contexts.pop(request_id,None)
+                raise
         if private_context:
             try:
                 self.startup.register(private_context)
                 self._worker('register-initialization',{'contracts':contracts})
             except Exception:
                 self.broker.cancel(request_id)
+                self.initialization_v3.cancel_plan(request_id)
                 raise
-        manifest = self.broker.approval_manifest(request_id)
         try:
+            reference_callback={'on_reference':lambda frame:self._reference(request_id,frame)} if v3_context else {}
             self.prompts[request_id] = self.prompt.start(manifest,
                 on_decision=lambda frame:self._decision(request_id,frame),
                 on_revoke=lambda:self._prompt_revoked(request_id),
-                on_cancel=lambda:self._prompt_revoked(request_id))
+                on_cancel=lambda:self._prompt_revoked(request_id),**reference_callback)
         except Exception:
             self._prompt_revoked(request_id)
             raise ScopeError('approval-ui-unavailable') from None
         return self._ui_result(result,request_id)
+
+    def _reference(self,request_id,frame):
+        with self.broker.lock:
+            self.broker._valid()
+            request=self.broker.requests.get(request_id)
+            expected={'event','request_id','nonce','request_digest','check_id','item_id','edit_revision','native_input'}
+            if (not request or not request.get('setup_context') or request['setup_context']['revision']!=3 or
+                    request['state']!='pending' or request['fence'].is_set() or self.broker.clock()>=request['review_deadline'] or
+                    not isinstance(frame,dict) or set(frame)!=expected or frame['event']!='reference-check' or
+                    frame['request_id']!=request_id or frame['nonce']!=request['nonce'] or frame['request_digest']!=request['digest']):
+                raise ScopeError('decision-invalid')
+            return self.initialization_v3.check_reference(request_id,frame['check_id'],frame['edit_revision'],
+                frame['native_input'],item_id=frame['item_id'])
 
     def _decision(self, request_id, frame):
         result = self.broker.accept_decision(request_id, nonce=frame['nonce'],
@@ -200,14 +242,19 @@ class Service:
                     if prompt is not None:
                         prompt.stop('grant-replaced')
             self._sync_setup_hold()
+        elif request.get('setup_context') and request['setup_context'].get('revision')==3:
+            self._sync_setup_hold()
         return result
 
     def _prompt_revoked(self, request_id):
         if request_id in self.retired:
             return
         self.broker.revoke_request(request_id)
+        self.initialization_v3.cancel_plan(request_id)
         self._sync_setup_hold()
         grant_id=self.broker.requests.get(request_id,{}).get('grant_id')
+        if grant_id:
+            self.initialization_v3.revoke(grant_id)
         if (self.startup.active and grant_id in self.startup.used_grants) or (
             self.startup.authentication_forwarded and not self.startup.authentication_verified and grant_id in self.startup.authentication_grants):
             self.broker.emergency_revoke()
@@ -254,6 +301,7 @@ class Service:
             self.retired.add(request_id)
             if request.get('grant_id'):
                 self.broker.revoke(request['grant_id'])
+                self.initialization_v3.revoke(request['grant_id'])
             prompt=self.prompts.get(request_id)
             if prompt is not None:
                 prompt.stop()
@@ -264,9 +312,13 @@ class Service:
         network=self._worker('network-status',{})
         result['pending_network']=network.get('descriptors',[])
         result['phase']=network.get('phase')
-        result['setup_revisions']=[1,2]
+        result['setup_revisions']=[1,2,3] if network.get('protocol')==V3_WORKER_PROTOCOL else [1,2]
+        if 3 in result['setup_revisions']:
+            result['initialization_profiles']=list(V3_WORKER_PROTOCOL['profiles'])
         result['setup_purposes']=['bootstrap-resource','initialization-read']
         result['limits']={'active_grants':4,'pending_requests':1,'setup_items':32,'setup_bytes':32768}
+        if 3 in result['setup_revisions']:
+            result['limits'].update(reference_units=V3_WORKER_PROTOCOL['reference_units'],proposal_units=V3_WORKER_PROTOCOL['proposal_units'])
         result['initialization']=self.startup.status()
         if result['phase'] in {'discovery-only','grant-active'}:
             self._retire_startup()
@@ -290,7 +342,21 @@ class Service:
         try:
             with self.broker.lock:
                 self.broker._valid()
+                source=None
+                if frame.get('kind') in {'initialization-forwarded','prerequisite-response'}:
+                    with self.startup.lock:
+                        source=self.startup.issued.get(frame.get('check_id'),{}).get('permit')
+                    if source and source.get('kind')=='initialization-permit-v3':
+                        self.broker._grant(source['grant_id'],source['item_id'])
+                if frame.get('kind') in {'controls-ready','credentials-armed','authentication-forwarded'}:
+                    for grant_id,item_id in self.initialization_ready.values():
+                        self.broker._grant(grant_id,item_id)
                 event=self.startup.event(frame)
+                if source and source.get('kind')=='initialization-permit-v3' and frame['kind']=='prerequisite-response':
+                    if frame['ready']:
+                        self.initialization_ready[frame['prerequisite_id']]=(source['grant_id'],source['item_id'])
+                    else:
+                        self.initialization_ready.pop(frame['prerequisite_id'],None)
                 self.broker._event(event.pop('event'),**event)
                 if frame['kind']=='authentication-forwarded':
                     self._retire_startup(exclude_login=True)
@@ -301,6 +367,8 @@ class Service:
 
     def _authorize_network(self,message,check_id):
         try:
+            if isinstance(message,dict) and 'version' in message:
+                return self._network_v3(message,check_id)
             if (not isinstance(message,dict) or message.get('kind')!='network' or
                 set(message) not in ({'kind','phase','attempt_id','descriptor','digest'},
                     {'kind','phase','attempt_id','descriptor','digest','startup'}) or
@@ -309,6 +377,40 @@ class Service:
             return self._network(message,check_id)
         except Exception:
             return False
+
+    def _network_v3(self,message,check_id):
+        if (set(message)!={'kind','version','phase','attempt_id','capture','startup'} or message['kind']!='network' or
+                type(message['version']) is not int or message['version']!=3 or message['phase'] not in {'bootstrap','login-once'} or
+                message['attempt_id'] is not None or not isinstance(check_id,str) or re.fullmatch('[a-f0-9]{32}',check_id) is None):
+            return False
+        check_deadline=self.clock()+10
+        self.broker._valid()
+        self.startup.matches(message)
+        for grant_id,contracts in list(self.grant_contexts.items()):
+            for item_id,contract in contracts.items():
+                if contract.get('revision')!=3 or not self.initialization_v3.matches(grant_id,item_id,message['capture']):
+                    continue
+                try:
+                    _,scope=self.broker._grant(grant_id,item_id)
+                    if scope['parameters'].get('approved_semantics')!='initialization-read':
+                        continue
+                    self.startup.matches(message)
+                    permit=self.broker.reserve(grant_id,item_id,'network-'+secrets.token_hex(16),scope['parameters'])
+                    self.broker.finish(permit['attempt_id'],state='verified',summary={'count':1})
+                    self.broker._valid();self.broker._grant(grant_id,item_id);self.startup.matches(message)
+                    receipt=self.startup.issue_v3(authority=self.initialization_v3,grant_id=grant_id,item_id=item_id,
+                        check_id=check_id,message=message,contract=contract,check_deadline=check_deadline)
+                    self.broker._event('initialization-permit-issued',grant_id=grant_id,item_id=item_id,
+                        contract_digest=receipt['prerequisite_id'],item_ids=[check_id,receipt['receipt_id']],count=1)
+                    with self.broker.publication_lock:
+                        self.broker._valid();self.broker._grant(grant_id,item_id);self.startup.matches(message)
+                        if self.clock()>=check_deadline:
+                            return False
+                        self.startup.used_grants.add(grant_id)
+                        return {'allowed':True,'permit':receipt}
+                except ScopeError:
+                    continue
+        return False
 
     def _contract_current(self,contract,message):
         if contract.get('revision')==2:
@@ -524,7 +626,13 @@ class Service:
 
     def revoke(self, args):
         if set(args)=={'request_id'}:
-            return self.broker.cancel(args['request_id'])
+            result=self.broker.cancel(args['request_id'])
+            self.initialization_v3.cancel_plan(args['request_id'])
+            prompt=self.prompts.get(args['request_id'])
+            if prompt is not None:
+                prompt.stop()
+            self._sync_setup_hold()
+            return result
         if set(args) in ({'grant_id'},{'grant_id','items'}):
             def affected(attempt_id):
                 attempt=self.broker.attempts[attempt_id]
@@ -540,6 +648,16 @@ class Service:
             if any(affected(attempt) for attempt in list(self.executing)):
                 return self._fence()
             result=self.broker.revoke(args['grant_id'],args.get('items'))
+            self.initialization_v3.revoke(args['grant_id'],args.get('items'))
+            with self.broker.publication_lock, self.startup.lock:
+                selected=set(args.get('items',self.broker.grants[args['grant_id']]['items']))
+                contracts=self.grant_contexts.get(args['grant_id'],{})
+                initialization=any(contracts.get(name,{}).get('purpose')=='initialization-read' for name in selected)
+                if ((self.startup.active and args['grant_id'] in self.startup.used_grants and initialization) or
+                    (self.startup.authentication_forwarded and not self.startup.authentication_verified and
+                     args['grant_id'] in self.startup.authentication_grants)):
+                    self.broker.emergency_revoke()
+                    result['session_closed']=True
             # A concurrent action cannot retain a permit after revocation.
             if any(affected(attempt) for attempt in list(self.executing)):
                 self.broker.emergency_revoke()

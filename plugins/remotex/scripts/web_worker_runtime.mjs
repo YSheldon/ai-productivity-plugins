@@ -1,4 +1,5 @@
 import {taskContracts,setupContracts} from './web_task_contracts.mjs';
+import {initializationProtocol} from './web_initialization_capabilities.mjs';
 
 export class WorkerRuntime {
   constructor({control,registry,task,network,resume}){
@@ -13,11 +14,20 @@ export class WorkerRuntime {
     if(this.network.setupHold&&!['network-status','resolve-setup','register-initialization','hold-setup','release-setup'].includes(command.operation))
       throw new Error('replacement-pending');
     if(command.operation==='hold-setup'&&Object.keys(args).length===0){this.network.holdSetup();return {ok:true,held:true};}
+    if(command.operation==='hold-setup'&&Object.keys(args).join(',')==='revision'&&args.revision===3){
+      this.network.holdSetup(3);return {ok:true,held:true};
+    }
     if(command.operation==='release-setup'&&Object.keys(args).length===0){this.network.releaseSetup();return {ok:true,held:false};}
     if(['observe','navigate','read-result'].includes(command.operation))throw new Error('approval-required');
-    if(command.operation==='network-status'&&Object.keys(args).length===0)return {ok:true,descriptors:this.network.list(),phase:this.network.phase};
+    if(command.operation==='network-status'&&Object.keys(args).length===0)return {ok:true,descriptors:this.network.list(),phase:this.network.phase,protocol:initializationProtocol()};
     if(command.operation==='resolve-setup'&&Object.keys(args).join(',')==='setup')return setupContracts(args.setup,this.network);
     if(command.operation==='register-initialization'&&Object.keys(args).join(',')==='contracts'){
+      if(!args.contracts||typeof args.contracts!=='object'||Array.isArray(args.contracts))throw new Error('request-invalid');
+      const rows=Object.values(args.contracts);
+      if(rows.some(c=>c?.revision===3)){
+        if(rows.some(c=>c?.revision!==3))throw new Error('request-invalid');
+        this.network.registerV3Contracts(args.contracts);
+      }
       this.network.startupState.register(args.contracts);return {ok:true};
     }
     if(command.operation==='resume-login'&&Object.keys(args).length===0)return this.resume();

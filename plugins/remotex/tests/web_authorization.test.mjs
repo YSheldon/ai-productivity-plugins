@@ -90,6 +90,55 @@ test('task resolution grounds a scope but cannot execute it without broker autho
   await assert.rejects(()=>task.resolveItems([{item_id:'raw',capability:'web.read_table',observation_id:view.observationId,component_ref:table.ref,url:'https://evil.example/'}]),/request-invalid/);
 }));
 
+test('approved read scope needs fresh metadata after human review outlasts the component TTL',async()=>fixture(async({registry})=>{
+  let now=1000;registry.clock=()=>now;
+  const authorizations=[];
+  const task=new taskModule.TaskControl({registry,clock:()=>now,
+    authorize:async request=>{authorizations.push(request);return true;},readResult:async()=>({results:[]}),network:null});
+  const original=await registry.scan(),region=original.components.find(component=>component.id==='main');
+  const [scope]=await task.resolveItems([{item_id:'read',capability:'web.read_region',
+    observation_id:original.observationId,component_ref:region.ref,max_uses:1,limits:{bytes:4096}}]);
+  const approvedScope=structuredClone(scope),attempt_id='e'.repeat(32);
+  now+=31001;
+  await assert.rejects(()=>task.execute({attempt_id,scope,
+    observation_id:original.observationId,component_ref:region.ref}),/component-stale/);
+  assert.equal(authorizations.length,0);
+  assert.equal(task.receipts.size,0);
+  const fresh=await registry.scan(),current=fresh.components.find(component=>component.id==='main');
+  assert.notEqual(fresh.observationId,original.observationId);
+  assert.notEqual(current.ref,region.ref);
+  const result=await task.execute({attempt_id,scope,observation_id:fresh.observationId,component_ref:current.ref});
+  assert.equal(result.state,'verified');
+  assert.equal(result.result.text,'Signed in');
+  assert.deepEqual(scope,approvedScope);
+  assert.deepEqual(authorizations,[
+    {kind:'action',attempt_id,consume:false},{kind:'action',attempt_id,consume:false}]);
+  assert.deepEqual(task.receipt(result.result.receipt_ref).scope,approvedScope);
+}));
+
+for(const change of ['metadata','route','ambiguous']){
+  test(`fresh metadata cannot rebind an approved read scope after ${change} changes`,async()=>fixture(async({registry,page})=>{
+    let now=1000;registry.clock=()=>now;let authorizations=0;
+    const task=new taskModule.TaskControl({registry,clock:()=>now,
+      authorize:async()=>{authorizations++;return true;},readResult:async()=>({results:[]}),network:null});
+    const original=await registry.scan(),region=original.components.find(component=>component.id==='main');
+    const [scope]=await task.resolveItems([{item_id:'read',capability:'web.read_region',
+      observation_id:original.observationId,component_ref:region.ref,max_uses:1,limits:{bytes:4096}}]);
+    const approvedScope=structuredClone(scope);now+=31001;
+    if(change==='metadata')await page.locator('#main').evaluate(node=>node.setAttribute('aria-label','Different region'));
+    else if(change==='route')await page.evaluate(()=>{location.hash='/different';});
+    else await page.locator('#main').evaluate(node=>node.after(node.cloneNode(true)));
+    const fresh=await registry.scan(),current=fresh.components.find(component=>component.id==='main');
+    assert.ok(current);
+    if(change==='ambiguous')assert.equal(current.ambiguous,true);
+    await assert.rejects(()=>task.execute({attempt_id:'f'.repeat(32),scope,
+      observation_id:fresh.observationId,component_ref:current.ref}),change==='ambiguous'?/component-ambiguous/:/scope-mismatch/);
+    assert.equal(authorizations,0);
+    assert.equal(task.receipts.size,0);
+    assert.deepEqual(scope,approvedScope);
+  }));
+}
+
 test('business preparation uses authorized read receipts and has no page side effect',async()=>fixture(async({registry,page})=>{
   assert.ok(taskModule);
   const task=new taskModule.TaskControl({registry,authorize:async()=>true,readResult:async()=>({results:[]}),network:null});

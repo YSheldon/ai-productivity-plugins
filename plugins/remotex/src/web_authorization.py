@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 
 MAX_GRANT_SECONDS = 43200
+MAX_NATIVE_REVIEW_SECONDS = 180
 
 
 CAPABILITIES = frozenset({'web.navigate', 'web.read_region', 'web.read_table',
@@ -160,6 +161,7 @@ class Broker:
         self._close_once=threading.Lock()
         self.requests, self.request_keys, self.grants = {}, {}, {}
         self.attempts, self.attempt_keys = {}, {}
+        self.initialization_v3=None
 
     def _valid(self):
         if self.fenced.is_set():
@@ -377,7 +379,7 @@ class Broker:
                 'items':rows,'ttl':ttl_seconds,'state':'pending','created':self.clock(),
                 'setup_context':copy.deepcopy(setup_context),
                 'replacement':replacement,
-                'review_deadline':min(self.clock()+120,self.binding['deadline']),
+                'review_deadline':min(self.clock()+MAX_NATIVE_REVIEW_SECONDS,self.binding['deadline']),
                 'grant_id':None,'fence':threading.Event(),'item_states':{row['item_id']:'pending' for row in rows}}
             self._event('request-created',request_id=identifier_value,request_digest=request['digest'],count=len(rows))
             self.requests[identifier_value] = request
@@ -473,13 +475,21 @@ class Broker:
                     raise ScopeError('decision-invalid')
                 originals = {row['item_id']:row for row in request['items']}
                 selected = {}
+                native_selected={}
+                v3=bool(request.get('setup_context') and request['setup_context'].get('revision')==3)
+                if v3 and self.initialization_v3 is None:
+                    raise ScopeError('decision-invalid')
                 for choice in choices:
-                    if not isinstance(choice,dict) or not {'item_id','max_uses','targets'}<=set(choice) or set(choice)-{'item_id','max_uses','targets','output','semantic_classification'}:
+                    allowed={'item_id','max_uses','targets','output','semantic_classification'}|({'review_ref','edit_revision'} if v3 else set())
+                    if not isinstance(choice,dict) or not {'item_id','max_uses','targets'}<=set(choice) or set(choice)-allowed:
                         raise ScopeError('decision-invalid')
                     name = choice['item_id']
                     if name not in originals or name in selected:
                         raise ScopeError('decision-invalid')
                     original = originals[name]
+                    if v3:
+                        self.initialization_v3.require_review(request_id,name,choice.get('review_ref'),choice.get('edit_revision'))
+                        native_selected[name]={'review_ref':choice['review_ref'],'edit_revision':choice['edit_revision']}
                     uses = integer(choice['max_uses'],1,original['max_uses'])
                     targets = choice['targets']
                     if not isinstance(targets,list) or any(not isinstance(v,str) for v in targets) or len(set(targets)) != len(targets) or not set(targets) <= set(original['targets']):
@@ -517,6 +527,8 @@ class Broker:
                     states[name]='dependency-blocked'
             if request.get('replacement'):
                 return self._accept_replacement(request,selected,states,ttl_seconds)
+            if v3:
+                return self._accept_v3_native(request,selected,states,ttl_seconds,native_selected)
             deadline = min(self.clock()+ttl_seconds,self.binding['deadline'])
             scope_digest = globals()['digest']({'items':selected,'deadline':deadline,'request':request['digest']})
             self._event('decision-recorded',request_id=request_id,approved_scope_digest=scope_digest,
@@ -543,6 +555,41 @@ class Broker:
                     'remaining':{n:r['max_uses'] for n,r in selected.items()},'verified':set(),'revoked_items':set(),'write_reservations':0,'request_id':request_id}
                 request['grant_id']=grant_id
             return self.status(request_id)
+
+    def _accept_v3_native(self,request,selected,states,ttl_seconds,native_selected):
+        deadline=min(self.clock()+ttl_seconds,self.binding['deadline'])
+        scope_digest=digest({'items':selected,'deadline':deadline,'request':request['digest']})
+        grant_id=secrets.token_hex(16) if selected else None
+        self._event('decision-recorded',request_id=request['id'],approved_scope_digest=scope_digest,
+            approved_items=list(selected),ttl_seconds=ttl_seconds)
+        for name in selected:
+            proof=native_selected[name]
+            event=self.initialization_v3.review_audit(request['id'],name,proof['review_ref'],proof['edit_revision'])
+            self._event(event.pop('event'),**event)
+        if selected:
+            self._event('grant-issued',grant_id=grant_id,request_id=request['id'],approved_scope_digest=scope_digest)
+        self._valid()
+        # No publication/fence lock is held over durable journal writes.
+        with self.publication_lock:
+            if (request['fence'].is_set() or self.fenced.is_set() or self.clock()>=request['review_deadline'] or
+                    self.clock()>=deadline or (selected and self._active_count()>=4)):
+                raise ScopeError('decision-invalid')
+            if selected:
+                self.initialization_v3.bind_grant(request['id'],grant_id,[{'item_id':name,
+                    'max_uses':row['max_uses'],'deadline':deadline,**native_selected[name]} for name,row in selected.items()])
+                self.grants[grant_id]={'state':'active','items':selected,'deadline':deadline,'scope_digest':scope_digest,
+                    'setup_context':copy.deepcopy(request['setup_context']),'context_digest':digest(request['setup_context']),
+                    'remaining':{name:row['max_uses'] for name,row in selected.items()},'verified':set(),'revoked_items':set(),
+                    'write_reservations':0,'request_id':request['id']}
+            else:
+                self.initialization_v3.cancel_plan(request['id'])
+            originals={row['item_id']:copy.deepcopy(row) for row in request['items']}
+            for name,row in selected.items():
+                originals[name]['parameters']['approved_semantics']=row['parameters']['approved_semantics']
+            full=len(selected)==len(originals) and all(row==originals[name] for name,row in selected.items())
+            request.update(state='approved' if full else 'partially-approved' if selected else 'rejected',
+                nonce='',item_states=states,grant_id=grant_id)
+        return self.status(request['id'])
 
     def status(self, request_id):
         with self.lock:
@@ -665,7 +712,7 @@ class Broker:
             if confirmation:
                 attempt.update({'nonce':secrets.token_hex(32),
                     'confirmation_digest':digest({'attempt':identifier_value,'scope':row,'binding':self.binding}),
-                    'review_deadline':min(self.clock()+120,grant['deadline'])})
+                    'review_deadline':min(self.clock()+MAX_NATIVE_REVIEW_SECONDS,grant['deadline'])})
             self.attempts[identifier_value]=attempt
             self.attempt_keys[key]=identifier_value
             self._event('execution-reserved',attempt_id=identifier_value,grant_id=grant_id,item_id=item_id,

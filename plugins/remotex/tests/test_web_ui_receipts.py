@@ -81,6 +81,54 @@ def test_shown_receipt_neither_authorizes_nor_restarts_review_time():
     assert calls == [] and not prompt.decided and not prompt.stopped
     assert manifest()['nonce'] not in json.dumps(status)
 
+def test_new_180_second_helper_review_does_not_extend_an_explicitly_shorter_manifest():
+    packet=manifest();packet['wait_seconds']=180
+    prompt,now,_=inert_prompt(packet,data=encoded(receipt(packet=packet)))
+    assert prompt.status()['review_remaining_seconds']==180
+    now[0]+=179
+    prompt._read_ui()
+    assert prompt.status()['review_remaining_seconds']==1 and not prompt.decided
+    now[0]+=2
+    prompt._expire_pending()
+    assert prompt.status()['state']=='closed' and prompt.status()['review_remaining_seconds']==0
+    shorter,_,_=inert_prompt(manifest())
+    assert shorter.status()['review_remaining_seconds']==120
+
+
+def test_notification_receipts_are_separate_non_authorizing_metadata():
+    data=b''.join(encoded(receipt(event, reason)) for event,reason in [
+        ('shown','shown'),('notification','requested'),('notification','shown'),('notification','removed')])
+    prompt,now,calls=inert_prompt(data=data)
+    now[0]+=33
+    prompt._read_ui()
+    status=prompt.status()
+    assert status['state']=='shown' and status['shown'] is True
+    assert status['notification_state']=='removed' and status['review_remaining_seconds']==87
+    assert status['exit_reason'] is None and calls==[] and not prompt.decided
+
+
+@pytest.mark.parametrize('reasons', [('shown',), ('removed',), ('requested','requested'), ('requested','shown','requested')])
+def test_out_of_order_notification_receipts_cannot_change_window_state(reasons):
+    prompt,_,calls=inert_prompt(data=encoded(receipt())+b''.join(encoded(receipt('notification',reason)) for reason in reasons))
+    prompt._read_ui()
+    assert prompt.status()['state']=='shown' and calls==[] and not prompt.decided
+    assert prompt.status()['notification_state'] in {'not-requested','requested','shown'}
+
+
+def test_notification_cannot_claim_shown_before_window_or_after_close():
+    prompt,_,calls=inert_prompt(data=encoded(receipt('notification','requested'))+encoded(receipt('closed','review-expired'))+
+        encoded(receipt('notification','shown')))
+    prompt._read_ui()
+    assert prompt.status()['notification_state']=='not-requested'
+    assert prompt.status()['state']=='closed' and calls==[]
+
+
+def test_notification_creation_failure_is_advisory_without_a_false_request():
+    prompt,_,calls=inert_prompt(data=encoded(receipt())+encoded(receipt('notification','unavailable')))
+    prompt._read_ui()
+    assert prompt.status()['notification_state']=='unavailable'
+    assert prompt.status()['state']=='shown' and not prompt.decided and calls==[]
+
 
 @pytest.mark.parametrize('event,reason,state', [('closed', 'window-closed', 'closed'),
     ('error', 'helper-ui-failed', 'error')])
@@ -180,7 +228,7 @@ def test_request_and_status_expose_shown_without_grant_and_cap_broker_deadline()
     assert 'approval_ui' in result, 'The request hides the native display receipt'
     assert result['approval_ui']['state'] == 'shown'
     assert result['grant_id'] is None and result['allowed_items'] == []
-    service.broker.clock = lambda: 210.0
+    service.broker.clock = lambda: 270.0
     status = service.status(result['request_id'])
     assert status['approval_ui']['review_remaining_seconds'] == 10
     assert status['grant_id'] is None

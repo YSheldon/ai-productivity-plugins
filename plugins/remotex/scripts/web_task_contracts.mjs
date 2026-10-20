@@ -1,8 +1,16 @@
 import {createHash} from 'node:crypto';
 import {normalizeResponseChecks,validateInitializationDescriptor,validateStaticDescriptor} from './web_initialization_contracts.mjs';
+import {parseV3Profile,MAX_REFERENCE_UNITS,MAX_PROPOSAL_UNITS} from './web_request_profiles.mjs';
 
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const ownObject=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(key=>keys.includes(key));
+
+export function publicV3Digest(value){
+  const ordered=part=>Array.isArray(part)?part.map(ordered):part&&typeof part==='object'?
+    Object.fromEntries(Object.keys(part).sort().map(key=>[key,ordered(part[key])])):part;
+  const ascii=JSON.stringify(ordered(value)).replace(/[\u007f-\uffff]/g,ch=>'\\u'+ch.charCodeAt(0).toString(16).padStart(4,'0'));
+  return createHash('sha256').update(ascii,'ascii').digest('hex');
+}
 
 export function evidence(value){
   if(!Array.isArray(value)||!value.length||value.length>8)throw new Error('request-contract-unavailable');
@@ -76,6 +84,7 @@ export function taskContracts(scopes,declarations,network,drafts){
 }
 
 export function setupContracts(setup,network){
+  if(setup?.revision===3)return setupContractsV3(setup,network);
   if(setup?.revision!==undefined)return setupContractsV2(setup,network);
   if(!ownObject(setup,['phase','network_refs','evidence','max_uses'])||
     !['bootstrap','login-once'].includes(setup.phase)||setup.phase!==network.phase||
@@ -95,6 +104,50 @@ export function setupContracts(setup,network){
     items.push(resolved.row);contracts[id]=resolved.contract;
   }
   return {ok:true,items,contracts};
+}
+
+function setupContractsV3(setup,network){
+  const invalid=()=>{throw new Error('request-invalid');},hex=value=>typeof value==='string'&&/^[a-f0-9]{32}$/.test(value);
+  if(!ownObject(setup,['revision','phase','requests'])||setup.revision!==3||!['bootstrap','login-once'].includes(setup.phase)||
+    setup.phase!==network.phase||!hex(network.preauthLifecycle)||!Array.isArray(setup.requests)||
+    !setup.requests.length||setup.requests.length>32||typeof network.resolveV3!=='function')invalid();
+  const refs=new Set(),items=[],contracts={},private_initialization={},prerequisites=[];
+  let units=0,viewBytes=0;
+  const phases=['bootstrap','login-once'];
+  for(const [index,row] of setup.requests.entries()){
+    if(!ownObject(row,['network_ref','purpose','representation_ref','literal_review_refs','max_uses','response_checks','evidence'])||
+      row.purpose!=='initialization-read'||!hex(row.network_ref)||refs.has(row.network_ref)||!hex(row.representation_ref)||
+      !Array.isArray(row.literal_review_refs)||!row.literal_review_refs.length||row.literal_review_refs.length>MAX_REFERENCE_UNITS||
+      row.literal_review_refs.some(ref=>!hex(ref))||new Set(row.literal_review_refs).size!==row.literal_review_refs.length)invalid();
+    refs.add(row.network_ref);
+    const uses=row.max_uses??2;if(!Number.isInteger(uses)||uses<1||uses>10)invalid();
+    const proof=evidence(row.evidence),checks=normalizeResponseChecks(row.response_checks);
+    const source=network.resolveV3(row.network_ref,row.representation_ref,row.literal_review_refs);
+    const view=parseV3Profile(source.capture,source.profile_id,network.parseTree);
+    if(source.representation_ref!==row.representation_ref||view.unit_count!==row.literal_review_refs.length||
+      JSON.stringify(source.literal_review_refs)!==JSON.stringify(row.literal_review_refs))invalid();
+    units+=view.unit_count;viewBytes+=Buffer.byteLength(JSON.stringify(view));
+    const id=`setup.network.${index+1}`;
+    // These public digests contain only opaque owned refs and caller-visible scope, never capture bytes.
+    const prerequisite_id=publicV3Digest({preauth_lifecycle:network.preauthLifecycle,network_ref:row.network_ref,
+      representation_ref:row.representation_ref,literal_review_refs:row.literal_review_refs,response_checks:checks});
+    const contract={revision:3,phase:setup.phase,parent_id:null,semantics:'initialization-read',targets:[],purpose:'initialization-read',
+      phase_applicability:phases,preauth_lifecycle:network.preauthLifecycle,required:true,response_checks:checks,prerequisite_id,
+      intent_ref:row.representation_ref,profile_id:source.profile_id,network_ref:row.network_ref,
+      representation_ref:row.representation_ref,literal_review_refs:structuredClone(row.literal_review_refs),evidence:proof};
+    const preview=JSON.stringify(contract);
+    if(Buffer.byteLength(preview)>4096)throw new Error('setup-plan-capacity-required');
+    const item={item_id:id,capability:'web.page_step',fingerprint:publicV3Digest(contract),page:'#/',max_uses:uses,
+      depends_on:[],targets:[],parameters:{network_ref:id,review_kind:'initialization-read'},output:{rows:0,columns:0,bytes:0},
+      display:{label:'Initialization POST (private scope)',preview},
+      effect:{class:'task-bounded',fields:[],digest:publicV3Digest({scope:contract,semantics:'initialization-read',targets:[]})}};
+    items.push(item);contracts[id]=contract;private_initialization[id]=structuredClone(source.capture);prerequisites.push(prerequisite_id);
+  }
+  const result={ok:true,items,contracts,setup_revision:3,preauth_lifecycle:network.preauthLifecycle,
+    phase_applicability:phases,prerequisites,private_initialization};
+  if(units>MAX_PROPOSAL_UNITS||items.reduce((sum,row)=>sum+row.max_uses,0)>200||
+    Buffer.byteLength(JSON.stringify(result))+viewBytes>32768)throw new Error('setup-plan-capacity-required');
+  return result;
 }
 
 function setupContractsV2(setup,network){

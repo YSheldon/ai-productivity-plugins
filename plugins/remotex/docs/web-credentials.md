@@ -123,7 +123,9 @@ Task authorization requests default to and are capped at `ttl_seconds=43200`.
 The operator can reduce this in the local window. The actual grant is still
 capped by the original session deadline, covering acquisition and all scope/use
 checks. It is not a rolling 12-hour renewal and does not extend an older grant.
-The approval window remains 120 seconds; high-risk action-time tickets remain
+Since 0.6.9, new approval windows last at most 180 seconds; shorter original
+deadlines and existing requests are not extended. Blocked descriptor refs retain
+their separate 120-second TTL. High-risk action-time tickets remain
 one use and at most 30 seconds. Server-side login expiry can still occur earlier.
 
 New sessions deny startup traffic until native contract review. In 0.6.8 use
@@ -134,6 +136,16 @@ approval still controls sign-in; unsupported authentication encodings are not
 decoded or retried. See [Initialization reads](web-task-authorization.md#revision-2-initialization-reads)
 and [static replacement](web-task-authorization.md#bounded-static-grant-replacement)
 for four-slot planning without renewal or wider network access.
+
+Version 0.6.9 adds [revision-3 public-reference review](web-task-authorization.md#revision-3-public-reference-review)
+for explicit supported initialization encodings and public fixed constants that
+need independent role/effect review. It is not a business endpoint whitelist or
+arbitrary POST permission. Actual worker and native protocol compatibility is
+checked before credential access; inspect loaded status after reconnecting only
+an idle consumer. Do not copy cookies or adopt a different browser session.
+One native notification may focus the same pending review window, never approve,
+send credentials or restart its timer; Windows suppression leaves native approval
+required and does not cause a system-settings change.
 
 The helper receives credentials once through an anonymous stdin pipe. Secrets
 are not passed through argv, environment, stdout/stderr or receipt files. A

@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {normalizeResponseChecks} from './web_initialization_contracts.mjs';
+import {decodeV3Capture} from './web_request_profiles.mjs';
 
 export class WorkerAuthority {
   constructor({emit,onRevoke,startup}){
@@ -161,18 +162,34 @@ export class WorkerAuthority {
 
   checkNetwork(request,options={}){
     if(!request||request.kind!=='network')return Promise.resolve(false);
+    if(request.version!==undefined){
+      try{
+        if(request.version!==3||Object.keys(request).sort().join(',')!=='attempt_id,capture,kind,phase,startup,version'||
+          request.attempt_id!==null||!['bootstrap','login-once'].includes(request.phase))throw new Error();
+        decodeV3Capture(request.capture);
+      }catch{return Promise.resolve(false);}
+    }
     if(this._isStatic(request))return this.check(request,options);
     if(!request.startup)return this.check(request,options);
     let context;
     try{context=this.startup?.();this._bindContext(context);}catch{return Promise.resolve(false);}
     if(!this._current(context)||request.phase!==context.phase||options.signal?.aborted||options.isCancelled?.()===true)
       return Promise.resolve(false);
-    return this._send(request,options.signal,context);
+    if(request.version===3&&request.capture.origin!==this.contextOrigin)return Promise.resolve(false);
+    const signal=options.signal?AbortSignal.any([context.signal,options.signal]):context.signal;
+    return this._send(request,signal,context);
   }
 
   consumeNetworkReceipt(receipt,expected){
     const row=this.receipts.get(receipt);
     this.receipts.delete(receipt);
+    if(receipt?.kind==='initialization-permit-v3'){
+      if(!row||!this._current(row.context)||Date.now()>=receipt.expires_at_ms||performance.now()>=row.monotonicDeadline||
+        !expected||Object.keys(expected).sort().join(',')!=='binding_digest,capture,document_id,generation,preauth_lifecycle,resume_id'||
+        ['binding_digest','preauth_lifecycle','resume_id','document_id','generation'].some(key=>receipt[key]!==expected[key])||
+        JSON.stringify(expected.capture)!==JSON.stringify(row.request.capture))throw new Error('scope-mismatch');
+      return Object.freeze({...receipt,dispatch_deadline:row.monotonicDeadline});
+    }
     if(!row||!this._current(row.context)||Date.now()>=receipt.expires_at_ms||performance.now()>=row.monotonicDeadline||
       !expected||Object.keys(expected).sort().join(',')!=='binding_digest,descriptor_digest,document_id,generation,preauth_lifecycle,resume_id'||
       Object.entries(expected).some(([key,value])=>receipt[key]!==value))throw new Error('scope-mismatch');
@@ -180,6 +197,7 @@ export class WorkerAuthority {
   }
 
   _typedReply(frame){
+    if(frame.permit?.kind==='initialization-permit-v3')return this._typedReplyV3(frame);
     if(Object.keys(frame).sort().join(',')!=='allowed,authorization_reply,permit'||frame.allowed!==true||
       typeof frame.authorization_reply!=='string'||!/^[a-f0-9]{32}$/.test(frame.authorization_reply))return false;
     const entry=this.pending.get(frame.authorization_reply),p=frame.permit;
@@ -195,6 +213,27 @@ export class WorkerAuthority {
     try{checks=normalizeResponseChecks(p.response_checks);}catch{return false;}
     const receipt=Object.freeze({...p,expires_at_ms:Math.min(p.expires_at_ms,entry.deadline),response_checks:checks});
     this.receipts.set(receipt,{context:entry.context,monotonicDeadline:entry.monotonicDeadline});
+    this._settle(frame.authorization_reply,receipt);return true;
+  }
+
+  _typedReplyV3(frame){
+    if(Object.keys(frame).sort().join(',')!=='allowed,authorization_reply,permit'||frame.allowed!==true||
+      typeof frame.authorization_reply!=='string'||!/^[a-f0-9]{32}$/.test(frame.authorization_reply))return false;
+    const entry=this.pending.get(frame.authorization_reply),p=frame.permit;
+    if(!entry){this._pruneRetired();return !this.retired.get(frame.authorization_reply)?.batch&&this.retired.delete(frame.authorization_reply);}
+    const keys=['kind','version','binding_digest','grant_id','item_id','intent_ref','intent_commitment','prerequisite_id',
+      'receipt_id','preauth_lifecycle','resume_id','document_id','generation','check_id','expires_at_ms','response_checks','permit_commitment'];
+    if(!entry.context||entry.batch||entry.request?.version!==3||!this._current(entry.context)||
+      !p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).sort().join(',')!==keys.sort().join(',')||
+      p.version!==3||p.check_id!==frame.authorization_reply||
+      ['grant_id','intent_ref','receipt_id'].some(key=>typeof p[key]!=='string'||!/^[a-f0-9]{32}$/.test(p[key]))||
+      ['intent_commitment','prerequisite_id','permit_commitment'].some(key=>typeof p[key]!=='string'||!/^[a-f0-9]{64}$/.test(p[key]))||
+      typeof p.item_id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(p.item_id)||
+      !Number.isSafeInteger(p.expires_at_ms)||p.expires_at_ms<=Date.now()||p.expires_at_ms>entry.context.deadline||
+      ['binding_digest','preauth_lifecycle','resume_id','document_id','generation'].some(key=>p[key]!==entry.context[key]))return false;
+    let checks;try{checks=normalizeResponseChecks(p.response_checks);}catch{return false;}
+    const receipt=Object.freeze({...p,expires_at_ms:Math.min(p.expires_at_ms,entry.deadline),response_checks:checks});
+    this.receipts.set(receipt,{context:entry.context,request:entry.request,monotonicDeadline:entry.monotonicDeadline});
     this._settle(frame.authorization_reply,receipt);return true;
   }
 
@@ -222,6 +261,7 @@ export class WorkerAuthority {
       typeof frame.authorization_reply==='string'&&/^[a-f0-9]{32}$/.test(frame.authorization_reply)){
       if(this.pending.has(frame.authorization_reply)){
         if(this.pending.get(frame.authorization_reply).batch)return false;
+        if(this.pending.get(frame.authorization_reply).request?.version===3&&frame.allowed===true)return false;
         this._settle(frame.authorization_reply,frame.allowed);return true;
       }
       this._pruneRetired();

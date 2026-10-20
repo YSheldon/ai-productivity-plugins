@@ -18,6 +18,32 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
+Version `0.6.9` adds revision-3 independent public-reference review for exact
+prelogin requests, including public fixed constants in sensitive-looking fields.
+Only the original native window can attest public data, non-auth role and
+initialization effects. Frozen wire bytes, reviewed headers, original cookie
+context and response checks remain bound; no arbitrary POST is permitted.
+New reviews last at most **180 seconds**. A one-shot Windows notification only
+focuses the same pending window and never approves or extends it. Complete
+reference review is capped at 32 units/request, 96/proposal and 32 KiB; four
+active grants and the separate 120-second observation TTL are unchanged.
+See [Public-reference review](docs/web-task-authorization.md#revision-3-public-reference-review).
+
+Use **Load Public Review** in the native reference dialog to choose an independently
+prepared `RemoteXPublicReview/v1` JSON file; no manual JSON copying is needed.
+Inspect the summary, then make the three initially unchecked public/non-auth,
+effects/response-check and original prelogin-cookie confirmations as applicable.
+**Compare Public Reference**, return with **Back to Request**, review/apply the
+recommendation, then separately **Approve Selected**. Full reference and expert
+fields remain available. Loading replaces proposed values and clears every
+confirmation and comparison proof; it grants nothing and never resets the timer.
+
+Each approval item also shows a recommended effect and its reason. After reviewing
+the scope, use **Apply Recommendations to Checked** to classify mixed known
+items individually, then **Approve Selected**. Unknown kinds stay unresolved;
+the recommendation never supplies public-reference attestations. Typed page reads
+show **Read only (fixed)** instead of an ambiguous Not applicable label.
+
 Version `0.6.8` adds native **Initialization Read** review for exact non-secret
 pre-login JSON/form POSTs, with required response checks before credential
 insertion. Bootstrap remains static GET/HEAD only; sign-in and page-content

@@ -15,6 +15,7 @@ import {guardRoute, launchEdge} from '../scripts/web_login_worker.mjs';
 import * as worker from '../scripts/web_login_worker.mjs';
 import {readFrames} from '../scripts/web_control.mjs';
 import * as transport from '../scripts/web_tls.mjs';
+import {captureInitializationIntent,privateIntentFrame,disposeInitializationIntent,createOwnedCookieContext} from '../scripts/web_outgoing_intent.mjs';
 
 async function fixture(t, handler, handshakeGate, {san=false}={}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'remotex-tls-test-'));
@@ -55,6 +56,87 @@ function routeFor(url, body='synthetic-secret-canary') {
   };
   return {route,state,failed:code=>{state.code=code;}};
 }
+
+async function v3Intent(origin,body='{"mode":"public"}'){
+  let reads=0;
+  const request={url:()=>origin+'/bootstrap',method:()=> 'POST',resourceType:()=> 'xhr',
+    postDataBuffer:()=>{reads++;return Buffer.from(body);},
+    headersArray:async()=>[{name:'Content-Type',value:'application/json'}]};
+  const intent=await captureInitializationIntent(request,{origin,cookie_context:null,protection_refs:[],secrets:[]});
+  request.postDataBuffer=()=>{throw new Error('The transport must not reread the browser');};
+  return {intent,reads:()=>reads};
+}
+
+test('v3 transport sends the committed owned bytes without rebuilding from Request',async t=>{
+  assert.equal(typeof transport.initializationIntentResponse,'function');
+  const f=await fixture(t,(_req,res)=>{res.writeHead(200,{'content-type':'application/json'});res.end('{"ready":true}');});
+  const c=await v3Intent(f.origin);
+  t.after(()=>disposeInitializationIntent(c.intent));
+  const original=privateIntentFrame(c.intent);
+  const result=await transport.initializationIntentResponse(c.intent,f.origin,f.fingerprint,undefined,Date.now()+10000,()=>{});
+  assert.equal(result.status,200);assert.equal(c.reads(),1);
+  assert.equal(Buffer.from(original.body_b64,'base64').toString(),f.evidence.bodies[0]);
+  assert.equal(f.evidence.requests,1);
+});
+
+test('v3 pin rejection and post-certificate revocation send no HTTP',async t=>{
+  assert.equal(typeof transport.initializationIntentResponse,'function');
+  const f=await fixture(t);const c=await v3Intent(f.origin);
+  t.after(()=>disposeInitializationIntent(c.intent));
+  await assert.rejects(()=>transport.initializationIntentResponse(c.intent,f.origin,'0'.repeat(64),undefined,Date.now()+10000,()=>{}),/certificate-pin-mismatch/);
+  await assert.rejects(()=>transport.initializationIntentResponse(c.intent,f.origin,f.fingerprint,undefined,Date.now()+10000,()=>{throw new Error('scope-mismatch');}),/scope-mismatch/);
+  assert.equal(f.evidence.applicationBytes,0);assert.equal(f.evidence.requests,0);
+});
+
+test('v3 post-certificate asynchronous guard completes before any HTTP attachment',async t=>{
+  const f=await fixture(t,(_req,res)=>{res.writeHead(200,{'content-type':'application/json'});res.end('{"ready":true}');});
+  const c=await v3Intent(f.origin);t.after(()=>disposeInitializationIntent(c.intent));
+  let entered,release;const started=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  t.after(()=>release());
+  const guarded=gate.then(()=>{throw new Error('scope-mismatch');});guarded.catch(()=>{});
+  const pending=transport.initializationIntentResponse(c.intent,f.origin,f.fingerprint,undefined,Date.now()+10000,()=>{entered();return guarded;});
+  pending.catch(()=>{});
+  await started;await sleep(30);
+  const before=f.evidence.requests;release();
+  assert.equal(before,0,'A pending private guard must not send HTTP');
+  await assert.rejects(pending,/scope-mismatch/);
+  assert.equal(f.evidence.applicationBytes,0);
+});
+
+test('v3 cookie attribute changes are rechecked after TLS without rewriting the frozen Cookie',async t=>{
+  const f=await fixture(t,(_req,res)=>{res.writeHead(200,{'content-type':'application/json'});res.end('{"ready":true}');});
+  let sameSite='Strict';
+  const resolver=createOwnedCookieContext({cookies:async()=>[{name:'preauth',value:'private-cookie-fixture',
+    domain:'127.0.0.1',path:'/',expires:-1,httpOnly:true,secure:true,sameSite}]},f.origin);
+  const request={url:()=>f.origin+'/bootstrap',method:()=> 'POST',resourceType:()=> 'xhr',
+    postDataBuffer:()=>Buffer.from('{"mode":"public"}'),headersArray:async()=>[
+      {name:'Content-Type',value:'application/json'},{name:'Cookie',value:'preauth=private-cookie-fixture'}]};
+  const intent=await captureInitializationIntent(request,{origin:f.origin,cookie_context:resolver,protection_refs:[],secrets:[]});
+  t.after(()=>{disposeInitializationIntent(intent);resolver.dispose();});
+  sameSite='Lax';
+  await assert.rejects(()=>transport.initializationIntentResponse(intent,f.origin,f.fingerprint,undefined,Date.now()+10000,()=>{}),/scope-mismatch/);
+  assert.equal(f.evidence.requests,0);assert.equal(f.evidence.applicationBytes,0);
+});
+
+test('the production route dispatches v3 through its frozen intent without another browser body read',async t=>{
+  const f=await fixture(t,(_req,res)=>{res.writeHead(200,{'content-type':'application/json'});res.end('{"ready":true}');});
+  const original={url:()=>f.origin+'/bootstrap',method:()=> 'POST',resourceType:()=> 'xhr',
+    postDataBuffer:()=>Buffer.from('{"mode":"public"}'),headersArray:async()=>[{name:'Content-Type',value:'application/json'}]};
+  const intent=await captureInitializationIntent(original,{origin:f.origin,cookie_context:null,protection_refs:[],secrets:[]});
+  original.postDataBuffer=()=>{throw new Error('No repeated body read');};
+  const ready=[];let fulfilled=null;
+  const completed=()=>disposeInitializationIntent(intent);
+  completed.intent=intent;completed.checkDispatch=()=>{};completed.startupDeadline=Date.now()+45000;
+  completed.initialization={kind:'initialization-permit-v3',expires_at_ms:Date.now()+9000,dispatch_deadline:performance.now()+9000,
+    response_checks:[{pointer:'/ready',test:'equals-boolean',expected:true}]};
+  const require=createRequire(import.meta.url),{parseTree}=require('../scripts/web-runtime/node_modules/jsonc-parser');
+  const policy={authorize:async()=>true,beginForwarding:()=>completed,parseTree,
+    startupState:{forward(){},check(){},response(_receipt,result){ready.push(result.ready);}}};
+  const route={request:()=>original,abort:async()=>{},fulfill:async response=>{fulfilled=response;}};
+  await guardRoute(route,f.origin,()=>{},f.fingerprint,undefined,undefined,policy);
+  assert.equal(fulfilled?.status,200);assert.deepEqual(ready,[true]);assert.equal(f.evidence.requests,1);
+  assert.throws(()=>privateIntentFrame(intent));
+});
 
 test('initialization transport enforces a streaming64KiB response ceiling',async t=>{
   assert.equal(typeof transport.initializationResponse,'function','Bounded initialization transport is missing');

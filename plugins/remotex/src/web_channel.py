@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 import remotex_core as core
+from web_request_profiles import decode_v3_capture
 
 
 class Channel:
@@ -65,14 +66,33 @@ class Channel:
                 if isinstance(value,dict) and set(value)=={'event','id','request'} and value['event']=='authorization-check':
                     if not isinstance(value['id'],str) or re.fullmatch(r'[a-f0-9]{32}',value['id']) is None or not isinstance(value['request'],dict):
                         break
+                    request=value['request']
+                    v3='version' in request or 'capture' in request
+                    if v3:
+                        startup=request.get('startup')
+                        if (len(line)>32768 or set(request)!={'kind','version','phase','attempt_id','capture','startup'} or
+                                request['kind']!='network' or type(request['version']) is not int or request['version']!=3 or
+                                request['phase'] not in {'bootstrap','login-once'} or request['attempt_id'] is not None or
+                                not isinstance(startup,dict) or set(startup)!={'preauth_lifecycle','resume_id','document_id','generation'} or
+                                type(startup['generation']) is not int or not 0<=startup['generation']<=9007199254740991 or
+                                any(not isinstance(startup[k],str) or re.fullmatch('[a-f0-9]{32}',startup[k]) is None
+                                    for k in ('preauth_lifecycle','resume_id','document_id'))):
+                            break
+                        decode_v3_capture(request['capture'])
+                        if request['capture']['origin']!=self.config.get('origin'):
+                            break
                     allowed=False
                     if value['request'].get('kind')=='network' and callable(self.authorize_network):
                         try:
                             reply=self.authorize_network(value['request'],value['id'])
                             if isinstance(reply,dict) and set(reply)=={'allowed','permit'} and reply['allowed'] is True and isinstance(reply['permit'],dict):
-                                self._send({'authorization_reply':value['id'],**reply})
-                                continue
-                            allowed=reply is True
+                                if v3 and (reply['permit'].get('kind')!='initialization-permit-v3' or reply['permit'].get('version')!=3 or
+                                        reply['permit'].get('check_id')!=value['id']):
+                                    reply=False
+                                else:
+                                    self._send({'authorization_reply':value['id'],**reply})
+                                    continue
+                            allowed=reply is True and not v3
                         except Exception:
                             allowed=False
                         self._send({'authorization_reply':value['id'],'allowed':allowed})

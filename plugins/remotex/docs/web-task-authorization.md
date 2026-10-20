@@ -16,7 +16,8 @@ Version 0.6.8 adds explicitly reviewed pre-login Initialization Read POSTs and
 bounded replacement of revision-2 static grants. Bootstrap remains GET/HEAD
 only; ordinary Login and authenticated Read approvals remain separate.
 Version 0.6.9 adds independent public-reference review with exact frozen egress,
-180-second new reviews and non-authorizing native notification hints.
+180-second new reviews, non-authorizing native notification hints and per-item
+effect recommendations.
 For an interactive
 Windows regression, set `REMOTEX_TEST_NATIVE_APPROVAL=1` when running
 `plugins/remotex/tests/test_web_approval.py`. Its synthetic helper uses no saved
@@ -409,7 +410,8 @@ are required where indicated. Real secrets must never be entered here.
 
 **Compare Public Reference** is a bounded private comparison, not approval. Edits
 invalidate its proof. Only a complete current match enables **Approve Selected**;
-Select All and Apply to Checked cannot create reference judgments. Partial
+Select All, Apply to Checked and Apply Recommendations to Checked cannot create
+reference judgments. Partial
 approval leaves all declared prerequisites required. The original supervisor
 must durably commit and report active authority before explicit UI resume.
 
@@ -465,9 +467,14 @@ account, request digest, requested operations and details. Select items/targets,
 lower uses/output/TTL as needed, and choose **Approve Selected**. **Select All**
 and **Clear Selection** change only the approval checkboxes. To classify a
 compatible checked batch, explicitly choose an **Effect Review** value and use
-**Apply to Checked**. Mixed or unknown effects refuse the whole update; review
-those rows separately. Non-network rows stay Not applicable. Neither batch
-control grants authority or sends a decision; final approval is still separate.
+**Apply to Checked**. Mixed or unknown effects refuse this single-class update;
+review those rows separately. In 0.6.9, **Apply Recommendations to Checked** applies
+each selected network item's own recommended classification, including mixed
+known kinds. Unknown or ambiguously bound items refuse the entire recommendation
+update. Neither command checks additional rows or sends a decision.
+Typed reads show **Read only (fixed)**; typed navigation/input/business actions
+show their own fixed action labels. These cells are not editable network-effect
+choices. Final approval is still separate.
 The read-only Scope column and its tooltip show the sanitized request label,
 while full details remain available. The countdown shows the existing
 180-second maximum review deadline, not the separately bounded lifetime after approval.
@@ -476,7 +483,8 @@ itself.
 
 Network effects start **Unreviewed**, not implicitly read-only because their
 parent is a navigation/query control. The operator must independently inspect
-the effect/evidence and select the matching **Effect Review** classification.
+the effect/evidence and select the matching **Effect Review** classification,
+manually or with the recommendation command.
 A proposed business write cannot be classified as a read to avoid its draft,
 targets, uncertainty journal or final confirmation. Unknown effects stay denied;
 selecting Business Write for a non-business proposal requires a new matching
@@ -500,8 +508,17 @@ than arbitrary predicates or endpoint/method wildcards.
 The Effect Review dropdown shows an adjacent explanation immediately. Selecting
 a grid row shows that row's current classification above its full details;
 changing the batch dropdown does not classify that row or approve it. Compatible
-checked rows change only when **Apply to Checked** is used. Help wraps at narrower
+checked rows change only when **Apply to Checked** or **Apply Recommendations to
+Checked** is used. Help wraps at narrower
 window widths without covering the commands.
+
+The read-only **Recommendation** column shows the proposed category from the
+original structured request. Its tooltip and selected-row explanation state why
+it is suggested. Recommendations do not infer safety from a URL, method or page
+label, and do not establish that the server has no side effects. Review the
+evidence before using **Apply Recommendations to Checked**, then separately
+**Approve Selected**. Public-reference attestations/comparison, write previews,
+one-use confirmation, counts and deadlines retain their existing checks.
 
 | Classification | Meaning |
 | --- | --- |
@@ -511,7 +528,9 @@ window widths without covering the commands.
 | Login | Exact reviewed sign-in exchanges for the bound site/account, not business permission |
 | Read | Reviewed information retrieval without business changes; the HTTP method alone is not proof |
 | Business Write | Exact target/change preview required; high-risk operations additionally need one-use confirmation |
-| Not applicable | Non-network item with no network-effect classification; explicit approval is still required |
+| Read only (fixed) | Typed region/table/field/result read with bounded output; no network-effect choice is needed, but explicit approval is required |
+| Navigation / Page action / Field input / Business action (fixed) | The specific typed action, not a read guarantee; any resulting network traffic still needs its own authorization |
+| Needs review | Unknown type; no recommendation is available |
 
 Hover over **Uses**, **Rows**, **Columns** or **Bytes** to inspect the execution or
 read-output limit. **Lifetime (seconds)** bounds the authorization represented by

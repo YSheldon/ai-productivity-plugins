@@ -133,6 +133,119 @@ try {
     [Console]::Error.WriteLine('ui-stage: scenario-start')
     [Console]::SetOut($captured)
     switch ($Scenario) {
+        { $_ -in @('recommend-mixed','recommend-unknown','recommend-fixed-read','recommend-fixed-action','recommend-v3-proof','recommend-unchecked','recommend-binding','recommend-display-tamper') } {
+            $fixture = New-Fixture -Kinds @('bootstrap','login','initialization-read','unclassified','write','')
+            $fixture.Items[5].capability = 'web.read_region'
+            if ($Scenario -eq 'recommend-unknown') { $fixture.Items[1].parameters.review_kind = 'future-effect' }
+            if ($Scenario -eq 'recommend-fixed-action') { $fixture.Items[5].capability = 'web.business_action' }
+            if ($Scenario -eq 'recommend-v3-proof') {
+                $fixture.Grid.Dispose(); $fixture = New-Fixture -Kinds @('initialization-read')
+                . (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\web_reference_review.ps1')
+            }
+            $script:manifest = [pscustomobject]@{
+                request_id=('a'*32);nonce=('b'*64);request_digest=('c'*64)
+                binding=[pscustomobject]@{origin='https://console.example';account='operator'}
+                items=$fixture.Items;ttl_seconds=300;wait_seconds=180
+            }
+            $script:v3 = $Scenario -eq 'recommend-v3-proof'
+            $script:decisionSent=$false; $script:decided=$false; $script:approved=$false
+            $script:loadingTargets=$false; $script:selectedId=$null; $script:targetSelections=@{}
+            $script:v3ReviewStarted=[Diagnostics.Stopwatch]::StartNew()
+            if ($script:v3) {
+                $state=New-V3ReferenceState -RequestId $manifest.request_id -ItemId 'item.0' -UnitCount 5
+                $script:v3States=@{'item.0'=$state}
+            }
+            . (Get-NativeFormConstruction)
+            $before=$manifest | ConvertTo-Json -Depth 24 -Compress
+            Assert-True ($recommendButton -is [Windows.Forms.Button]) 'No per-item recommendation command'
+            Assert-True ($grid.Columns.Contains('Recommendation') -and $grid.Columns['Recommendation'].ReadOnly) 'Recommendations are not visible/read-only'
+            Assert-True (@($grid.Rows | Where-Object { $_.Cells['Approve'].Value -eq $true }).Count -eq 0) 'Recommendations selected items'
+            Assert-True ($grid.Rows[0].Cells['Effect Review'].Value -ceq 'Unreviewed') 'Display accepted a recommendation automatically'
+            switch ($Scenario) {
+                'recommend-mixed' {
+                    Invoke-TestClick $selectAllButton
+                    Invoke-TestClick $recommendButton
+                    $expected=@('Bootstrap','Login','Initialization Read','Read','Business Write','Read only (fixed)')
+                    for ($i=0;$i -lt $expected.Count;$i++) {
+                        Assert-True ($grid.Rows[$i].Cells['Effect Review'].Value -ceq $expected[$i]) 'Mixed recommendation applied another item classification'
+                    }
+                    Assert-True ($captured.ToString().Length -eq 0 -and -not $script:decided) 'Applying recommendations emitted authority'
+                    Invoke-TestClick $approveButton
+                    $decision=$captured.ToString() | ConvertFrom-Json
+                    Assert-True ($decision.choices.Count -eq 6) 'Final explicit approval lost items'
+                    $semantics=@('bootstrap','login','initialization-read','read','write')
+                    for ($i=0;$i -lt $semantics.Count;$i++) {
+                        Assert-True ($decision.choices[$i].semantic_classification -ceq $semantics[$i]) 'Final decision changed a recommended network effect'
+                    }
+                    Assert-True (-not ($decision.choices[5].PSObject.Properties.Name -contains 'semantic_classification')) 'Typed read gained a network classification'
+                    Assert-True (-not $batchTools.Enabled) 'Active grant left recommendations editable'
+                    $null=$captured.GetStringBuilder().Clear()
+                }
+                'recommend-unknown' {
+                    Invoke-TestClick $selectAllButton
+                    $result=Set-CheckedEffectRecommendations -Grid $grid -Items $manifest.items
+                    Assert-True (-not $result.ok -and $result.changed -eq 0) 'Unknown recommendation silently inherited an effect'
+                    Assert-True ($grid.Rows[1].Cells['Recommendation'].Value -ceq 'Needs review') 'Unknown type is not visibly unresolved'
+                    Assert-True ($grid.Rows[0].Cells['Effect Review'].Value -ceq 'Unreviewed') 'Unknown batch partially changed reviewed state'
+                }
+                'recommend-fixed-read' {
+                    Assert-True ($grid.Rows[5].Cells['Effect Review'].Value -ceq 'Read only (fixed)') 'Typed read still has an ambiguous label'
+                    Assert-True ($grid.Rows[5].Cells['Effect Review'].ReadOnly) 'Typed read classification is editable'
+                    $grid.ClearSelection(); $grid.Rows[5].Selected=$true
+                    Assert-True ($rowHint.Text.Contains('No network-effect choice') -and $rowHint.Text.Contains('approval')) 'Typed read explanation omits its meaning or approval'
+                }
+                'recommend-fixed-action' {
+                    Assert-True ($grid.Rows[5].Cells['Effect Review'].Value -ceq 'Business action (fixed)') 'A typed business action was labelled as a read'
+                    Assert-True ($grid.Rows[5].Cells['Effect Review'].ReadOnly) 'Typed action gained an editable network classification'
+                    foreach ($capability in @('web.navigate','web.page_step','web.query_input','web.business_action','web.unknown')) {
+                        $fixture.Items[5].capability=$capability
+                        $recommendation=Get-ApprovalRecommendation $fixture.Items[5]
+                        Assert-True ($recommendation.label -cne 'Read only (fixed)' -and $null -eq $recommendation.classification) 'A non-read action inherited read semantics'
+                    }
+                    $fixture.Items[5].capability='web.business_action'
+                }
+                'recommend-v3-proof' {
+                    Invoke-TestClick $selectAllButton
+                    foreach ($phase in @('unreviewed','pending','stale')) {
+                        $state.pending=$phase -eq 'pending'
+                        if ($phase -eq 'stale') {
+                            $state.status='ready'; $state.review_ref='e'*32; $state.matched_revision=1; $state.edit_revision=2
+                        }
+                        $proofBefore=$state | ConvertTo-Json -Compress
+                        Invoke-TestClick $recommendButton
+                        Update-V3ApprovalButton
+                        Assert-True (-not $approveButton.Enabled -and -not (Test-V3ReferenceDecisionReady $state)) 'Recommendation bypassed independent public-reference proof'
+                        Assert-True (($state | ConvertTo-Json -Compress) -ceq $proofBefore) 'Recommendation fabricated or changed a reference proof'
+                    }
+                }
+                'recommend-unchecked' {
+                    $grid.Rows[0].Cells['Approve'].Value=$true
+                    Invoke-TestClick $recommendButton
+                    Assert-True ($grid.Rows[0].Cells['Effect Review'].Value -ceq 'Bootstrap') 'Checked recommendation was not applied'
+                    Assert-True ($grid.Rows[1].Cells['Effect Review'].Value -ceq 'Unreviewed') 'Unchecked item changed'
+                    Assert-True ($grid.Rows[1].Cells['Approve'].Value -eq $false) 'Recommendation checked another item'
+                }
+                'recommend-binding' {
+                    $grid.Rows[0].Cells['Approve'].Value=$true
+                    $grid.Rows[1].Cells['Approve'].Value=$true
+                    $duplicate=@($manifest.items)+@($manifest.items[1])
+                    $result=Set-CheckedEffectRecommendations -Grid $grid -Items $duplicate
+                    Assert-True (-not $result.ok -and $result.changed -eq 0) 'Ambiguous item binding was accepted'
+                    $missing=@($manifest.items | Where-Object { $_.item_id -cne 'item.1' })
+                    $result=Set-CheckedEffectRecommendations -Grid $grid -Items $missing
+                    Assert-True (-not $result.ok -and $result.changed -eq 0) 'Missing item binding was accepted'
+                    Assert-True ($grid.Rows[0].Cells['Effect Review'].Value -ceq 'Unreviewed') 'Failed binding partially classified another row'
+                }
+                'recommend-display-tamper' {
+                    $grid.Rows[4].Cells['Approve'].Value=$true
+                    $grid.Rows[4].Cells['Recommendation'].Value='Read'
+                    Invoke-TestClick $recommendButton
+                    Assert-True ($grid.Rows[4].Cells['Effect Review'].Value -ceq 'Business Write') 'Mutable display data overrode the source effect'
+                }
+            }
+            Assert-True (($manifest | ConvertTo-Json -Depth 24 -Compress) -ceq $before) 'Recommendations changed scope or limits'
+            Assert-True ([int]$ttl.Value -eq 300 -and [int]$manifest.wait_seconds -eq 180) 'Recommendations changed time limits'
+        }
         'select-all' {
             $fixture = New-Fixture -Kinds (@('bootstrap') * 15)
             $noise = @(Set-ApprovalChecks -Grid $fixture.Grid -Checked $true)
@@ -375,7 +488,7 @@ try {
                         Assert-True ($batchReview.SelectedItem -ceq $case.label) 'Showing help changed the chosen category'
                     }
                     Assert-True (@($grid.Rows | Where-Object { $_.Cells['Approve'].Value -eq $true }).Count -eq 0) 'Showing help selected approval items'
-                    Assert-True (@($grid.Rows | Where-Object { $_.Cells['Effect Review'].Value -ne 'Unreviewed' -and $_.Cells['Effect Review'].Value -ne 'Not applicable' }).Count -eq 0) 'Showing help classified request items'
+                    Assert-True (@($grid.Rows | Where-Object { $_.Cells['Effect Review'].Value -ne 'Unreviewed' -and $_.Cells['Effect Review'].Value -ne 'Page action (fixed)' }).Count -eq 0) 'Showing help classified request items'
                 }
                 'hint-row' {
                     $grid.ClearSelection(); $grid.Rows[0].Selected = $true
@@ -387,9 +500,9 @@ try {
                     $grid.Rows[1].Cells['Effect Review'].Value = 'Login'
                     Assert-True ($rowHint.Text.Contains('Login:')) 'The sign-in row explanation is stale'
                     $grid.ClearSelection(); $grid.Rows[4].Selected = $true
-                    Assert-True ($rowHint.Text.Contains('Not applicable:')) 'A non-network row inherited a network classification explanation'
+                    Assert-True ($rowHint.Text.Contains('Page action (fixed):')) 'A non-network row inherited a network classification explanation'
                     $batchReview.SelectedItem = 'Read'
-                    Assert-True ($rowHint.Text.Contains('Not applicable:')) 'The batch choice overwrote the selected row explanation'
+                    Assert-True ($rowHint.Text.Contains('Page action (fixed):')) 'The batch choice overwrote the selected row explanation'
                     $grid.ClearSelection()
                     Assert-True ($rowHint.Text.StartsWith('Select an item')) 'An empty selection retained another item explanation'
                 }
@@ -424,7 +537,7 @@ try {
                             Assert-True ($control.Height -ge $preferred.Height) 'An effect explanation is vertically clipped'
                             Assert-True ($control.Left -ge 0 -and $control.Right -le $control.Parent.ClientSize.Width) 'An effect explanation extends beyond its panel'
                         }
-                        foreach ($button in @($selectAllButton,$clearSelectionButton,$applyCheckedButton)) {
+                        foreach ($button in @($selectAllButton,$clearSelectionButton,$applyCheckedButton,$recommendButton)) {
                             Assert-True (-not $batchHint.Bounds.IntersectsWith($button.Bounds)) 'Help overlaps a batch command'
                             Assert-True ($button.Bottom -le $batchTools.ClientSize.Height) 'A wrapped command is clipped'
                         }

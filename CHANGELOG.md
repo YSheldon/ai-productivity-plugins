@@ -16,6 +16,7 @@ initial changelog summarizes recent merged changes, not the complete Git history
 
 ## RemoteX 0.6.9
 
+- Added per-item effect recommendations with reasons and an explicit Apply Recommendations to Checked command for mixed known request types. Recommendations preserve unchecked rows, original scopes, independent public-reference review and final approval. Typed reads show Read only (fixed); navigation/input/business actions retain distinct fixed labels, and unknown types remain Needs review.
 - Added revision-3 initialization compatibility with three explicit UTF-8 profiles: JSON, ordinary form pairs and the bounded structured form-name view. Public fixed constants in sensitive-looking names require complete independent reference, non-auth role and initialization-effect review in the native window; real authentication/private fields remain blocked. No business endpoint or sentinel is hardcoded.
 - Frozen original request bytes, complete effective headers and the owned prelogin cookie context are bound to private memory-only reference proofs and fresh one-use execution receipts. No public compare/approve endpoint, raw capture, secret-derived public hash, automatic decoder fallback or arbitrary POST permission is added.
 - Complete reference review is bounded to 32 units per request, 96 per proposal and 32 KiB including private capture/view/manifest/context data. Four active grants, one pending review and finite counts remain; large proposals must be split within those bounds, not truncated. Revision-2 static-only replacement remains separate.

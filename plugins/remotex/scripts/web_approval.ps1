@@ -198,7 +198,8 @@ try {
     $grid.RowHeadersVisible = $false; $grid.MultiSelect = $false
     $grid.SelectionMode = 'FullRowSelect'; $grid.AutoSizeColumnsMode = 'Fill'
     $checkColumn = New-Object Windows.Forms.DataGridViewCheckBoxColumn
-    $checkColumn.Name = 'Approve'; $checkColumn.FillWeight = 22; $null = $grid.Columns.Add($checkColumn)
+    $checkColumn.Name = 'Approve'; $checkColumn.FillWeight = 22; $checkColumn.MinimumWidth = 64
+    $null = $grid.Columns.Add($checkColumn)
     foreach ($columnName in @('Item', 'Capability', 'Scope', 'Uses', 'Rows', 'Columns', 'Bytes')) {
         $column = New-Object Windows.Forms.DataGridViewTextBoxColumn
         $column.Name = $columnName; $column.ReadOnly = ($columnName -in @('Item', 'Capability', 'Scope'))
@@ -209,6 +210,10 @@ try {
     $semanticColumn.Items.AddRange(@('Not applicable', 'Unreviewed', 'Read', 'Business Write', 'Bootstrap', 'Login', 'Initialization Read'))
     $semanticColumn.MinimumWidth = 145
     $null = $grid.Columns.Add($semanticColumn)
+    $recommendationColumn = New-Object Windows.Forms.DataGridViewTextBoxColumn
+    $recommendationColumn.Name = 'Recommendation'; $recommendationColumn.ReadOnly = $true
+    $recommendationColumn.FillWeight = 155; $recommendationColumn.MinimumWidth = 150
+    $null = $grid.Columns.Add($recommendationColumn)
     $limitHints = @{
         Uses = 'Maximum executions for this item. You may reduce, but not increase, the requested count.'
         Rows = 'Maximum rows returned by an approved read, not the number of targets that may be changed.'
@@ -220,10 +225,18 @@ try {
     $grid.Columns['Item'].FillWeight = 120; $grid.Columns['Capability'].FillWeight = 140
     $grid.Columns['Scope'].FillWeight = 220; $grid.Columns['Scope'].MinimumWidth = 250
     foreach ($item in @($manifest.items)) {
+        $recommendation = Get-ApprovalRecommendation $item
         $effectReview = if ($item.parameters.review_kind) { 'Unreviewed' } else { 'Not applicable' }
         $rowIndex = $grid.Rows.Add($false, [string]$item.item_id, [string]$item.capability, (Get-ApprovalScopeText $item), [string]$item.max_uses,
-            [string]$item.output.rows, [string]$item.output.columns, [string]$item.output.bytes, $effectReview)
-        if (-not $item.parameters.review_kind) { $grid.Rows[$rowIndex].Cells['Effect Review'].ReadOnly = $true }
+            [string]$item.output.rows, [string]$item.output.columns, [string]$item.output.bytes, $effectReview, $recommendation.label)
+        if (-not $item.parameters.review_kind) {
+            $fixedCell = New-Object Windows.Forms.DataGridViewTextBoxCell
+            $fixedCell.Value = $recommendation.label
+            $grid.Rows[$rowIndex].Cells['Effect Review'] = $fixedCell
+            $fixedCell.ReadOnly = $true
+        }
+        $prefix = if ($recommendation.classification) { 'Recommended: ' } else { '' }
+        $grid.Rows[$rowIndex].Cells['Recommendation'].ToolTipText = $prefix + $recommendation.label + '. ' + $recommendation.reason + ' Applying a recommendation does not approve it.'
         $grid.Rows[$rowIndex].Cells['Scope'].ToolTipText = [string]$item.display.label
         foreach ($name in $limitHints.Keys) { $grid.Rows[$rowIndex].Cells[$name].ToolTipText = $limitHints[$name] }
         $script:targetSelections[[string]$item.item_id] = @($item.targets)
@@ -272,6 +285,9 @@ try {
     $clearSelectionButton = New-Object Windows.Forms.Button
     $clearSelectionButton.Text = 'Clear Selection'; $clearSelectionButton.AutoSize = $true
     $batchTools.Controls.Add($clearSelectionButton)
+    $recommendButton = New-Object Windows.Forms.Button
+    $recommendButton.Text = 'Apply Recommendations to Checked'; $recommendButton.AutoSize = $true
+    $batchTools.Controls.Add($recommendButton)
     $reviewLabel = New-Object Windows.Forms.Label
     $reviewLabel.Text = 'Effect Review'; $reviewLabel.AutoSize = $true; $reviewLabel.Padding = New-Object Windows.Forms.Padding(10, 6, 0, 0)
     $batchTools.Controls.Add($reviewLabel)
@@ -320,6 +336,11 @@ try {
     })
     $selectAllButton.Add_Click({ Set-ApprovalChecks -Grid $grid -Checked $true })
     $clearSelectionButton.Add_Click({ Set-ApprovalChecks -Grid $grid -Checked $false })
+    $recommendButton.Add_Click({
+        $result = Set-CheckedEffectRecommendations -Grid $grid -Items $manifest.items
+        if (-not $result.ok) { $null = [Windows.Forms.MessageBox]::Show($result.reason, 'RemoteX'); return }
+        Update-V3ApprovalButton
+    })
     $applyCheckedButton.Add_Click({
         $result = Set-CheckedEffectReview -Grid $grid -Items $manifest.items -Classification ([string]$batchReview.SelectedItem)
         if (-not $result.ok) { $null = [Windows.Forms.MessageBox]::Show($result.reason, 'RemoteX'); return }
@@ -351,6 +372,7 @@ try {
     $helpTips.SetToolTip($ttlLabel, $helpTips.GetToolTip($ttl))
     $helpTips.SetToolTip($selectAllButton, 'Checks the requested items only; does not classify or approve them.')
     $helpTips.SetToolTip($clearSelectionButton, 'Unchecks items without changing their reviewed classification.')
+    $helpTips.SetToolTip($recommendButton, 'Applies each checked item''s declared effect after your review. Does not select, attest public references, approve or extend time limits. Unknown types remain unresolved.')
     $helpTips.SetToolTip($applyCheckedButton, 'Sets a compatible classification on checked network items; does not approve them.')
     $helpTips.SetToolTip($approveButton, 'Approves only checked items with their reviewed effects, selected targets and reduced limits.')
     $helpTips.SetToolTip($rejectButton, 'Rejects this pending request; does not revoke independent active grants.')

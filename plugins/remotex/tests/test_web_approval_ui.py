@@ -49,6 +49,9 @@ def test_background_ui_harness_does_not_inherit_console_input():
     'hint-selection','hint-row','hint-tooltips','hint-resize','hint-action-context',
     'apply-initialization-read','mixed-init-refused','init-hint',
     'replacement-scope','replacement-carried-required','replacement-lifetime',
+    'recommend-mixed','recommend-unknown','recommend-fixed-read','recommend-fixed-action',
+    'recommend-v3-proof','recommend-unchecked',
+    'recommend-binding','recommend-display-tamper',
 ])
 def test_native_batch_controls_preserve_explicit_authority(scenario):
     result=_run_harness(scenario)

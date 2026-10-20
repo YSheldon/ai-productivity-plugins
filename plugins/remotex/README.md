@@ -29,6 +29,12 @@ reference review is capped at 32 units/request, 96/proposal and 32 KiB; four
 active grants and the separate 120-second observation TTL are unchanged.
 See [Public-reference review](docs/web-task-authorization.md#revision-3-public-reference-review).
 
+Each approval item also shows a recommended effect and its reason. After reviewing
+the scope, use **Apply Recommendations to Checked** to classify mixed known
+items individually, then **Approve Selected**. Unknown kinds stay unresolved;
+the recommendation never supplies public-reference attestations. Typed page reads
+show **Read only (fixed)** instead of an ambiguous Not applicable label.
+
 Version `0.6.8` adds native **Initialization Read** review for exact non-secret
 pre-login JSON/form POSTs, with required response checks before credential
 insertion. Bootstrap remains static GET/HEAD only; sign-in and page-content

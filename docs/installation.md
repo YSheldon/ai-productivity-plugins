@@ -187,7 +187,13 @@ Start a new owned login session;
 do not try to adopt an old process's session or move cookies between windows.
 Confirm supported-browser access through the host before any web operation.
 
-For RemoteX 0.6.9, run `remotex_web_runtime_setup` again: both pinned Playwright
+For RemoteX 0.7.0, verify that `remotex_web_site_execute` is present after an idle
+consumer reload. New logins default to one local site/account approval and
+automatic initialization/login. Existing running granular sessions stay on their
+original protocol. See [Site authorization](../plugins/remotex/docs/web-site-authorization.md).
+Only reconnect a consumer after its own tasks are safely finished.
+
+For granular sessions introduced in RemoteX 0.6.9, run `remotex_web_runtime_setup` again: both pinned Playwright
 Core and jsonc-parser are required. A confirmed install uses a new versioned
 runtime rather than overwriting packages used by existing sessions. Reconnect
 only an idle consumer; old processes do not gain revision-3 setup support just
@@ -212,8 +218,8 @@ do not change global notification settings when it is suppressed.
 | Config rejected after upgrade | Check every client reading the shared config for old runtimes |
 | Browser-control request-header policy error | Diagnose the host browser interface separately from site credentials |
 | Isolated Edge not in the browser list | Use RemoteX task tools in the process that started login; a session ID is not a generic tab ID |
-| Button/form interface absent | Upgrade/reconnect an idle consumer to 0.6.9, discover components, request a local human grant, then use typed execution |
-| Approval categories or limits are unclear | Use inline Effect Review explanations, row help and limit tooltips. Selection/help is not approval; 0.6.9 new reviews last at most 180 seconds, separately from up-to-12-hour grants |
+| Button/form interface absent | Upgrade an idle consumer to 0.7.0, discover remotex_web_site_execute, start a new site-mode session and approve its local site window |
+| Approval categories or resource lists are cumbersome | New 0.7.0 site sessions use one Allow Automation decision for ordinary task reads/writes; legacy granular sessions keep exact review |
 | Approval window missing or cancelled without a clear cause | Inspect the request's `approval_ui` lifecycle receipt, remaining review seconds, error code and exit reason in 0.6.4. A process ID is not proof of display; `shown` is not permission or proof of foreground. Do not repeatedly open new requests |
 | Startup stalls or closes after a large approved asset batch | Use 0.6.6 bounded static transactions, retaining every audit event and the existing 45-second startup / 55-second resume limits. Inspect the original session state instead of replaying requests or retrying possibly submitted credentials |
 | Long task authorization still ends early | In 0.6.5 or later request up to 43,200 seconds and start a new covering session (default/max 46,800) with a lease at least 45 seconds longer. Old sessions/grants and profile lease defaults are not extended; counts, revocation and server-side login expiry still apply |

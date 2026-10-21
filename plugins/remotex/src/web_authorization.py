@@ -703,7 +703,11 @@ class Broker:
                 # Model-provided field labels are not resource identities. Until
                 # a canonical server mapping exists, fence the entire object.
                 conflicts=[digest([self.binding['origin'],target]) for target in row['targets']]
-                self.journal.reserve(identifier_value,conflicts)
+                origin_reserve=getattr(self.journal,'reserve_origin',None)
+                if callable(origin_reserve):
+                    origin_reserve(identifier_value,conflicts,self.binding['origin'])
+                else:
+                    self.journal.reserve(identifier_value,conflicts)
                 grant['write_reservations']+=len(row['targets'])
             grant['remaining'][item_id]-=1
             attempt={'id':identifier_value,'grant_id':grant_id,'item_id':item_id,'submitted':submitted,

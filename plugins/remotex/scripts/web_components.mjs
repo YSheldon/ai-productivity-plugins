@@ -3,7 +3,9 @@ import {createHash,randomUUID} from 'node:crypto';
 const token=()=>randomUUID().replaceAll('-','');
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
-function collectComponents(onlyNode) {
+function collectComponents(onlyNode, siteNavigation=false) {
+  const all=onlyNode===true||onlyNode?.all===true;
+  if(onlyNode?.siteNavigation===true){siteNavigation=true;onlyNode=null;}
   const secretName=/password|passwd|token|cookie|secret|credential|authorization|loginPass/i;
   const hidden='[hidden],[aria-hidden="true"],script,style,noscript,iframe,svg,canvas,[contenteditable]';
   const visible=node=>{
@@ -38,7 +40,8 @@ function collectComponents(onlyNode) {
       const raw=node.getAttribute('href')||'';
       try {
         const url=new URL(node.href),current=new URL(location.href);
-        if(url.origin===current.origin&&url.pathname===current.pathname&&!url.search&&!current.search&&!url.username&&!url.password&&/^#\/[A-Za-z0-9/_-]{0,511}$/.test(url.hash))href=url.hash;
+        if(siteNavigation&&url.protocol==='https:'&&url.origin===current.origin&&!url.username&&!url.password)href=url.pathname;
+        else if(url.origin===current.origin&&url.pathname===current.pathname&&!url.search&&!current.search&&!url.username&&!url.password&&/^#\/[A-Za-z0-9/_-]{0,511}$/.test(url.hash))href=url.hash;
         else if(!['#','','javascript:void(0);','javascript:void(0)'].includes(raw))return null;
       }catch{return null;}
     }
@@ -50,7 +53,7 @@ function collectComponents(onlyNode) {
   const nodes=document.querySelectorAll('main,nav,section,table,[role="table"],[role="grid"],[role="navigation"],[role="menuitem"],[role="tab"],button,a[href],input,textarea,select,li,div[id],[role="button"],[onclick]');
   const result=[];let visited=0;
   for(const node of nodes){
-    if(++visited>20000||result.length>=(onlyNode===true?20000:100))break;
+    if(++visited>20000||result.length>=(all?20000:100))break;
     const meta=describe(node);if(meta)result.push({node,meta});
   }
   return result;
@@ -99,10 +102,11 @@ function projectNode(node,{capability,limits}) {
 }
 
 export class Components {
-  constructor(page,{admit,redact,clock=Date.now,geometryRoot='main'}){
+  constructor(page,{admit,redact,clock=Date.now,geometryRoot='main',siteNavigation=false}){
     this.page=page;this.admit=admit;this.redact=redact;this.clock=clock;
     this.entries=new Map();this.targets=new Map();this.handle=null;this.observation=null;
     this.geometryRoot=geometryRoot;
+    this.siteNavigation=siteNavigation;
   }
 
   pageInfo(){
@@ -119,7 +123,7 @@ export class Components {
 
   async scan(){
     await this.admit();await this.clear();const url=this.page.url();
-    this.handle=await this.page.evaluateHandle(collectComponents);
+    this.handle=await this.page.evaluateHandle(collectComponents,this.siteNavigation?{siteNavigation:true}:undefined);
     const metas=await this.handle.evaluate(rows=>rows.map(row=>row.meta));
     const counts=new Map();for(const meta of metas){const key=hash(meta);counts.set(key,(counts.get(key)||0)+1);}
     const components=[];
@@ -159,9 +163,9 @@ export class Components {
   async check(entry){
     await this.admit();
     if(this.page.url()!==entry.url)throw new Error('component-stale');
-    const current=await entry.node.evaluate(collectComponents);
+    const current=await entry.node.evaluate(collectComponents,this.siteNavigation);
     if(current.length!==1||hash(current[0].meta)!==entry.fingerprint)throw new Error('component-stale');
-    const handle=await this.page.evaluateHandle(collectComponents,true);
+    const handle=await this.page.evaluateHandle(collectComponents,this.siteNavigation?{siteNavigation:true,all:true}:true);
     try {
       const metas=await handle.evaluate(rows=>rows.map(row=>row.meta));
       if(metas.length>=20000||metas.filter(meta=>hash(meta)===entry.fingerprint).length!==1)throw new Error('component-ambiguous');

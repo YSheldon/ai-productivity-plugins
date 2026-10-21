@@ -14,6 +14,14 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.7.0
+
+- New web sessions default to one-click site authorization: review the exact HTTPS site, saved account and lifetime, then select Allow Automation. Initialization and saved-credential login start automatically after the private native decision is durably committed.
+- The same task grant covers ordinary page/table reads, observed buttons, non-secret forms and business changes for up to 12 hours, without category selection, static-resource review or initialization reference packets. Added remotex_web_site_execute with fresh component references and idempotent execution status.
+- Sensitive effects retain a separate concrete native confirmation and a 30-second execution ticket. Changed target context blocks dispatch; password changes, CAPTCHAs and consequential payments require manual handling. Caller risk hints cannot downgrade recognized sensitive labels.
+- Preserved exact-origin TLS/pin checks, credential isolation, queue ownership, original session binding, revocation and audit. Interrupted mutations retain durable conflict records. Existing granular sessions remain unchanged; granular mode is explicit for new sessions.
+- Added owned loopback/fake-credential Edge integration coverage for a single grant completing initialization POST, login, page reading, form input and one ordinary save. Production acceptance and native human-window acceptance are separate release checks.
+
 ## RemoteX 0.6.9
 
 - Added native Load Public Review for independently prepared, bounded strict-UTF-8 `RemoteXPublicReview/v1` JSON packets, with a readable summary, three initially unchecked human confirmations and expandable expert fields. Import resets every confirmation and prior proof; Compare Public Reference and final Approve Selected remain separate, and the original 180-second timer and authority boundaries are unchanged. The synthetic manual fixture prepares its source-bound packet before approval begins, without copying captured traffic.

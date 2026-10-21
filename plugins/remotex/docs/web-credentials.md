@@ -5,6 +5,13 @@ and account. It uses the existing Windows Credential Manager and visible
 Get-Credential window, plus an isolated Microsoft Edge session. It does not
 read Edge's password database or attach to the user's existing tabs.
 
+New sessions in 0.7.0 default to [one-click site authorization](web-site-authorization.md).
+The local **Allow Automation** decision starts initialization and login using
+the saved credential, and covers ordinary task reads and writes for up to 12
+hours. Sensitive effects still need separate confirmation. The exact-resource
+workflow below remains available with `authorization_mode:"granular"`; existing
+running sessions keep their original model.
+
 ## Setup
 
 Use `remotex_web_profile_setup` with `confirm=false`:

@@ -157,6 +157,8 @@ class WebCredentialTests(unittest.TestCase):
             with (mock.patch.object(web_adapter, '_node', return_value='node'),
                   mock.patch.object(web_adapter, '_module_path', return_value=self.root),
                   mock.patch.object(web_adapter, '_admit_v3_components', return_value=None),
+                  mock.patch.object(web_adapter.web_site_service.ApprovalPrompt, 'start',
+                      return_value=mock.Mock(status=lambda:{'state':'shown','shown':True,'review_remaining_seconds':180})),
                   mock.patch.object(web_adapter.secure_paths, 'ensure_private_directory', side_effect=lambda p: p.mkdir(parents=True, exist_ok=True)),
                   mock.patch.object(web_adapter.secure_paths, 'ensure_private_file', return_value=None),
                   mock.patch.object(web_adapter.subprocess, 'Popen', return_value=process),
@@ -167,6 +169,9 @@ class WebCredentialTests(unittest.TestCase):
                 result = json.loads(web_adapter.login({'profile': 'web-lab', 'requester': 'owner', 'confirm': True})['content'][0]['text'])
                 identifier = result['webSessionId']
                 packet = json.loads(process.stdin.getvalue())
+                self.assertEqual(packet['authorization_mode'], 'site')
+                self.assertEqual(result['authorizationMode'], 'site')
+                self.assertEqual(result['nextStep'], 'approve-local-site-window')
                 self.assertEqual(result['sessionSeconds'], 46800)
                 self.assertGreaterEqual(packet['deadline'], before + 46800000)
                 self.assertLessEqual(packet['deadline'], int(time.time() * 1000) + 46800000)

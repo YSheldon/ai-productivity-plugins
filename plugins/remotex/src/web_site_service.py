@@ -50,7 +50,11 @@ class SiteService:
         # synchronously while the caller may still own this service's lock.
         def cleanup():
             for prompt in list(self.prompts.values()): prompt.stop('session-closed')
-        threading.Thread(target=cleanup,daemon=True).start()
+        try:
+            threading.Thread(target=cleanup,daemon=True).start()
+        except RuntimeError:
+            with self.lock:
+                self.cleanup_started=False
 
     def _reserve(self):
         if not self.reserved:

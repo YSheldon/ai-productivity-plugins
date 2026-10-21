@@ -26,6 +26,8 @@ ordinary page reads, buttons, non-secret forms and business submissions use the
 same grant for up to 12 hours. Sensitive operations retain separate native
 confirmation. Revocation, TLS, credential isolation, covering queues and audit
 remain enforced. Existing sessions keep their original authorization model.
+First use requires the explicit recovery-protocol v2 upgrade after existing web
+sessions naturally finish; installation never stops sessions or migrates state.
 See [One-click site authorization](docs/web-site-authorization.md).
 
 Version `0.6.9` adds revision-3 independent public-reference review for exact

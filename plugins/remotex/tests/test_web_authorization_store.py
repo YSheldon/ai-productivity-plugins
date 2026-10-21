@@ -21,7 +21,9 @@ def journal(tmp_path,monkeypatch):
     monkeypatch.setattr(storage.secure_paths,'ensure_private_directory',lambda p:p.mkdir(parents=True,exist_ok=True))
     monkeypatch.setattr(storage.secure_paths,'ensure_private_file',lambda p:None)
     monkeypatch.setattr(storage.audit_log,'append',lambda event:event)
-    return storage.Journal(tmp_path/'authorization')
+    value=storage.Journal(tmp_path/'authorization')
+    assert storage.upgrade_protocol(value.root,check_idle=lambda:True,confirm=True)['ready']
+    return value
 
 
 def test_pending_writes_survive_restart_and_block_overlapping_scope(journal):

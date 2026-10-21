@@ -193,6 +193,16 @@ automatic initialization/login. Existing running granular sessions stay on their
 original protocol. See [Site authorization](../plugins/remotex/docs/web-site-authorization.md).
 Only reconnect a consumer after its own tasks are safely finished.
 
+Before enabling site authority, preview `remotex_web_authorization_upgrade`
+without confirmation, then apply the approved explicit recovery-protocol v2
+upgrade only after every web session has naturally closed and no unresolved
+write remains. Installing files does not perform this transition. Unknown or
+missing existing recovery material blocks it without clearing data. Old web
+writers reject v2, so reload each old idle consumer before its next web task;
+do not stop SSH/VM work or running browsers. This protocol barrier is mandatory,
+not merely an instruction to prefer a newer tool schema. Preview never changes
+permissions or creates storage, and committed v2 must never roll back to v1.
+
 For granular sessions introduced in RemoteX 0.6.9, run `remotex_web_runtime_setup` again: both pinned Playwright
 Core and jsonc-parser are required. A confirmed install uses a new versioned
 runtime rather than overwriting packages used by existing sessions. Reconnect

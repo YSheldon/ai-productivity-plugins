@@ -85,6 +85,21 @@ def test_site_grant_is_native_only_and_one_click_resumes_login():
     assert [x['event'] for x in journal.events][:2] == ['site-requested','site-granted']
 
 
+def test_cleanup_thread_failure_keeps_revocation_and_uncertain_fence_without_sync_prompt_lock():
+    from unittest import mock
+    service,channel,journal,prompts,_,_=prepared()
+    service.begin()
+    service._reserve()
+    service.recovery_uncertain=True
+    prompt=next(iter(service.prompts.values()))
+    with mock.patch.object(threading.Thread,'start',side_effect=RuntimeError('no thread')), \
+         mock.patch.object(prompt,'stop',side_effect=AssertionError('synchronous prompt lock')):
+        channel.close()
+    assert service.state=='revoked' and not channel.available
+    assert not service.cleanup_started
+    assert service.reservation_id in journal.pending
+
+
 def test_site_binding_and_expiration_are_checked_on_every_permit():
     service, channel, _, prompts, binding, now = prepared()
     service.begin(); approve(prompts)

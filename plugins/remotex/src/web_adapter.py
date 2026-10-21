@@ -274,6 +274,37 @@ def assert_resource_idle(resource: str) -> None:
     path.unlink()
 
 
+def _upgrade_web_idle() -> bool:
+    root=state_root()
+    active=root/'active'
+    if secure_paths._reparse_point(active):return False
+    if not active.exists():return True
+    paths=list(active.iterdir())
+    if len(paths)>256:return False
+    for path in paths:
+        if (not re.fullmatch(r'[0-9a-f]{64}\.json',path.name) or not path.is_file() or
+                secure_paths._reparse_point(path) or path.stat().st_size>4096):return False
+        marker=_read(active,path.name)
+        if (set(marker)!={'webSessionId','processId','supervisorId'} or
+                not isinstance(marker['webSessionId'],str) or not re.fullmatch(r'[0-9a-f]{32}',marker['webSessionId']) or
+                any(type(marker[k]) is not int or not 0<marker[k]<2**32 for k in ('processId','supervisorId'))):return False
+        directory=root/'sessions'/marker['webSessionId']
+        if any(secure_paths._reparse_point(p) for p in (root/'sessions',directory)):return False
+        proof=directory/'closed.json'
+        if proof.exists():
+            if proof.stat().st_size>4096 or _read(directory,'closed.json')!=marker:return False
+            continue
+        if _running_or_unknown(marker['processId']) or _running_or_unknown(marker['supervisorId']):return False
+    return True
+
+
+def authorization_upgrade(args):
+    if set(args)-{'confirm'} or type(args.get('confirm',False)) is not bool:
+        raise core.ToolError('Pass only an optional boolean confirm')
+    return core.tool_result(web_authorization_store.upgrade_protocol(state_root()/'authorization',
+        check_idle=_upgrade_web_idle,confirm=args.get('confirm',False)))
+
+
 def _lease_covers(resource: str, requester: str, deadline: int) -> bool:
     try:
         with queue_leases._locked() as (_,leases), vm_queue._locked_state() as (_,queue):
@@ -398,6 +429,10 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
         lease = owner.get("lease") or {}
         if lease.get("remainingSeconds",0) < seconds + 45:
             raise core.ToolError(f"Renew this task's web queue lease to cover session_seconds plus 45 seconds (at least {seconds+45} seconds)")
+        if mode=='site':
+            try:web_authorization_store.require_site_protocol(state_root()/'authorization')
+            except web_authorization.ScopeError as exc:
+                raise core.ToolError('Run remotex_web_authorization_upgrade before site login: '+exc.code) from None
         _admit_v3_components(node,site=mode=='site')
         secret = core.read_windows_generic_credential(reference.reference_dict()["target"])
         if secret.username != raw["account"] or not secret.password or len(secret.password) > 4096:
@@ -638,6 +673,7 @@ TOOLS = {
         "inputSchema":_schema({k:({"type":"boolean"} if k=="confirm" else {"type":"integer","minimum":1,"maximum":600} if k=="timeout_seconds" else {"type":"string"}) for k in sorted(SETUP_FIELDS)},
             ["profile","url","account","credential_ref","username_selector","password_selector","submit_selector","confirm"]),"handler":setup},
     "remotex_web_runtime_setup":{"description":"Check or install the complete pinned Playwright Core and JSON parser runtime for existing Microsoft Edge; never changes browser security policy.","inputSchema":_schema({"confirm":{"type":"boolean"}},[]),"handler":runtime_setup},
+    "remotex_web_authorization_upgrade":{"description":"Preview, or explicitly upgrade the local deny-only web recovery protocol to v2 before one-click site authorization. Requires all web sessions naturally closed and no unresolved writes. Preview never creates storage; never stops sessions, clears records or modifies SSH/VM configuration. Old web writers fail closed after upgrade and must reload safely.","inputSchema":_schema({"confirm":{"type":"boolean"}},[]),"handler":authorization_upgrade},
     "remotex_web_login":{"description":"Open one local site authorization window, then automatically initialize and sign in to visible Edge using the saved origin/account-bound credential. Site mode covers ordinary task reads and writes for up to 12 hours; sensitive operations need separate confirmation. Requires current supported host browser access and the caller's covering queue lease. No passwords in arguments.",
         "inputSchema":_schema({"profile":{"type":"string"},"requester":{"type":"string"},"confirm":{"type":"boolean"},
             "authorization_mode":{"type":"string","enum":["site","granular"],"default":"site","description":"Site is the one-click task authorization flow. Granular retains the legacy exact-request protocol for a new session."},

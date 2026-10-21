@@ -55,6 +55,7 @@ class MCPProtocolTests(unittest.TestCase):
         self.assertIn("remotex_web_profile_setup", names)
         self.assertIn("remotex_web_login", names)
         self.assertIn("remotex_web_site_execute", names)
+        self.assertIn("remotex_web_authorization_upgrade", names)
         self.assertIn("remotex_web_probe", names)
         self.assertIn("remotex_credential_setup", names)
         self.assertIn("remotex_credential_delete", names)

@@ -62,6 +62,16 @@ trust. Do not bypass browser warnings, globally ignore TLS errors, or modify
 system trust stores. See the web-credentials reference for formats and errors.
 ### One-Click Site Authorization (0.7.0+)
 
+Before first use, preview `remotex_web_authorization_upgrade` with `confirm:false`.
+Apply only the explicitly approved upgrade with `confirm:true`, after all web
+sessions naturally close and no unresolved writes remain. Preview is read-only;
+installation never silently migrates storage. Busy/unknown state blocks upgrade,
+never close another session, clear records or stop processes to satisfy it.
+Site mode requires v2 before credential access and again at broad reservation.
+Old web consumers fail closed after upgrade and need an idle reload before
+their next web task; SSH/VM work is unaffected. Never downgrade v2, including
+after a committed-unverified result; inspect/recover without replaying writes.
+
 New logins default to `authorization_mode:"site"`. Acquire the configured web
 queue with this task's stable requester and a lease covering the session plus
 45 seconds, then call `remotex_web_login` with `confirm=true`. The native window

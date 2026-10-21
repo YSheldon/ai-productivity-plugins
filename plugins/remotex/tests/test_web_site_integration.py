@@ -13,7 +13,7 @@ import pytest
 
 PLUGIN=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(PLUGIN/'src'))
-from web_authorization_store import Journal
+from web_authorization_store import Journal, upgrade_protocol
 from web_channel import Channel
 from web_site_service import SiteService
 import execution
@@ -21,7 +21,8 @@ import web_adapter
 
 
 @pytest.mark.skipif(os.name!='nt',reason='Isolated Windows Edge and owned Windows Job')
-def test_one_site_decision_runs_initialization_login_read_and_ordinary_write(tmp_path):
+def test_one_site_decision_runs_initialization_login_read_and_ordinary_write(tmp_path,monkeypatch):
+    monkeypatch.setenv('REMOTEX_AUDIT_FILE',str(tmp_path/'audit.jsonl'))
     manual=os.environ.get('REMOTEX_TEST_MANUAL_SITE')=='1'
     node=shutil.which('node')
     if not node or not shutil.which('openssl') or not (PLUGIN/'scripts/web-runtime/node_modules/playwright-core').exists():
@@ -55,6 +56,7 @@ def test_one_site_decision_runs_initialization_login_read_and_ordinary_write(tmp
             def stop(self,reason='stopped'): pass
             def status(self):return {'state':'shown','shown':True,'review_remaining_seconds':180}
         from web_approval import ApprovalPrompt
+        assert upgrade_protocol(tmp_path/'audit',check_idle=lambda:True,confirm=True)['ready']
         service=SiteService(channel,binding=binding,check=lambda:copy.deepcopy(binding),
             journal=Journal(tmp_path/'audit'),prompt=ApprovalPrompt if manual else SyntheticPrompt)
         worker.stdin.write((json.dumps({'config':cfg,'username':'operator','password':'synthetic-site-password-only',

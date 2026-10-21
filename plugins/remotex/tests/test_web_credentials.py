@@ -25,7 +25,7 @@ class WebCredentialTests(unittest.TestCase):
         self.root = Path(temp.name)
         self.path = self.root / "config.json"
         self.path.write_text(json.dumps({"version":2,"credentials":{},"profiles":{},"defaults":{}}))
-        patch = mock.patch.dict(os.environ, {"REMOTEX_CONFIG":str(self.path),"REMOTEX_WEB_STATE_DIR":str(self.root / "web"),"REMOTEX_VM_QUEUE_FILE":str(self.root / 'queue.json'),"REMOTEX_VM_QUEUE_LEASE_FILE":str(self.root / 'leases.json')})
+        patch = mock.patch.dict(os.environ, {"REMOTEX_CONFIG":str(self.path),"REMOTEX_WEB_STATE_DIR":str(self.root / "web"),"REMOTEX_VM_QUEUE_FILE":str(self.root / 'queue.json'),"REMOTEX_VM_QUEUE_LEASE_FILE":str(self.root / 'leases.json'),"REMOTEX_AUDIT_FILE":str(self.root / 'audit.jsonl')})
         patch.start()
         self.addCleanup(patch.stop)
         self.args = {"profile":"web-lab","kind":"web","url":"https://console.example:6868/#/",
@@ -145,6 +145,19 @@ class WebCredentialTests(unittest.TestCase):
             with self.assertRaisesRegex(core.ToolError,'runtime_setup'):
                 web_adapter.login({'profile':'web-lab','requester':'owner','confirm':True,'session_seconds':900})
 
+    def test_site_protocol_upgrade_is_required_before_credentials_or_browser_start(self):
+        import web_adapter, queue_leases
+        self.path.write_text(json.dumps(self.prepared().candidate))
+        queue_leases.queue_acquire({'profile':'web-lab','requester':'owner','lease_seconds':1800})
+        with (mock.patch.object(web_adapter,'_node',return_value='node'),
+              mock.patch.object(web_adapter,'_module_path',return_value=self.root),
+              mock.patch.object(web_adapter,'_parser_module_path',return_value=self.root),
+              mock.patch.object(core,'read_windows_generic_credential',side_effect=AssertionError('credential read')),
+              mock.patch.object(web_adapter.subprocess,'Popen',side_effect=AssertionError('browser started'))):
+            with self.assertRaisesRegex(core.ToolError,'remotex_web_authorization_upgrade'):
+                web_adapter.login({'profile':'web-lab','requester':'owner','confirm':True,'session_seconds':900})
+        self.assertFalse((self.root/'web'/'authorization').exists())
+
     def test_default_long_session_packet_and_public_result_share_the_thirteen_hour_bound(self):
         import web_adapter, queue_leases
         self.path.write_text(json.dumps(self.prepared().candidate))
@@ -157,16 +170,22 @@ class WebCredentialTests(unittest.TestCase):
             with (mock.patch.object(web_adapter, '_node', return_value='node'),
                   mock.patch.object(web_adapter, '_module_path', return_value=self.root),
                   mock.patch.object(web_adapter, '_admit_v3_components', return_value=None),
+                  mock.patch.object(web_adapter.web_site_service.ApprovalPrompt, 'start',
+                      return_value=mock.Mock(status=lambda:{'state':'shown','shown':True,'review_remaining_seconds':180})),
                   mock.patch.object(web_adapter.secure_paths, 'ensure_private_directory', side_effect=lambda p: p.mkdir(parents=True, exist_ok=True)),
                   mock.patch.object(web_adapter.secure_paths, 'ensure_private_file', return_value=None),
                   mock.patch.object(web_adapter.subprocess, 'Popen', return_value=process),
                   mock.patch.object(web_adapter.execution, '_WindowsJob', return_value=job),
                   mock.patch.object(web_adapter.threading.Thread, 'start', return_value=None),
                   mock.patch.object(core, 'read_windows_generic_credential', return_value=core.CredentialValue('security', 'synthetic-long-session-canary'))):
+                web_adapter.authorization_upgrade({'confirm':True})
                 before = int(time.time() * 1000)
                 result = json.loads(web_adapter.login({'profile': 'web-lab', 'requester': 'owner', 'confirm': True})['content'][0]['text'])
                 identifier = result['webSessionId']
                 packet = json.loads(process.stdin.getvalue())
+                self.assertEqual(packet['authorization_mode'], 'site')
+                self.assertEqual(result['authorizationMode'], 'site')
+                self.assertEqual(result['nextStep'], 'approve-local-site-window')
                 self.assertEqual(result['sessionSeconds'], 46800)
                 self.assertGreaterEqual(packet['deadline'], before + 46800000)
                 self.assertLessEqual(packet['deadline'], int(time.time() * 1000) + 46800000)
@@ -313,11 +332,13 @@ class WebCredentialTests(unittest.TestCase):
             mock.patch.object(web_adapter,'_module_path',return_value=self.root),
             mock.patch.object(web_adapter,'_admit_v3_components',return_value=None),
             mock.patch.object(web_adapter.secure_paths,'ensure_private_directory',side_effect=lambda p:p.mkdir(parents=True,exist_ok=True)),
+            mock.patch.object(web_adapter.secure_paths,'ensure_private_file',return_value=None),
             mock.patch.object(web_adapter.subprocess,'Popen',return_value=process),
             mock.patch.object(web_adapter.execution,'_WindowsJob',return_value=job),
             mock.patch.object(web_adapter.threading.Thread,'start',side_effect=RuntimeError('no thread')),
             mock.patch.object(core,'read_windows_generic_credential',return_value=core.CredentialValue('security','synthetic-secret-canary')),
         ):
+            web_adapter.authorization_upgrade({'confirm':True})
             with self.assertRaises(core.ToolError):
                 web_adapter.login({'profile':'web-lab','requester':'owner','confirm':True,'session_seconds':900})
         self.assertFalse(web_adapter._active_path(p.profile['queue_resource']).exists())

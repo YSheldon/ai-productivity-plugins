@@ -99,7 +99,7 @@ class ApprovalPrompt:
             if manifest.get('protocol_revision')==3 and not callable(on_reference):
                 raise ScopeError('approval-ui-unavailable')
             original_deadline=time.monotonic()+max(0,min(MAX_NATIVE_REVIEW_SECONDS,manifest['wait_seconds']))
-            script=Path(__file__).resolve().parents[1]/'scripts'/'web_approval.ps1'
+            script=Path(__file__).resolve().parents[1]/'scripts'/('web_site_approval.ps1' if manifest.get('ui_mode')=='site' else 'web_approval.ps1')
             process=subprocess.Popen([credential_store._powershell_path(),'-NoLogo','-NoProfile','-STA',
                 '-File',str(script)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                 env=credential_store._setup_environment(),creationflags=subprocess.CREATE_NO_WINDOW)
@@ -132,6 +132,7 @@ class ApprovalPrompt:
         self.write_lock=threading.Lock()
         self.on_reference=on_reference
         self.v3=manifest.get('protocol_revision')==3
+        self.acknowledged=self.v3 or manifest.get('ui_mode')=='site'
         self.helper_ready=False
         self.decision_pending=False
         self.reference_pending=None
@@ -235,11 +236,11 @@ class ApprovalPrompt:
                             raise ScopeError('decision-consumed')
                         if self.v3 and (not self.helper_ready or self.reference_pending is not None or self.clock()>=self.review_deadline):
                             raise ScopeError('decision-invalid')
-                        if self.v3:
+                        if self.acknowledged:
                             self.decision_pending=True
                         else:
                             self.decided=True
-                        if not self.v3 and self.timer is not None:
+                        if not self.acknowledged and self.timer is not None:
                             self.timer.cancel()
                     threading.Thread(target=self._apply_decision,args=(frame,),daemon=True).start()
                 else:
@@ -315,11 +316,8 @@ class ApprovalPrompt:
         try:
             result=self.on_decision(frame)
             with self.lock:
-                if self.stopped:
-                    if self.v3:
-                        self.on_revoke()
-                    return
-                if self.v3:
+                stopped=self.stopped
+                if not stopped and self.acknowledged:
                     if self.clock()>=self.review_deadline:
                         raise ScopeError('decision-invalid')
                     self._write_private('decision-result',{'state':'active' if result.get('grant_id') else 'rejected',
@@ -329,12 +327,15 @@ class ApprovalPrompt:
                     self.decision_pending=False
                     if self.timer is not None:
                         self.timer.cancel()
-                if not result.get('grant_id'):
+                if not stopped and not result.get('grant_id'):
                     self.stop('replacement-blocked' if result.get('state')=='replacement-blocked' else 'operator-rejected')
                     return
-                self.timer=threading.Timer(max(1,result.get('expires_in_seconds',1)),lambda:self.stop('grant-expired'))
-                self.timer.daemon=True
-                self.timer.start()
+                if not stopped:
+                    self.timer=threading.Timer(max(1,result.get('expires_in_seconds',1)),lambda:self.stop('grant-expired'))
+                    self.timer.daemon=True
+                    self.timer.start()
+            if stopped and self.acknowledged:
+                self.on_revoke()
         except Exception:
             self.on_revoke()
             self.stop()

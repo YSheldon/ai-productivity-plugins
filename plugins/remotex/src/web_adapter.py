@@ -27,6 +27,7 @@ import web_channel
 import web_authorization
 import web_authorization_store
 import web_task_service
+import web_site_service
 from web_component_protocol import V3_WORKER_PROTOCOL, V3_NATIVE_PROTOCOL
 
 
@@ -90,10 +91,14 @@ def _node() -> str:
     return node
 
 
-def _admit_v3_components(node: str) -> None:
+def _admit_v3_components(node: str, *, site=False) -> None:
     commands=[([node,str(PLUGIN/'scripts/web_login_worker.mjs'),'--describe-protocol'],V3_WORKER_PROTOCOL),
         ([credential_store._powershell_path(),'-NoLogo','-NoProfile','-NonInteractive','-STA','-File',
           str(PLUGIN/'scripts/web_approval.ps1'),'-DescribeProtocol'],V3_NATIVE_PROTOCOL)]
+    if site:
+        commands.extend([([node,str(PLUGIN/'scripts/web_site_worker.mjs'),'--describe-protocol'],{'site_authorization':1}),
+            ([credential_store._powershell_path(),'-NoLogo','-NoProfile','-NonInteractive','-STA','-File',
+              str(PLUGIN/'scripts/web_site_approval.ps1'),'-DescribeProtocol'],{'site_authorization':1,'review_seconds':180})])
     try:
         for command,expected in commands:
             result=subprocess.run(command,stdin=subprocess.DEVNULL,capture_output=True,text=True,encoding='utf-8',
@@ -269,6 +274,37 @@ def assert_resource_idle(resource: str) -> None:
     path.unlink()
 
 
+def _upgrade_web_idle() -> bool:
+    root=state_root()
+    active=root/'active'
+    if secure_paths._reparse_point(active):return False
+    if not active.exists():return True
+    paths=list(active.iterdir())
+    if len(paths)>256:return False
+    for path in paths:
+        if (not re.fullmatch(r'[0-9a-f]{64}\.json',path.name) or not path.is_file() or
+                secure_paths._reparse_point(path) or path.stat().st_size>4096):return False
+        marker=_read(active,path.name)
+        if (set(marker)!={'webSessionId','processId','supervisorId'} or
+                not isinstance(marker['webSessionId'],str) or not re.fullmatch(r'[0-9a-f]{32}',marker['webSessionId']) or
+                any(type(marker[k]) is not int or not 0<marker[k]<2**32 for k in ('processId','supervisorId'))):return False
+        directory=root/'sessions'/marker['webSessionId']
+        if any(secure_paths._reparse_point(p) for p in (root/'sessions',directory)):return False
+        proof=directory/'closed.json'
+        if proof.exists():
+            if proof.stat().st_size>4096 or _read(directory,'closed.json')!=marker:return False
+            continue
+        if _running_or_unknown(marker['processId']) or _running_or_unknown(marker['supervisorId']):return False
+    return True
+
+
+def authorization_upgrade(args):
+    if set(args)-{'confirm'} or type(args.get('confirm',False)) is not bool:
+        raise core.ToolError('Pass only an optional boolean confirm')
+    return core.tool_result(web_authorization_store.upgrade_protocol(state_root()/'authorization',
+        check_idle=_upgrade_web_idle,confirm=args.get('confirm',False)))
+
+
 def _lease_covers(resource: str, requester: str, deadline: int) -> bool:
     try:
         with queue_leases._locked() as (_,leases), vm_queue._locked_state() as (_,queue):
@@ -366,8 +402,11 @@ def probe(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def login(args: dict[str, Any]) -> dict[str, Any]:
-    if set(args) - {"profile","requester","confirm","session_seconds"} or args.get("confirm") is not True:
+    if set(args) - {"profile","requester","confirm","session_seconds","authorization_mode"} or args.get("confirm") is not True:
         raise core.ToolError("Web login requires profile, requester and confirm=true; credential values are not accepted")
+    mode=args.get('authorization_mode','site')
+    if mode not in {'site','granular'}:
+        raise core.ToolError('authorization_mode must be site or granular')
     if os.name != "nt":
         raise core.ToolError("Web credential login requires Windows")
     seconds = args.get("session_seconds",MAX_SESSION_SECONDS)
@@ -390,7 +429,11 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
         lease = owner.get("lease") or {}
         if lease.get("remainingSeconds",0) < seconds + 45:
             raise core.ToolError(f"Renew this task's web queue lease to cover session_seconds plus 45 seconds (at least {seconds+45} seconds)")
-        _admit_v3_components(node)
+        if mode=='site':
+            try:web_authorization_store.require_site_protocol(state_root()/'authorization')
+            except web_authorization.ScopeError as exc:
+                raise core.ToolError('Run remotex_web_authorization_upgrade before site login: '+exc.code) from None
+        _admit_v3_components(node,site=mode=='site')
         secret = core.read_windows_generic_credential(reference.reference_dict()["target"])
         if secret.username != raw["account"] or not secret.password or len(secret.password) > 4096:
             raise core.ToolError("Stored web credential does not match the configured account")
@@ -404,7 +447,8 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
         _write(directory / "state.json",{"state":"starting","loginSubmitted":False,"authenticationVerified":False,"failureCode":None,"updatedAt":datetime.now(timezone.utc).isoformat().replace("+00:00","Z")})
         process = job = None
         try:
-            process = subprocess.Popen([node,"--use-system-ca",str(PLUGIN / "scripts" / "web_login_worker.mjs"),str(directory),str(module),str(parser)],
+            worker='web_site_worker.mjs' if mode=='site' else 'web_login_worker.mjs'
+            process = subprocess.Popen([node,"--use-system-ca",str(PLUGIN / "scripts" / worker),str(directory),str(module),str(parser)],
                 stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env=_environment(),close_fds=True,
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
             job = execution._WindowsJob(process,memory_limit_mb=None,cpu_time_seconds=None,max_processes=None)
@@ -413,7 +457,8 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
             marker = _active_path(resource)
             secure_paths.ensure_private_directory(marker.parent)
             _write(marker,{"webSessionId":identifier,"processId":process.pid,"supervisorId":os.getpid()})
-            packet = json.dumps({"config":raw,"username":secret.username,"password":secret.password,"deadline":deadline}).encode("utf-8") + b'\n'
+            packet = json.dumps({"config":raw,"username":secret.username,"password":secret.password,"deadline":deadline,
+                **({'authorization_mode':'site'} if mode=='site' else {})}).encode("utf-8") + b'\n'
             process.stdin.write(packet)
             process.stdin.flush()
             del packet, secret
@@ -427,7 +472,8 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
             binding={'origin':raw['origin'],'account':raw['account'],'profile':name,'session':identifier,
                 'worker':channel.worker_identity,'acquisition':acquisition,
                 'profile_digest':web_authorization.digest([raw,reference.reference_dict()]),'deadline':monotonic_deadline}
-            channel.authorization=web_task_service.Service(channel,binding=binding,
+            service_type=web_site_service.SiteService if mode=='site' else web_task_service.Service
+            channel.authorization=service_type(channel,binding=binding,
                 check=lambda:_authorization_binding(channel,identifier,monotonic_deadline),
                 journal=web_authorization_store.Journal(state_root()/'authorization'))
             with _CHANNELS_LOCK:
@@ -448,8 +494,17 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
                     process.wait(timeout=10)
             _active_path(resource).unlink(missing_ok=True)
             raise core.ToolError("Unable to start web login securely") from exc
+    # Native admission rechecks the covering lease; never reacquire its operation
+    # lock while the launch transaction still holds it.
+    if mode=='site':
+        try:
+            channel.authorization.begin()
+        except Exception as exc:
+            channel.close()
+            raise core.ToolError('Unable to open local site authorization securely') from exc
     return core.tool_result({"ok":True,"webSessionId":identifier,"profile":name,"state":"starting","authenticationVerified":False,
-                             "nextStep":"run-remotex-web-session-status","sessionSeconds":seconds})
+                             "nextStep":"approve-local-site-window" if mode=='site' else "run-remotex-web-session-status",
+                             "authorizationMode":mode,"sessionSeconds":seconds})
 
 
 def session_status(args: dict[str, Any]) -> dict[str, Any]:
@@ -525,9 +580,12 @@ def _task_call(args, operation, required=(), optional=()):
             raise web_authorization.ScopeError('request-invalid')
         channel=_owned_channel(args['session_id'],args['requester'])
         service=getattr(channel,'authorization',None)
-        if not isinstance(service,web_task_service.Service):
+        if not isinstance(service,(web_task_service.Service,web_site_service.SiteService)):
             raise web_authorization.ScopeError('new-owned-session-required')
         payload={key:value for key,value in args.items() if key not in base}
+        if isinstance(service,web_site_service.SiteService) and operation not in {
+                'components','status','site-execute','execution-status','revoke','resume-login'}:
+            raise web_authorization.ScopeError('site-mode-active')
         if operation=='components':
             result=service.components()
         elif operation=='prepare':
@@ -536,7 +594,9 @@ def _task_call(args, operation, required=(), optional=()):
             result=service.request(payload)
         elif operation=='status':
             result=service.status(payload.get('request_id'))
-        elif operation=='execute':
+        elif operation in {'execute','site-execute'}:
+            if operation=='site-execute' and not isinstance(service,web_site_service.SiteService):
+                raise web_authorization.ScopeError('site-mode-required')
             result=service.execute(payload)
         elif operation=='execution-status':
             result=service.execution_status(payload)
@@ -613,8 +673,11 @@ TOOLS = {
         "inputSchema":_schema({k:({"type":"boolean"} if k=="confirm" else {"type":"integer","minimum":1,"maximum":600} if k=="timeout_seconds" else {"type":"string"}) for k in sorted(SETUP_FIELDS)},
             ["profile","url","account","credential_ref","username_selector","password_selector","submit_selector","confirm"]),"handler":setup},
     "remotex_web_runtime_setup":{"description":"Check or install the complete pinned Playwright Core and JSON parser runtime for existing Microsoft Edge; never changes browser security policy.","inputSchema":_schema({"confirm":{"type":"boolean"}},[]),"handler":runtime_setup},
-    "remotex_web_login":{"description":"Start one bounded, visible Edge login using a stored origin/account-bound credential and the caller's queue lease. No passwords in arguments.",
-        "inputSchema":_schema({"profile":{"type":"string"},"requester":{"type":"string"},"confirm":{"type":"boolean"},"session_seconds":{"type":"integer","minimum":60,"maximum":MAX_SESSION_SECONDS,"default":MAX_SESSION_SECONDS,"description":"New session duration, default/maximum 46800 seconds (13 hours); queue lease must cover it plus 45 seconds."}},["profile","requester","confirm"]),"handler":login},
+    "remotex_web_authorization_upgrade":{"description":"Preview, or explicitly upgrade the local deny-only web recovery protocol to v2 before one-click site authorization. Requires all web sessions naturally closed and no unresolved writes. Preview never creates storage; never stops sessions, clears records or modifies SSH/VM configuration. Old web writers fail closed after upgrade and must reload safely.","inputSchema":_schema({"confirm":{"type":"boolean"}},[]),"handler":authorization_upgrade},
+    "remotex_web_login":{"description":"Open one local site authorization window, then automatically initialize and sign in to visible Edge using the saved origin/account-bound credential. Site mode covers ordinary task reads and writes for up to 12 hours; sensitive operations need separate confirmation. Requires current supported host browser access and the caller's covering queue lease. No passwords in arguments.",
+        "inputSchema":_schema({"profile":{"type":"string"},"requester":{"type":"string"},"confirm":{"type":"boolean"},
+            "authorization_mode":{"type":"string","enum":["site","granular"],"default":"site","description":"Site is the one-click task authorization flow. Granular retains the legacy exact-request protocol for a new session."},
+            "session_seconds":{"type":"integer","minimum":60,"maximum":MAX_SESSION_SECONDS,"default":MAX_SESSION_SECONDS,"description":"New session duration, default/maximum 46800 seconds (13 hours); queue lease must cover it plus 45 seconds."}},["profile","requester","confirm"]),"handler":login},
     "remotex_web_session_status":{"description":"Read sanitized Edge login state without exposing DOM, screenshots, cookies or credentials.","inputSchema":_schema({"session_id":{"type":"string"}},["session_id"]),"handler":session_status},
     "remotex_web_session_close":{"description":"Request closure of this requester's RemoteX-owned Edge session. Read back closed state before releasing its queue lease.","inputSchema":_schema({"session_id":{"type":"string"},"requester":{"type":"string"},"confirm":{"type":"boolean"}},["session_id","requester","confirm"]),"handler":close_session},
 }
@@ -663,6 +726,12 @@ _EFFECT=_schema({'kind':{'type':'string','enum':['create','update','delete','ass
     'fields':{'type':'array','items':_TEXT,'minItems':1,'maxItems':30},'evidence':_EVIDENCE,
     'requires_cas':{'type':'boolean'}},['kind','name','risks','fields','evidence'])
 _TASKS={
+    'remotex_web_site_execute':('site-execute',{'observation_id':_ID,'component_ref':_ID,
+        'action':{'type':'string','enum':['read','read-table','click','fill','select','check']},
+        'value':{'type':['string','boolean'],'maxLength':1024},
+        'risk':{'type':'string','enum':['ordinary','sensitive'],'description':'Mark irreversible deletion, access/security changes, legal acceptance and other sensitive effects as sensitive. Labels may escalate the review, never override it. Credentials, CAPTCHAs and consequential payments require manual handling.'},
+        'idempotency_key':_TEXT},['observation_id','component_ref','action','risk','idempotency_key'],
+        'Operate one fresh observed component under the existing site grant, with no resource/category approval. Supports page and table reads, ordinary buttons and non-secret forms. Sensitive effects open a concrete native confirmation. Reuse the same key after uncertain results; never replay with another key. Requires current supported host browser access.'),
     'remotex_web_components':('components',{},[],
         'Discover bounded component metadata in the original authenticated Edge session; not page content or authority. Requires current supported host browser access.'),
     'remotex_web_action_prepare':('prepare',{'observation_id':_ID,'component_ref':_ID,

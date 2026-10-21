@@ -146,7 +146,7 @@ export async function guardRoute(route, origin, failed, certificateSha256, signa
       const response=await guardedResponse(request,origin,certificateSha256,activeSignal,
         {deadline:completed.authentication?undefined:completed.startupDeadline,beforeSend:completed.checkDispatch});
       if(response.status>=300&&response.status<400&&response.status!==304){failed('redirect-blocked');await route.abort();return;}
-      await route.fulfill(response);return;
+      await route.fulfill(response);completed.received?.();return;
     }
     if (certificateSha256 !== undefined) {
       const response = await pinnedResponse(route.request(), origin, certificateSha256, activeSignal,{beforeSend:completed?.checkDispatch});

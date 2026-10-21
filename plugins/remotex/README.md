@@ -8,7 +8,8 @@ Named profiles for remote operations, local credential management, and evidence-
 | --- | --- |
 | Systems, architecture evidence, calls, queues, and last use by credential | [Usage reports](docs/usage-reports.md) |
 | HTTPS console sign-in through isolated Edge and local secure input | [Web credentials](docs/web-credentials.md) |
-| Human-approved buttons, exact form values, and scoped business writes | [Task authorization](docs/web-task-authorization.md) |
+| One local approval for site login, ordinary buttons, forms and business changes | [Site authorization](docs/web-site-authorization.md) |
+| Exact per-resource review for an explicitly selected granular session | [Task authorization](docs/web-task-authorization.md) |
 | Read the authenticated page and passive result codes without copying cookies | [Same-session control](docs/web-credentials.md#same-session-controlled-operations) |
 | Profile setup, missing aliases, rotation, and deletion | [Credential lifecycle](docs/credential-lifecycle.md) |
 | Authorized tasks without preemption | [Shared VM queue](#shared-vm-queue) |
@@ -17,6 +18,17 @@ Named profiles for remote operations, local credential management, and evidence-
 [View a synthetic report preview and credential workflow](https://github.com/YSheldon/ai-productivity-plugins/blob/main/docs/remotex-showcase.md).
 
 ## Recent Versions
+
+Version `0.7.0` makes new web sessions use **one-click site authorization**.
+Review the exact HTTPS site, saved account and lifetime, then select **Allow
+Automation**. The original session initializes and logs in automatically;
+ordinary page reads, buttons, non-secret forms and business submissions use the
+same grant for up to 12 hours. Sensitive operations retain separate native
+confirmation. Revocation, TLS, credential isolation, covering queues and audit
+remain enforced. Existing sessions keep their original authorization model.
+First use requires the explicit recovery-protocol v2 upgrade after existing web
+sessions naturally finish; installation never stops sessions or migrates state.
+See [One-click site authorization](docs/web-site-authorization.md).
 
 Version `0.6.9` adds revision-3 independent public-reference review for exact
 prelogin requests, including public fixed constants in sensitive-looking fields.

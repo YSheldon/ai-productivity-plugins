@@ -1,5 +1,11 @@
 # Web Task Authorization
 
+This document describes the granular authorization mode. New sessions in 0.7.0
+default to [one-click site authorization](web-site-authorization.md), covering
+ordinary task reads and changes with one local site/account approval. Explicitly
+select `authorization_mode:"granular"` to use this document's exact-resource
+protocol in a new session. Existing sessions are not migrated.
+
 RemoteX 0.6.0 adds human-approved buttons, exact form input and scoped business
 submission in the **same RemoteX-owned Edge session**. It does not adopt an
 ordinary browser tab, share cookies, bypass host browser policy, or change the

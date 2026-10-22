@@ -14,6 +14,12 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.7.1
+
+- Added read-only legacy key-only recovery previews and one explicit native owner review. Missing state is ambiguous, never proof of an empty history; corrupt evidence, unresolved writes, unexplained scopes and busy/unknown web lifecycle remain blocked.
+- Preserved the integrity key with protected local backup and domain-separated recovery receipts. No-replacement publication creates standard v2 with a temporary deny-only fence; authenticated finalization removes only its own marker. Status and receipts never grant approval or clear later writes.
+- Kept native review at 180 seconds, normal site grants at 12 hours and sensitive confirmations at 30 seconds. Recovery neither reads login credentials nor connects to sites, changes queues, interrupts sessions or grants site authority. Ordinary one-click login remains a separate approval.
+
 ## RemoteX 0.7.0
 
 - New web sessions default to one-click site authorization: review the exact HTTPS site, saved account and lifetime, then select Allow Automation. Initialization and saved-credential login start automatically after the private native decision is durably committed.

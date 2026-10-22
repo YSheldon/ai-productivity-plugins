@@ -16,7 +16,7 @@ CLIs and OS schedulers; they do not require Codex after setup.
 
 | Plugin version | New capability | Details |
 | --- | --- | --- |
-| RemoteX 0.7.0 | One-click site/account authorization, automatic initialization and login, and ordinary task reads/writes under one grant | [Site authorization](plugins/remotex/docs/web-site-authorization.md) |
+| RemoteX 0.7.1 | One-click site/account authorization and explicit owner-reviewed recovery for eligible legacy key-only state | [Site authorization](plugins/remotex/docs/web-site-authorization.md) |
 | RemoteX 0.6.9 | Independent public-reference review for exact initialization requests, 180-second review windows, and private native notification hints | [Task authorization](plugins/remotex/docs/web-task-authorization.md#revision-3-public-reference-review) |
 | RemoteX 0.5.12 | Isolated Edge pages resize with the window, with read-only geometry diagnostics | [Responsive windows](plugins/remotex/docs/web-credentials.md#responsive-windows) |
 | RemoteX 0.5.11 | Read the authenticated page and passive business results in the same isolated session | [Same-session control](plugins/remotex/docs/web-credentials.md#same-session-controlled-operations) |

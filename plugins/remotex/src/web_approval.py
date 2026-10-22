@@ -29,11 +29,12 @@ def decode_frame(raw: bytes, manifest: dict) -> dict:
             raise ValueError()
         value=json.loads(raw.decode('utf-8'),object_pairs_hook=_unique_pairs)
         base={'event','request_id','nonce','request_digest'}
+        recovery = manifest.get('ui_mode') == 'recovery'
         v3=manifest.get('protocol_revision')==3
         events={'decision','revoke'}|({'helper-ready','reference-check'} if v3 else set())
         if not isinstance(value,dict) or value.get('event') not in events:
             raise ValueError()
-        extra={'decision':{'choices','ttl_seconds'},'revoke':set(),'helper-ready':{'protocol_revision','profiles'},
+        extra={'decision':({'owner_reviewed'} if recovery else {'choices','ttl_seconds'}),'revoke':set(),'helper-ready':{'protocol_revision','profiles'},
                'reference-check':{'check_id','item_id','edit_revision','native_input'}}
         expected=base|extra[value['event']]
         if set(value)!=expected:
@@ -42,6 +43,9 @@ def decode_frame(raw: bytes, manifest: dict) -> dict:
             if not isinstance(value[field],str) or not secrets.compare_digest(value[field],manifest[field]):
                 raise ValueError()
         if value['event']=='decision':
+            if recovery:
+                if value['owner_reviewed'] is not True: raise ValueError()
+                return value
             if not isinstance(value['choices'],list) or len(value['choices'])>32:
                 raise ValueError()
             if type(value['ttl_seconds']) is not int or not 1<=value['ttl_seconds']<=manifest['ttl_seconds']:
@@ -79,6 +83,7 @@ def decode_ui_receipt(raw: bytes, manifest: dict) -> dict:
         reasons={'shown':{'shown'},'closed':{'window-closed','review-expired','operator-rejected','operator-revoked'},
                  'error':{'helper-startup-failed','helper-ui-failed'},
                  'notification':{'requested','shown','unavailable','removed'}}
+        if manifest.get('ui_mode') == 'recovery': reasons['closed'].add('recovery-complete')
         if value.get('event') not in reasons or value.get('reason') not in reasons[value['event']]:
             raise ValueError()
         for field in ('request_id','nonce','request_digest'):
@@ -99,7 +104,14 @@ class ApprovalPrompt:
             if manifest.get('protocol_revision')==3 and not callable(on_reference):
                 raise ScopeError('approval-ui-unavailable')
             original_deadline=time.monotonic()+max(0,min(MAX_NATIVE_REVIEW_SECONDS,manifest['wait_seconds']))
-            script=Path(__file__).resolve().parents[1]/'scripts'/('web_site_approval.ps1' if manifest.get('ui_mode')=='site' else 'web_approval.ps1')
+            helper = {'site': 'web_site_approval.ps1', 'recovery': 'web_recovery_approval.ps1'}.get(manifest.get('ui_mode'), 'web_approval.ps1')
+            script=Path(__file__).resolve().parents[1]/'scripts'/helper
+            if manifest.get('ui_mode') == 'recovery':
+                probe = subprocess.run([credential_store._powershell_path(), '-NoLogo', '-NoProfile', '-STA',
+                    '-File', str(script), '-DescribeProtocol'], stdin=subprocess.DEVNULL, capture_output=True,
+                    timeout=10, env=credential_store._setup_environment(), creationflags=subprocess.CREATE_NO_WINDOW)
+                if probe.returncode != 0 or len(probe.stdout) > 2048 or json.loads(probe.stdout) != {'legacy_recovery': 1, 'review_seconds': 180}:
+                    raise ScopeError('approval-ui-unavailable')
             process=subprocess.Popen([credential_store._powershell_path(),'-NoLogo','-NoProfile','-STA',
                 '-File',str(script)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                 env=credential_store._setup_environment(),creationflags=subprocess.CREATE_NO_WINDOW)
@@ -132,7 +144,7 @@ class ApprovalPrompt:
         self.write_lock=threading.Lock()
         self.on_reference=on_reference
         self.v3=manifest.get('protocol_revision')==3
-        self.acknowledged=self.v3 or manifest.get('ui_mode')=='site'
+        self.acknowledged=self.v3 or manifest.get('ui_mode') in {'site', 'recovery'}
         self.helper_ready=False
         self.decision_pending=False
         self.reference_pending=None
@@ -358,3 +370,23 @@ class ApprovalPrompt:
                 self.reference_timer.cancel()
             self.job.terminate()
             self.job.close()
+
+
+class RecoveryPrompt(ApprovalPrompt):
+    """Recovery completion acknowledgment is not a site grant or expiry timer."""
+
+    def _apply_decision(self, frame):
+        try:
+            result = self.on_decision(frame)
+            with self.lock:
+                if self.stopped: return
+                state = result.get('state')
+                if state not in {'ready', 'committed-unverified'}: raise ScopeError('decision-invalid')
+                self._write_private('recovery-result', {'state': state})
+                self.decided = True
+                self.decision_pending = False
+                if self.timer is not None: self.timer.cancel()
+                # The helper closes after consuming the acknowledgment; no grant timer.
+        except Exception:
+            self.on_cancel()
+            self.stop('operator-rejected')

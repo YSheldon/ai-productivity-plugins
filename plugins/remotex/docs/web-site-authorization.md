@@ -38,6 +38,47 @@ task's site authority and closes its owned browser. Nothing can undo a change
 already accepted by the website. Expiry, a changed credential/profile/trust
 binding, or loss of the covering lease also blocks further operations.
 
+## Legacy Key-Only Recovery
+
+RemoteX 0.7.1 provides `remotex_web_authorization_recovery` for the ambiguous
+legacy layout: a valid 32-byte integrity key but no recovery envelope. A missing
+envelope cannot prove that no write occurred. Normal login and protocol upgrade
+stay blocked; never delete the key, fabricate an empty file or switch state
+directories to bypass the gate.
+
+1. Call with `confirm:false` and no ID for a read-only preview. This does not
+   adjust recovery permissions or create files. Normal tool invocation audit
+   metadata is still recorded.
+2. Inspect the classification, all configured scopes, historical-binding count
+   and uncertainty. Unexplained historical profiles/bindings, unresolved writes,
+   broken evidence, invalid keys and active/unknown web sessions block recovery.
+   Synthetic history is not production proof.
+3. For an eligible preview, pass its opaque `recovery_id` and `confirm:true` to
+   request one **RemoteX - Legacy Recovery** window. This argument grants nothing.
+   The window has one initially unchecked owner statement and **Recover Legacy
+   State**. Only confirm when all prior effects for the shared store have been
+   reconciled. Otherwise cancel. No credentials are requested.
+4. The original review lasts at most 180 seconds; repeated requests do not
+   restart it. A private native decision preserves the original key, saves a
+   protected local backup and owner-reviewed receipt, and publishes standard v2
+   without replacing a concurrently appearing envelope. A temporary deny-only
+   marker fences web writers until authenticated finalization.
+5. Read status with `confirm:false` and the same ID. Recovery success is `ready`,
+   not a site grant. Its window closes after backend acknowledgment. Obtain a
+   separate normal **Allow Automation** decision for the subsequent login task.
+
+After interruption, `committed-unverified` never means reset or retry a business
+write. Read-only status does not mutate storage. A new preview may reconstruct
+only an authenticated interrupted recovery intent; finalizing its exact marker
+requires a fresh native review. Missing receipts, ambiguous ownership or other
+pending entries remain blocked. Later legitimate reservations are never cleared.
+The receipt is evidence, not reusable approval; v2 is never rolled back.
+
+Recovery makes no remote connection, reads no login credential, grants no queue
+lease and stops no process. It cannot repair the host browser interface. A
+successful supported-browser read, covering queue lease and exact-origin TLS
+trust are still required for the separate login/read acceptance.
+
 ## Ordinary Operations
 
 `remotex_web_site_execute` supports `read`, `read-table`, `click`, `fill`,

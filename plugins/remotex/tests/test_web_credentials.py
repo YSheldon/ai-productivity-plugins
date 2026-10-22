@@ -158,6 +158,22 @@ class WebCredentialTests(unittest.TestCase):
                 web_adapter.login({'profile':'web-lab','requester':'owner','confirm':True,'session_seconds':900})
         self.assertFalse((self.root/'web'/'authorization').exists())
 
+    def test_key_only_diagnostic_never_reads_credentials_or_relabels_invalid_key(self):
+        import web_adapter, queue_leases
+        self.path.write_text(json.dumps(self.prepared().candidate))
+        queue_leases.queue_acquire({'profile':'web-lab','requester':'owner','lease_seconds':1800})
+        root=self.root/'web'/'authorization';root.mkdir(parents=True)
+        with (mock.patch.object(web_adapter,'_node',return_value='node'),
+              mock.patch.object(web_adapter,'_module_path',return_value=self.root),
+              mock.patch.object(web_adapter,'_parser_module_path',return_value=self.root),
+              mock.patch.object(core,'read_windows_generic_credential',side_effect=AssertionError('credential read')),
+              mock.patch.object(web_adapter.subprocess,'Popen',side_effect=AssertionError('browser started'))):
+            for size,code in ((32,'recovery-state-missing'),(1,'recovery-key-invalid')):
+                (root/'integrity.key').write_bytes(b'x'*size)
+                with self.subTest(size=size),self.assertRaisesRegex(core.ToolError,code):
+                    web_adapter.login({'profile':'web-lab','requester':'owner','confirm':True,'session_seconds':900})
+                self.assertFalse((root/'uncertain-writes.json').exists())
+
     def test_default_long_session_packet_and_public_result_share_the_thirteen_hour_bound(self):
         import web_adapter, queue_leases
         self.path.write_text(json.dumps(self.prepared().candidate))

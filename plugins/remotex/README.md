@@ -19,6 +19,17 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
+Version `0.7.1` adds **owner-reviewed legacy recovery** for a valid integrity
+key whose old recovery envelope is missing. Preview with
+`remotex_web_authorization_recovery(confirm=false)`; an eligible preview can
+open one native review with its `recovery_id` and `confirm=true`. The tool
+argument never approves recovery. The owner must reconcile prior effects and
+accept the remaining uncertainty in the local window. Unknown writes, corrupt
+evidence and active/unknown sessions stay blocked. Original key, private backup,
+authenticated receipt and a temporary deny-only fence protect the transition.
+Recovery grants no site authority and does not touch credentials or queues.
+See [Legacy recovery](docs/web-site-authorization.md#legacy-key-only-recovery).
+
 Version `0.7.0` makes new web sessions use **one-click site authorization**.
 Review the exact HTTPS site, saved account and lifetime, then select **Allow
 Automation**. The original session initializes and logs in automatically;

@@ -22,6 +22,20 @@ SITE_ORIGIN_SCOPE = {'kind':'site-origin-reservation-v1'}
 OBJECT_ORIGIN_SCOPE = {'kind':'object-origin-reservation-v1'}
 
 
+def _publish_no_replace(source, destination):
+    """Publish one staged local file, never replacing an appearing destination."""
+    if os.name == 'nt':
+        import ctypes
+        move = ctypes.WinDLL('kernel32', use_last_error=True).MoveFileExW
+        move.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        move.restype = ctypes.c_int
+        if not move(str(source), str(destination), 0x8):  # WRITE_THROUGH, no replacement/copy/reboot.
+            raise ctypes.WinError(ctypes.get_last_error())
+    else:
+        os.link(source, destination)
+        source.unlink()
+
+
 class Journal:
     """Private deny-only recovery state; persistent data can never grant authority."""
 
@@ -108,7 +122,7 @@ class Journal:
         except (OSError,ValueError,TypeError,KeyError) as exc:
             raise ScopeError('audit-incomplete') from exc
 
-    def _write(self, state):
+    def _write(self, state, *, before_replace=None):
         self._paths()
         body=canonical({'state':state,'mac':self._mac(state)})
         if len(body)>262144:
@@ -121,9 +135,26 @@ class Journal:
                 handle.flush()
                 os.fsync(handle.fileno())
             secure_paths.ensure_private_file(temporary)
+            if before_replace is not None: before_replace()
             os.replace(temporary,self.state_path)
         except Exception as exc:
             raise ScopeError('audit-incomplete') from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _publish_initial(self, state, before_publish):
+        self._paths()
+        temporary = self.root / ('state-' + secrets.token_hex(16) + '.tmp')
+        try:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, 'wb') as handle:
+                handle.write(canonical({'state': state, 'mac': self._mac(state)}))
+                handle.flush()
+                os.fsync(handle.fileno())
+            secure_paths.ensure_private_file(temporary)
+            before_publish()
+            self._paths()
+            _publish_no_replace(temporary, self.state_path)
         finally:
             temporary.unlink(missing_ok=True)
 

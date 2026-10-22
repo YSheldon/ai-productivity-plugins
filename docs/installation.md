@@ -193,6 +193,14 @@ automatic initialization/login. Existing running granular sessions stay on their
 original protocol. See [Site authorization](../plugins/remotex/docs/web-site-authorization.md).
 Only reconnect a consumer after its own tasks are safely finished.
 
+RemoteX 0.7.1 also exposes `remotex_web_authorization_recovery`. A key-only
+missing-envelope error is not fixed by reinstalling or creating empty state.
+Preview locally with `confirm:false`; eligible recovery requires a separate
+native owner review and preserves the key, protected backup and audit basis.
+Installation never applies recovery or supplies site authority. Interrupted
+finalization requires authenticated evidence and a fresh local review. See
+[Legacy recovery](../plugins/remotex/docs/web-site-authorization.md#legacy-key-only-recovery).
+
 Before enabling site authority, preview `remotex_web_authorization_upgrade`
 without confirmation, then apply the approved explicit recovery-protocol v2
 upgrade only after every web session has naturally closed and no unresolved

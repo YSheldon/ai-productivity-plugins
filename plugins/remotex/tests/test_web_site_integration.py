@@ -1,5 +1,6 @@
 """Owned loopback and fake credentials; simulated decision is not native approval evidence."""
 import copy
+import importlib.util
 import json
 import os
 import shutil
@@ -21,7 +22,8 @@ import web_adapter
 
 
 @pytest.mark.skipif(os.name!='nt',reason='Isolated Windows Edge and owned Windows Job')
-def test_one_site_decision_runs_initialization_login_read_and_ordinary_write(tmp_path,monkeypatch):
+@pytest.mark.parametrize('recovery_first', [False, True])
+def test_one_site_decision_runs_initialization_login_read_and_ordinary_write(tmp_path,monkeypatch,recovery_first):
     monkeypatch.setenv('REMOTEX_AUDIT_FILE',str(tmp_path/'audit.jsonl'))
     manual=os.environ.get('REMOTEX_TEST_MANUAL_SITE')=='1'
     node=shutil.which('node')
@@ -56,7 +58,37 @@ def test_one_site_decision_runs_initialization_login_read_and_ordinary_write(tmp
             def stop(self,reason='stopped'): pass
             def status(self):return {'state':'shown','shown':True,'review_remaining_seconds':180}
         from web_approval import ApprovalPrompt
-        assert upgrade_protocol(tmp_path/'audit',check_idle=lambda:True,confirm=True)['ready']
+        if recovery_first:
+            import audit_log
+            from web_recovery import RecoveryService
+            spec=importlib.util.spec_from_file_location('site_legacy_069',PLUGIN/'tests/fixtures/web_authorization_store_069.py')
+            module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+            old=module.Journal(tmp_path/'audit');key=old.key_path.read_bytes()
+            audit_log.append({'event':'synthetic-recovery-fixture'})
+            recovery=RecoveryService(old.root,audit_path=audit_log.audit_path(),
+                scope=lambda:[{'profile':'synthetic-site','origin':cfg['origin'],'account':'operator'}],
+                check_idle=lambda:True,prompt=None if manual else SyntheticPrompt)
+            preview=recovery.preview();recovery.open(preview['recovery_id'])
+            if manual:
+                print('REMOTEX_RECOVERY_REVIEW '+json.dumps({'digest':recovery.manifest['request_digest'][:8],
+                    'target':'Synthetic temporary store only; reconcile fake history, check the owner statement, then Recover Legacy State',
+                    **recovery.status(preview['recovery_id'])}),flush=True)
+                until=time.monotonic()+180
+                while time.monotonic()<until and recovery.status(preview['recovery_id'])['state'] in {'pending','committing'}:time.sleep(.1)
+            else:
+                manifest,callbacks=prompts[-1]
+                callbacks['on_decision']({k:manifest[k] for k in ('request_id','nonce','request_digest')}|
+                    {'event':'decision','owner_reviewed':True})
+            assert recovery.status(preview['recovery_id'])['state']=='ready'
+            assert old.key_path.read_bytes()==key
+            assert Journal.existing(old.root)._load()=={'version':2,'pending':{}}
+            import secure_paths
+            assert secure_paths.private_path_status(old.root.parent/'recovery-backups'/preview['recovery_id'])['ready']
+            assert secure_paths.private_path_status(old.root.parent/'recovery-backups'/preview['recovery_id']/'integrity.key')['ready']
+            assert service_site_authority_absent(recovery)
+            prompts.clear()
+        else:
+            assert upgrade_protocol(tmp_path/'audit',check_idle=lambda:True,confirm=True)['ready']
         service=SiteService(channel,binding=binding,check=lambda:copy.deepcopy(binding),
             journal=Journal(tmp_path/'audit'),prompt=ApprovalPrompt if manual else SyntheticPrompt)
         worker.stdin.write((json.dumps({'config':cfg,'username':'operator','password':'synthetic-site-password-only',
@@ -111,3 +143,8 @@ def test_one_site_decision_runs_initialization_login_read_and_ordinary_write(tmp
         server.stdin.write(b'{"operation":"stop"}\n');server.stdin.flush()
         try:server.wait(timeout=10)
         except subprocess.TimeoutExpired:server.kill();server.wait(timeout=10)
+
+
+def service_site_authority_absent(recovery):
+    result=recovery.status(recovery.identity)
+    return not any(name in result for name in ('grant_id','expires_in_seconds','effective_limits'))

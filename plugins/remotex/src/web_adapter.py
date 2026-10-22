@@ -28,6 +28,8 @@ import web_authorization
 import web_authorization_store
 import web_task_service
 import web_site_service
+import web_recovery
+import audit_log
 from web_component_protocol import V3_WORKER_PROTOCOL, V3_NATIVE_PROTOCOL
 
 
@@ -41,6 +43,8 @@ STATES = {"starting","opening","ready","submitted","verified","needs-user-check"
 FAILURES = {None,"invalid-job","origin-blocked","redirect-blocked","tls-or-navigation-failed","certificate-pin-mismatch","certificate-validity-failed","request-too-large","response-too-large","form-unavailable","login-flow-failed","network-guard-failed","unsupported-transport","lease-no-longer-covers-session","authorization-contract-required"}
 _CHANNELS: dict[str, web_channel.Channel] = {}
 _CHANNELS_LOCK = threading.Lock()
+_RECOVERY_SERVICE = None
+_RECOVERY_LOCK = threading.Lock()
 
 
 def state_root() -> Path:
@@ -305,6 +309,32 @@ def authorization_upgrade(args):
         check_idle=_upgrade_web_idle,confirm=args.get('confirm',False)))
 
 
+def _recovery_scope():
+    return [{'profile': name, 'origin': raw.get('origin'), 'account': raw.get('account')}
+        for name, raw in core.load_config().data['profiles'].items() if raw.get('kind') == 'web']
+
+
+def authorization_recovery(args):
+    global _RECOVERY_SERVICE
+    if (set(args) - {'confirm', 'recovery_id'} or type(args.get('confirm', False)) is not bool or
+            args.get('confirm') is True and 'recovery_id' not in args):
+        raise core.ToolError('Pass only confirm and an optional preview recovery_id; approval is local only')
+    try:
+        with _RECOVERY_LOCK:
+            root = state_root() / 'authorization'
+            if _RECOVERY_SERVICE is None:
+                _RECOVERY_SERVICE = web_recovery.RecoveryService(root, audit_path=audit_log.audit_path(),
+                    scope=_recovery_scope, check_idle=_upgrade_web_idle)
+            elif _RECOVERY_SERVICE.root != root:
+                raise web_authorization.ScopeError('recovery-stale')
+            service = _RECOVERY_SERVICE
+        identity = args.get('recovery_id')
+        value = service.open(identity) if args.get('confirm') is True else service.status(identity) if identity is not None else service.preview()
+        return core.tool_result(value)
+    except web_authorization.ScopeError as exc:
+        raise core.ToolError(exc.code) from None
+
+
 def _lease_covers(resource: str, requester: str, deadline: int) -> bool:
     try:
         with queue_leases._locked() as (_,leases), vm_queue._locked_state() as (_,queue):
@@ -430,7 +460,12 @@ def login(args: dict[str, Any]) -> dict[str, Any]:
         if lease.get("remainingSeconds",0) < seconds + 45:
             raise core.ToolError(f"Renew this task's web queue lease to cover session_seconds plus 45 seconds (at least {seconds+45} seconds)")
         if mode=='site':
-            try:web_authorization_store.require_site_protocol(state_root()/'authorization')
+            try:
+                recovery_root = state_root()/'authorization'
+                if (recovery_root/'integrity.key').is_file() and not (recovery_root/'uncertain-writes.json').exists():
+                    web_recovery._key_only(recovery_root)
+                    raise core.ToolError('recovery-state-missing: run remotex_web_authorization_recovery with confirm=false; do not reset recovery state')
+                web_authorization_store.require_site_protocol(recovery_root)
             except web_authorization.ScopeError as exc:
                 raise core.ToolError('Run remotex_web_authorization_upgrade before site login: '+exc.code) from None
         _admit_v3_components(node,site=mode=='site')
@@ -660,6 +695,8 @@ def _schema(properties: dict, required: list[str]) -> dict:
 
 
 TOOLS = {
+    'remotex_web_authorization_recovery': {'description': 'Preview eligible legacy key-only recovery, request one native owner-review window, or read status. confirm=true never approves. Requires idle web lifecycle and reconciled evidence; no credentials, network, queue changes or site grant. Missing/corrupt/unknown write evidence remains blocked.',
+        'inputSchema': _schema({'confirm': {'type': 'boolean', 'default': False}, 'recovery_id': {'type': 'string', 'pattern': '^[a-f0-9]{32}$'}}, []), 'handler': authorization_recovery},
     'remotex_web_observe':{'description':'Read bounded, redacted visible text and navigation references from the authenticated RemoteX page. Requires current host browser permission and the original requester/lease; never use after host browser access is denied or unknown.',
         'inputSchema':_schema({'session_id':{'type':'string'},'requester':{'type':'string'}},['session_id','requester']),'handler':observe},
     'remotex_web_read_result':{'description':'Read numeric/boolean result-code summaries of responses already received by this authenticated page. Sends no request. Not proof of business success or task permissions. Requires current host browser permission and the original requester/lease.',

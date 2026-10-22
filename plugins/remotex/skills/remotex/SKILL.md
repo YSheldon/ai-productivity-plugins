@@ -62,6 +62,22 @@ trust. Do not bypass browser warnings, globally ignore TLS errors, or modify
 system trust stores. See the web-credentials reference for formats and errors.
 ### One-Click Site Authorization (0.7.0+)
 
+On `recovery-state-missing`, use `remotex_web_authorization_recovery` (0.7.1+)
+with `confirm:false` for a local read-only preview, not the ordinary upgrade.
+Never infer empty history from a missing envelope, delete/rotate the key, clear
+records, change the state directory or automatically retry a business write.
+Unknown writes, unexplained scopes, corrupt evidence and active/unknown web
+sessions block recovery. An eligible preview can request one native owner review
+with its `recovery_id` and `confirm:true`; this only opens the form, never approves.
+The owner must reconcile all prior effects and explicitly accept uncertainty in
+the local window within the original 180 seconds. Chat cannot replace that
+decision. Read status with the same ID and `confirm:false`; a receipt is never
+approval. Interrupted finalization needs a fresh native review, not a reset.
+Recovery preserves the original key, writes protected backup/receipt evidence
+and removes only its own technical fence after durable verification. It grants
+no site authority and touches no credentials, queue or SSH/VM resource. A normal
+site approval is still separate. See [Legacy recovery](../../docs/web-site-authorization.md#legacy-key-only-recovery).
+
 Before first use, preview `remotex_web_authorization_upgrade` with `confirm:false`.
 Apply only the explicitly approved upgrade with `confirm:true`, after all web
 sessions naturally close and no unresolved writes remain. Preview is read-only;

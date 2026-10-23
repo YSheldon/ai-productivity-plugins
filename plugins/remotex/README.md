@@ -19,6 +19,15 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
+Version `0.7.2` repairs the legacy audit admission path. Fully paired, closed or
+expired history can reach one native **owner reconciliation** review even when
+historical site/account identities cannot be reconstructed. The form separates
+recorded verification from technical completion and makes the remaining scope
+uncertainty explicit. Unknown outcomes and unfinished work still block recovery.
+The original audit/key remain intact; new receipts bind the private inventory
+and accepted policy. Older receipts never acquire the new exception. Ordinary
+upgrade errors now point to the correct read-only recovery entry point.
+
 Version `0.7.1` adds **owner-reviewed legacy recovery** for a valid integrity
 key whose old recovery envelope is missing. Preview with
 `remotex_web_authorization_recovery(confirm=false)`; an eligible preview can

@@ -14,6 +14,13 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.7.2
+
+- Fixed ordinary upgrade diagnostics for valid-key/missing-envelope state without creating or resetting recovery data. Invalid keys and corrupt envelopes remain distinct failures.
+- Added explicit native owner reconciliation of fully paired, closed or expired legacy history, including historical site/account identities that cannot be reconstructed. Technical `completed` results stay distinct from business verification; unknown outcomes, orphan dispatches, broken evidence and active/unknown lifecycle remain blocked.
+- Preserved the original audit and key, saved the complete private history inventory, and bound its digest/counts and owner-reconciled basis to new authenticated receipts. Older receipts keep their original strict policy after restart and cannot inherit the new exception. Recovery grants no site authority and performs no credential, network or queue operation.
+- Updated the native recovery summary and helper admission so an older form cannot omit the new warnings. The owner statement, 180-second deadline, separate site authorization, 12-hour grant cap and sensitive-action confirmation remain unchanged.
+
 ## RemoteX 0.7.1
 
 - Added read-only legacy key-only recovery previews and one explicit native owner review. Missing state is ambiguous, never proof of an empty history; corrupt evidence, unresolved writes, unexplained scopes and busy/unknown web lifecycle remain blocked.

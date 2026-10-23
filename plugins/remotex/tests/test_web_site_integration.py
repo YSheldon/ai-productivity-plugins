@@ -65,10 +65,24 @@ def test_one_site_decision_runs_initialization_login_read_and_ordinary_write(tmp
             module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
             old=module.Journal(tmp_path/'audit');key=old.key_path.read_bytes()
             audit_log.append({'event':'synthetic-recovery-fixture'})
+            # Constructed prior metadata exercises owner reconciliation; no prior request is sent.
+            for event in [
+                {'event':'site-requested','request_id':'1'*32},
+                {'event':'site-granted','request_id':'1'*32,'grant_id':'2'*32,'ttl_seconds':100},
+                {'event':'site-login-result','summary':{'authentication_verified':True}},
+                {'event':'site-action-requested','attempt_id':'3'*32,'scope_digest':'c'*64,
+                    'summary':{'action':'click','sensitive':False}},
+                {'event':'site-action-dispatch','attempt_id':'3'*32,'scope_digest':'c'*64},
+                {'event':'site-action-result','attempt_id':'3'*32,'state':'completed'},
+                {'event':'site-revoked','count':1}]:
+                audit_log.append({'event':'web-authorization','authorization':{'binding_digest':'e'*64,**event}})
             recovery=RecoveryService(old.root,audit_path=audit_log.audit_path(),
                 scope=lambda:[{'profile':'synthetic-site','origin':cfg['origin'],'account':'operator'}],
                 check_idle=lambda:True,prompt=None if manual else SyntheticPrompt)
-            preview=recovery.preview();recovery.open(preview['recovery_id'])
+            preview=recovery.preview()
+            assert preview['technicalEffectAttempts']==1 and preview['unknownScopeBindings']==1
+            assert preview['verifiedAttempts']==0
+            recovery.open(preview['recovery_id'])
             if manual:
                 print('REMOTEX_RECOVERY_REVIEW '+json.dumps({'digest':recovery.manifest['request_digest'][:8],
                     'target':'Synthetic temporary store only; reconcile fake history, check the owner statement, then Recover Legacy State',

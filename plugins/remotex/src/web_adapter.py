@@ -305,8 +305,15 @@ def _upgrade_web_idle() -> bool:
 def authorization_upgrade(args):
     if set(args)-{'confirm'} or type(args.get('confirm',False)) is not bool:
         raise core.ToolError('Pass only an optional boolean confirm')
-    return core.tool_result(web_authorization_store.upgrade_protocol(state_root()/'authorization',
-        check_idle=_upgrade_web_idle,confirm=args.get('confirm',False)))
+    try:
+        root = state_root()/'authorization'
+        if (root/'integrity.key').exists() and not (root/'uncertain-writes.json').exists():
+            web_recovery._key_only(root)
+            raise core.ToolError('recovery-state-missing: run remotex_web_authorization_recovery with confirm=false; do not reset recovery state')
+        return core.tool_result(web_authorization_store.upgrade_protocol(root,
+            check_idle=_upgrade_web_idle,confirm=args.get('confirm',False)))
+    except web_authorization.ScopeError as exc:
+        raise core.ToolError(exc.code) from None
 
 
 def _recovery_scope():

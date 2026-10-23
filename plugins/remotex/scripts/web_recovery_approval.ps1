@@ -4,7 +4,7 @@ $ProgressPreference = 'SilentlyContinue'
 foreach ($name in @('Microsoft.PowerShell.Management','Microsoft.PowerShell.Utility')) {
     Import-Module ([IO.Path]::Combine($PSHOME,'Modules',$name,($name+'.psd1')))
 }
-if ($DescribeProtocol) { [Console]::WriteLine('{"legacy_recovery":1,"review_seconds":180}'); exit 0 }
+if ($DescribeProtocol) { [Console]::WriteLine('{"legacy_recovery":2,"review_seconds":180}'); exit 0 }
 $script:manifest = $null
 $script:sent = $false
 $script:complete = $false
@@ -31,7 +31,9 @@ try {
         $manifest.request_id -cnotmatch '^[a-f0-9]{32}$' -or $manifest.nonce -cnotmatch '^[a-f0-9]{64}$' -or
         $manifest.request_digest -cnotmatch '^[a-f0-9]{64}$' -or $manifest.wait_seconds -lt 1 -or $manifest.wait_seconds -gt 180 -or
         $manifest.target -isnot [string] -or $manifest.target.Length -gt 4096 -or
-        $manifest.summary.scopeCount -lt 1 -or $manifest.summary.scopeCount -gt 256) { throw 'Invalid review' }
+        $manifest.summary.scopeCount -lt 1 -or $manifest.summary.scopeCount -gt 256 -or
+        $manifest.summary.historyPolicy -cnotin @('strict-v1','reconcile-v2') -or
+        $manifest.summary.reviewText -isnot [string] -or $manifest.summary.reviewText.Length -gt 8192) { throw 'Invalid review' }
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     . (Join-Path $PSScriptRoot 'web_approval_notification.ps1')
@@ -73,17 +75,16 @@ namespace RemoteX {
     $details=New-Object Windows.Forms.TextBox
     $details.Multiline=$true; $details.ReadOnly=$true; $details.ScrollBars='Vertical'
     $details.Font=New-Object Drawing.Font('Segoe UI',10); $details.SetBounds(20,60,640,310)
-    $body='Target: '+$manifest.target+"`r`nMode: "+$manifest.mode+"`r`nAll configured scopes:"
+    $body='Target: '+$manifest.target+"`r`nMode: "+$manifest.mode+"`r`nConfigured scopes (not historical attribution):"
     foreach ($scope in $manifest.summary.scopes) {
         $body += "`r`n"+[string]$scope.profile+' | '+[string]$scope.origin+' | '+[string]$scope.account
     }
-    $body += "`r`n`r`nObserved completed attempts: "+$manifest.summary.completedAttempts
-    $body += "`r`nHistorical bindings (including possible synthetic tests): "+$manifest.summary.historicalBindings
+    $body += "`r`n`r`n"+[string]$manifest.summary.reviewText
     $body += "`r`n`r`n"+[string]$manifest.summary.uncertainty
     $body += "`r`n`r`nPreserve the original key, save a private backup and record owner-reviewed recovery. No site permission, login, queue change or business operation is granted."
     $details.Text=$body
     $owner=New-Object Windows.Forms.CheckBox; $owner.Checked=$false
-    $owner.Text='I have reconciled all prior effects for this shared store and accept this one-time recovery uncertainty.'
+    $owner.Text='I have reconciled all prior effects, including completed actions with unknown historical scope, and accept this one-time recovery uncertainty.'
     $owner.SetBounds(20,382,640,45)
     $status=New-Object Windows.Forms.Label; $status.SetBounds(20,433,640,30)
     $recover=New-Object Windows.Forms.Button; $recover.Text='Recover Legacy State'; $recover.Enabled=$false

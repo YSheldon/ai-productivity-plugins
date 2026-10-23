@@ -90,15 +90,23 @@ def test_corrupt_or_incomplete_audit_refuses_preview(case, raw):
 
 @pytest.mark.parametrize('state', [None, 'outcome-unknown', 'partially-verified'])
 def test_unfinished_or_unknown_attempt_blocks_even_with_balanced_counts(case, state):
-    event('execution-reserved', capability='web.business_action')
+    granted_execution()
     if state: event('execution-finished', state=state)
     with pytest.raises(ScopeError, match='recovery-unresolved-write'): inspect(case)
 
 
 def test_result_for_different_identity_does_not_reconcile_write(case):
-    event('execution-reserved', capability='web.business_action')
+    granted_execution()
     event('execution-finished', attempt_id='c' * 32, state='verified')
     with pytest.raises(ScopeError, match='recovery-unresolved-write'): inspect(case)
+
+
+def granted_execution():
+    event('request-created', request_id='1' * 32, count=1)
+    event('decision-recorded', request_id='1' * 32, ttl_seconds=100,
+        approved_scope_digest='c' * 64, approved_items=['write'])
+    event('grant-issued', request_id='1' * 32, grant_id='2' * 32, approved_scope_digest='c' * 64)
+    event('execution-reserved', capability='web.business_action', grant_id='2' * 32)
 
 
 def test_paired_attempts_still_require_historical_scope_proof(case):
@@ -110,7 +118,103 @@ def test_paired_attempts_still_require_historical_scope_proof(case):
 def test_unknown_historical_profile_cannot_be_omitted(case):
     audit_log.append({'event': 'operation-start', 'operationId': 'op', 'tool': 'remotex_web_execute',
         'request': {'profileSha256': 'f' * 64}})
-    with pytest.raises(ScopeError, match='recovery-scope-unknown'): inspect(case)
+    with pytest.raises(ScopeError, match='recovery-unresolved-write'): inspect(case)
+
+
+def completed_legacy_site(case):
+    values = [
+        {'event': 'site-requested', 'request_id': '1' * 32},
+        {'event': 'site-granted', 'request_id': '1' * 32, 'grant_id': '2' * 32, 'ttl_seconds': 100},
+        {'event': 'site-login-result', 'summary': {'authentication_verified': True}},
+        {'event': 'site-action-requested', 'attempt_id': '3' * 32, 'scope_digest': 'c' * 64,
+         'summary': {'action': 'click', 'sensitive': False}},
+        {'event': 'site-action-dispatch', 'attempt_id': '3' * 32, 'scope_digest': 'c' * 64},
+        {'event': 'site-action-result', 'attempt_id': '3' * 32, 'state': 'completed'},
+        {'event': 'site-revoked', 'count': 1}]
+    for value in values:
+        audit_log.append({'event': 'web-authorization', 'authorization': {'binding_digest': 'b' * 64, **value}})
+
+
+def test_complete_legacy_effects_are_previewed_without_promoting_or_resetting(case):
+    completed_legacy_site(case)
+    before = snapshot(case[0].root)
+    evidence = inspect(case)
+    summary = recovery.public_summary(evidence)
+    assert summary['technicalEffectAttempts'] == 1 and summary['verifiedAttempts'] == 0
+    assert summary['unknownScopeBindings'] == 1
+    assert summary['reconciliationRequired'] is True
+    assert summary['historyPolicy'] == 'reconcile-v2'
+    assert 'Technically completed effects requiring owner reconciliation: 1' in summary['reviewText']
+    assert 'Recorded verified attempts: 0' in summary['reviewText']
+    assert 'Unknown historical scope bindings: 1' in summary['reviewText']
+    assert len(evidence.history_inventory) == 1
+    assert 'auditSession' not in json.dumps(summary)
+    assert snapshot(case[0].root) == before
+    assert not case[0].state_path.exists()
+
+
+def test_legacy_inventory_and_basis_are_bound_to_receipt_and_private_backup(case):
+    completed_legacy_site(case)
+    original = case[1].read_bytes()
+    result = commit(case)
+    assert result['state'] == 'ready' and result['historyBasis'] == 'owner-reconciled-legacy-history'
+    receipt = json.loads((case[0].root / ('recovery-' + 'd' * 32 + '.json')).read_text())['receipt']
+    assert receipt['kind'] == 'legacy-key-only-recovery-receipt-v2'
+    assert receipt['history_summary']['technicalEffectAttempts'] == 1
+    backup = json.loads((case[0].root.parent / 'backups' / ('d' * 32) / 'evidence.json').read_text())
+    assert receipt['inventory_digest'] == recovery.hashlib.sha256(recovery.canonical(backup['historyInventory'])).hexdigest()
+    assert backup['historyInventory'][0]['attempts'][0]['state'] == 'completed'
+    assert case[1].read_bytes().startswith(original)
+
+
+def test_v1_receipt_cannot_acquire_amended_history_authority_on_restart(case, monkeypatch):
+    completed_legacy_site(case)
+    original = storage.Journal.append
+    monkeypatch.setattr(storage.Journal, 'append', lambda *a: (_ for _ in ()).throw(OSError('audit')))
+    assert commit(case)['state'] == 'committed-unverified'
+    monkeypatch.setattr(storage.Journal, 'append', original)
+    journal = storage.Journal.existing(case[0].root)
+    path = case[0].root / ('recovery-' + 'd' * 32 + '.json')
+    receipt = json.loads(path.read_text())['receipt']
+    receipt.update(kind='legacy-key-only-recovery-receipt-v1', historyBasis='owner-reviewed')
+    receipt.pop('inventory_digest', None)
+    receipt.pop('history_summary', None)
+    path.write_bytes(recovery.canonical({'receipt': receipt, 'mac': journal._mac(receipt)}))
+    with pytest.raises(ScopeError):
+        recovery.inspect_interrupted_recovery(case[0].root, 'd' * 32, audit_path=case[1],
+            scope=WEB_SCOPE, check_idle=lambda: True)
+    assert journal._load()['pending']
+
+
+def test_interrupted_reconciliation_requires_same_history_inventory(case, monkeypatch):
+    completed_legacy_site(case)
+    original = storage.Journal.append
+    monkeypatch.setattr(storage.Journal, 'append', lambda *a: (_ for _ in ()).throw(OSError('audit')))
+    assert commit(case)['state'] == 'committed-unverified'
+    monkeypatch.setattr(storage.Journal, 'append', original)
+    audit_log.append({'event': 'web-authorization', 'authorization': {
+        'event': 'site-requested', 'binding_digest': 'e' * 64, 'request_id': 'f' * 32}})
+    with pytest.raises(ScopeError):
+        recovery.inspect_interrupted_recovery(case[0].root, 'd' * 32, audit_path=case[1],
+            scope=WEB_SCOPE, check_idle=lambda: True)
+
+
+def test_old_receipt_with_original_empty_history_still_uses_strict_basis(case, monkeypatch):
+    original = storage.Journal.append
+    monkeypatch.setattr(storage.Journal, 'append', lambda *a: (_ for _ in ()).throw(OSError('audit')))
+    assert commit(case)['state'] == 'committed-unverified'
+    monkeypatch.setattr(storage.Journal, 'append', original)
+    journal = storage.Journal.existing(case[0].root)
+    path = case[0].root / ('recovery-' + 'd' * 32 + '.json')
+    receipt = json.loads(path.read_text())['receipt']
+    receipt.update(kind='legacy-key-only-recovery-receipt-v1', historyBasis='owner-reviewed')
+    receipt.pop('inventory_digest', None)
+    receipt.pop('history_summary', None)
+    path.write_bytes(recovery.canonical({'receipt': receipt, 'mac': journal._mac(receipt)}))
+    evidence = recovery.inspect_interrupted_recovery(case[0].root, 'd' * 32, audit_path=case[1],
+        scope=WEB_SCOPE, check_idle=lambda: True)
+    assert recovery.finalize_recovery_v2(evidence, recovery_id='d' * 32,
+        before_publish=lambda: None)['historyBasis'] == 'owner-reviewed'
 
 
 def test_unexplained_historical_binding_blocks_owner_override(case):
@@ -155,6 +259,14 @@ def test_unrelated_append_is_tolerated_but_web_activity_is_stale(case):
         recovery.recheck_legacy_evidence(evidence, audit_path=case[1], scope=WEB_SCOPE, check_idle=lambda: True)
 
 
+def test_unknown_recovery_prefixed_event_cannot_hide_new_web_activity(case):
+    evidence = inspect(case)
+    audit_log.append({'event': 'web-authorization', 'authorization': {
+        'event': 'legacy-recovery-unknown-effect', 'binding_digest': 'b' * 64}})
+    with pytest.raises(ScopeError, match='recovery-stale'):
+        recovery.recheck_legacy_evidence(evidence, audit_path=case[1], scope=WEB_SCOPE, check_idle=lambda: True)
+
+
 @pytest.mark.parametrize('change', ['key', 'scope', 'ledger', 'destination'])
 def test_changed_review_inputs_require_new_preview(case, change):
     audit_log.append({'event': 'synthetic-evidence'})
@@ -184,7 +296,7 @@ def test_owner_reviewed_commit_preserves_key_and_publishes_standard_v2(case):
     backup = case[0].root.parent / 'backups' / ('d' * 32)
     assert (backup / 'integrity.key').read_bytes() == key
     receipt = json.loads((case[0].root / ('recovery-' + 'd' * 32 + '.json')).read_text())
-    assert receipt['receipt']['kind'] == 'legacy-key-only-recovery-receipt-v1'
+    assert receipt['receipt']['kind'] == 'legacy-key-only-recovery-receipt-v2'
     assert receipt['receipt']['phase'] == 'finalization-intent'
     assert 'nonce' not in json.dumps(receipt)
     with pytest.raises(ScopeError, match='audit-incomplete'):

@@ -40,7 +40,7 @@ binding, or loss of the covering lease also blocks further operations.
 
 ## Legacy Key-Only Recovery
 
-RemoteX 0.7.1 provides `remotex_web_authorization_recovery` for the ambiguous
+RemoteX 0.7.1+ provides `remotex_web_authorization_recovery` for the ambiguous
 legacy layout: a valid 32-byte integrity key but no recovery envelope. A missing
 envelope cannot prove that no write occurred. Normal login and protocol upgrade
 stay blocked; never delete the key, fabricate an empty file or switch state
@@ -49,10 +49,17 @@ directories to bypass the gate.
 1. Call with `confirm:false` and no ID for a read-only preview. This does not
    adjust recovery permissions or create files. Normal tool invocation audit
    metadata is still recorded.
-2. Inspect the classification, all configured scopes, historical-binding count
-   and uncertainty. Unexplained historical profiles/bindings, unresolved writes,
-   broken evidence, invalid keys and active/unknown web sessions block recovery.
-   Synthetic history is not production proof.
+2. Inspect the classification, configured scopes, unknown historical scopes,
+   verification/technical-completion counts and uncertainty. In 0.7.2, fully
+   paired history whose grants are closed or provably expired can reach owner
+   reconciliation even when historical origins/accounts cannot be reconstructed.
+   Configured scopes do not explain old bindings. Technical `completed` is not
+   business verification, and unknown history must not be labeled synthetic.
+   Orphan dispatches, unknown outcomes, broken evidence, invalid keys and
+   active/unknown lifecycle remain blocked without an override.
+   Legacy forwarded initialization/authentication summaries lack unique request
+   identities; cleanup or terminal counters cannot prove their outcomes. Such
+   history stays blocked. Document closure must match its recorded generation.
 3. For an eligible preview, pass its opaque `recovery_id` and `confirm:true` to
    request one **RemoteX - Legacy Recovery** window. This argument grants nothing.
    The window has one initially unchecked owner statement and **Recover Legacy
@@ -60,7 +67,7 @@ directories to bypass the gate.
    reconciled. Otherwise cancel. No credentials are requested.
 4. The original review lasts at most 180 seconds; repeated requests do not
    restart it. A private native decision preserves the original key, saves a
-   protected local backup and owner-reviewed receipt, and publishes standard v2
+   protected local backup and owner-reconciled receipt, and publishes standard v2
    without replacing a concurrently appearing envelope. A temporary deny-only
    marker fences web writers until authenticated finalization.
 5. Read status with `confirm:false` and the same ID. Recovery success is `ready`,
@@ -73,6 +80,14 @@ only an authenticated interrupted recovery intent; finalizing its exact marker
 requires a fresh native review. Missing receipts, ambiguous ownership or other
 pending entries remain blocked. Later legitimate reservations are never cleared.
 The receipt is evidence, not reusable approval; v2 is never rolled back.
+
+New recovery receipts bind the complete private inventory, its digest, category
+counts and the explicit `owner-reconciled-legacy-history` basis. All original
+audit records remain unchanged, including any old synthetic contamination.
+The owner accepts missing-history uncertainty only after reconciling prior
+effects; the tool does not prove those effects or replay any operation. Cancel
+if that statement cannot be made. Older receipts retain their original strict
+policy and cannot acquire the new exception during interrupted finalization.
 
 Recovery makes no remote connection, reads no login credential, grants no queue
 lease and stops no process. It cannot repair the host browser interface. A

@@ -124,6 +124,47 @@ def test_actual_069_key_only_layout_requires_separate_recovery_and_is_not_reset(
         assert before=={p.name:p.read_bytes() for p in root.iterdir()}
 
 
+@pytest.mark.parametrize('confirm', [False, True])
+@pytest.mark.parametrize('key_size,code', [
+    (32, 'recovery-state-missing'), (1, 'recovery-key-invalid'), (0, 'recovery-key-invalid')])
+def test_mcp_upgrade_key_only_reports_specific_recovery_path_without_mutation(root, monkeypatch, confirm, key_size, code):
+    import remotex_mcp
+    legacy = legacy_type()(root)
+    if key_size != 32:
+        legacy.key_path.write_bytes(b'x' * key_size)
+    before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in root.iterdir()}
+    monkeypatch.setattr(web_adapter, 'state_root', lambda: root.parent)
+    monkeypatch.setenv('REMOTEX_AUDIT_FILE', str(root.parent / 'invocation-audit.jsonl'))
+    monkeypatch.setattr(web_adapter, '_upgrade_web_idle', lambda: pytest.fail('ineligible upgrade inspected lifecycle'))
+    response = remotex_mcp.handle_request({'jsonrpc': '2.0', 'id': 71, 'method': 'tools/call',
+        'params': {'name': 'remotex_web_authorization_upgrade', 'arguments': {'confirm': confirm}}})
+    result = response['result']
+    assert result['isError'] is True
+    message = result['content'][0]['text']
+    assert code in message and 'Unexpected ScopeError' not in message
+    if key_size == 32:
+        assert 'remotex_web_authorization_recovery' in message and 'confirm=false' in message
+    assert before == {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in root.iterdir()}
+    assert not legacy.state_path.exists()
+
+
+def test_mcp_upgrade_corrupt_envelope_is_not_misclassified_as_missing_state(root, monkeypatch):
+    import remotex_mcp
+    journal = storage.Journal(root)
+    journal.state_path.write_bytes(b'{}')
+    before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in root.iterdir()}
+    monkeypatch.setattr(web_adapter, 'state_root', lambda: root.parent)
+    monkeypatch.setenv('REMOTEX_AUDIT_FILE', str(root.parent / 'invocation-audit.jsonl'))
+    response = remotex_mcp.handle_request({'jsonrpc': '2.0', 'id': 72, 'method': 'tools/call',
+        'params': {'name': 'remotex_web_authorization_upgrade', 'arguments': {'confirm': True}}})
+    result = response['result']
+    assert result['isError'] is True
+    message = result['content'][0]['text']
+    assert 'audit-incomplete' in message and 'Unexpected ScopeError' not in message
+    assert 'recovery-state-missing' not in message
+    assert before == {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in root.iterdir()}
+
+
 def test_legacy_writer_racing_inside_commit_recheck_blocks_upgrade(root):
     current=storage.Journal(root);old=legacy_type()(root);calls=[]
     def idle():

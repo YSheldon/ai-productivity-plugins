@@ -110,7 +110,7 @@ class ApprovalPrompt:
                 probe = subprocess.run([credential_store._powershell_path(), '-NoLogo', '-NoProfile', '-STA',
                     '-File', str(script), '-DescribeProtocol'], stdin=subprocess.DEVNULL, capture_output=True,
                     timeout=10, env=credential_store._setup_environment(), creationflags=subprocess.CREATE_NO_WINDOW)
-                if probe.returncode != 0 or len(probe.stdout) > 2048 or json.loads(probe.stdout) != {'legacy_recovery': 1, 'review_seconds': 180}:
+                if probe.returncode != 0 or len(probe.stdout) > 2048 or json.loads(probe.stdout) != {'legacy_recovery': 2, 'review_seconds': 180}:
                     raise ScopeError('approval-ui-unavailable')
             process=subprocess.Popen([credential_store._powershell_path(),'-NoLogo','-NoProfile','-STA',
                 '-File',str(script)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,

@@ -19,6 +19,8 @@ def manifest():
         'request_digest': 'c' * 64, 'wait_seconds': 180, 'mode': 'initialize',
         'target': 'Synthetic local recovery store', 'summary': {
             'scopeCount': 1, 'completedAttempts': 0, 'historicalBindings': 0,
+            'historyPolicy': 'reconcile-v2',
+            'reviewText': 'Recorded verified attempts: 0\nUnknown historical scope bindings: 0',
             'scopes': [{'profile': 'lab', 'origin': 'https://console.example', 'account': 'operator'}],
             'uncertainty': 'Synthetic test. Missing data cannot prove an empty history.'}}
 
@@ -59,6 +61,15 @@ def test_recovery_helper_launch_failure_cannot_recover(monkeypatch):
         approval.RecoveryPrompt.start(manifest(), on_decision=lambda _: pytest.fail('decision'), on_revoke=lambda: None, on_cancel=lambda: None)
 
 
+def test_old_recovery_helper_cannot_present_amended_history_review(monkeypatch):
+    monkeypatch.setattr(approval.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=b'{"legacy_recovery":1,"review_seconds":180}'))
+    monkeypatch.setattr(approval.subprocess, 'Popen', lambda *a, **k: pytest.fail('Old helper started without the amended summary'))
+    with pytest.raises(ScopeError, match='approval-ui-unavailable'):
+        approval.RecoveryPrompt.start(manifest(), on_decision=lambda _: pytest.fail('decision'),
+            on_revoke=lambda: None, on_cancel=lambda: None)
+
+
 @pytest.mark.skipif(os.name != 'nt' or os.environ.get('REMOTEX_TEST_NATIVE_APPROVAL') != '1', reason='Opt-in native form EOF test')
 def test_native_stdin_eof_closes_without_decision():
     result = subprocess.run([approval.credential_store._powershell_path(), '-NoLogo', '-NoProfile', '-STA',
@@ -75,7 +86,7 @@ def test_actual_recovery_helper_descriptor():
         '-File', str(PLUGIN / 'scripts/web_recovery_approval.ps1'), '-DescribeProtocol'],
         capture_output=True, timeout=15, env=approval.credential_store._setup_environment())
     assert result.returncode == 0, result.stderr.decode(errors='replace')
-    assert json.loads(result.stdout) == {'legacy_recovery': 1, 'review_seconds': 180}
+    assert json.loads(result.stdout) == {'legacy_recovery': 2, 'review_seconds': 180}
 
 
 @pytest.mark.skipif(os.name != 'nt' or os.environ.get('REMOTEX_TEST_NATIVE_APPROVAL') != '1', reason='Opt-in native expiry test, no decision')

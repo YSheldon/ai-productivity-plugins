@@ -66,8 +66,13 @@ On `recovery-state-missing`, use `remotex_web_authorization_recovery` (0.7.1+)
 with `confirm:false` for a local read-only preview, not the ordinary upgrade.
 Never infer empty history from a missing envelope, delete/rotate the key, clear
 records, change the state directory or automatically retry a business write.
-Unknown writes, unexplained scopes, corrupt evidence and active/unknown web
-sessions block recovery. An eligible preview can request one native owner review
+Unknown writes, corrupt evidence and active/unknown web sessions block recovery.
+In 0.7.2+, fully paired, closed or expired legacy history may reach explicit owner
+reconciliation even when historical origins/accounts are unknown. Show those
+counts and technically completed effects; never infer old scopes from current
+profiles, label unknown history synthetic, or promote `completed` to business
+verification. Older receipts retain their original strict scope policy.
+An eligible preview can request one native owner review
 with its `recovery_id` and `confirm:true`; this only opens the form, never approves.
 The owner must reconcile all prior effects and explicitly accept uncertainty in
 the local window within the original 180 seconds. Chat cannot replace that

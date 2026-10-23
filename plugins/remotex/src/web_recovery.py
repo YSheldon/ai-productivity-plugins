@@ -23,6 +23,7 @@ from web_authorization import ScopeError, canonical
 from web_authorization import MAX_NATIVE_REVIEW_SECONDS
 from web_authorization_store import Journal, SITE_SESSION_CONFLICT
 import vm_queue
+import web_recovery_history
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,8 @@ class LegacyEvidence:
     scope_digest: str
     summary: dict[str, Any]
     root_identity: tuple[int, int] = field(repr=False)
+    history_inventory: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    history_policy: Literal['strict-v1', 'reconcile-v2'] = 'reconcile-v2'
 
 
 def _local(path):
@@ -108,13 +111,13 @@ def _relevant(row):
         value = row.get('authorization')
         if not isinstance(value, dict) or not isinstance(value.get('event'), str):
             raise ScopeError('recovery-evidence-invalid')
-        return not value['event'].startswith('legacy-recovery-')
+        return value['event'] != 'legacy-recovery-owner-reviewed'
     tool = row.get('tool', '')
     return isinstance(tool, str) and tool.startswith('remotex_web_') and tool not in {
         'remotex_web_authorization_recovery', 'remotex_web_authorization_upgrade'}
 
 
-def _observations(records, scope):
+def _strict_observations(records, scope):
     profiles = {hashlib.sha256(row['profile'].encode()).hexdigest() for row in scope}
     operations, attempts, completed, bindings = {}, {}, 0, set()
     for row in records:
@@ -169,6 +172,12 @@ def _observations(records, scope):
     return {'completedAttempts': completed, 'historicalBindings': len(bindings), 'scopeCount': len(scope)}
 
 
+def _observations(records, scope):
+    summary, inventory = web_recovery_history.observe(records, scope)
+    summary['reconciliationRequired'] = bool(inventory)
+    return summary, inventory
+
+
 def _idle(check_idle):
     try:
         if check_idle() is True: return
@@ -183,17 +192,19 @@ def inspect_legacy_state(root, *, audit_path, scope, check_idle):
         scopes = _scope(scope)
         _idle(check_idle)
         raw, records, identity = _ledger(audit_path)
-        summary = _observations(records, scopes)
+        summary, inventory = _observations(records, scopes)
         summary.update(classification='key-only-ambiguous', historyBasis='owner-review-required',
             missingEnvelope=True, scopes=scopes,
-            uncertainty='Missing recovery data cannot prove an empty history. Historical bindings may include synthetic tests; the owner must reconcile all prior effects for this shared store.')
+            uncertainty='Missing recovery data cannot prove an empty history. Historical origins/accounts are unknown and are not inferred from configured scopes. Completed means technical completion, not business verification. Do not label records synthetic without evidence. The owner must reconcile all prior effects for this shared store.')
         return LegacyEvidence('initialize', root, key, identity, len(raw), hashlib.sha256(raw).hexdigest(),
-            hashlib.sha256(canonical(scopes)).hexdigest(), summary, _identity(root)[:2])
+            hashlib.sha256(canonical(scopes)).hexdigest(), summary, _identity(root)[:2], inventory)
     except OSError as exc:
         raise ScopeError('recovery-evidence-invalid') from exc
 
 
 def recheck_legacy_evidence(evidence, *, audit_path, scope, check_idle):
+    if evidence.history_policy == 'reconcile-v2' and hashlib.sha256(canonical(evidence.history_inventory)).hexdigest() != evidence.summary.get('inventoryDigest'):
+        raise ScopeError('recovery-stale')
     _local(evidence.root)
     if _identity(evidence.root)[:2] != evidence.root_identity or _identity(_local(evidence.root / 'integrity.key')) != evidence.key_identity:
         raise ScopeError('recovery-stale')
@@ -212,10 +223,35 @@ def recheck_legacy_evidence(evidence, *, audit_path, scope, check_idle):
 
 
 def public_summary(evidence):
-    return copy.deepcopy(evidence.summary)
+    value = copy.deepcopy(evidence.summary)
+    value['historyPolicy'] = evidence.history_policy
+    if evidence.history_policy == 'reconcile-v2':
+        labels = [('Recorded verified attempts', 'verifiedAttempts'),
+            ('Technically completed page reads', 'technicalReadAttempts'),
+            ('Technically completed effects requiring owner reconciliation', 'technicalEffectAttempts'),
+            ('Failed before dispatch', 'failedBeforeDispatchAttempts'),
+            ('Unknown historical scope bindings', 'unknownScopeBindings'),
+            ('Recorded MCP write operations', 'mcpWriteOperations'),
+            ('Ungranted requests (not executed)', 'ungrantedRequests'),
+            ('Unresolved dispatched attempts', 'unresolvedAttempts')]
+        value['reviewText'] = '\r\n'.join(label + ': ' + str(value[key]) for label, key in labels)
+        value['reviewText'] += '\r\nHistory first observed (UTC): ' + str(value['historyFirstObserved'] or 'Not recorded')
+        value['reviewText'] += '\r\nHistory last observed (UTC): ' + str(value['historyLastObserved'] or 'Not recorded')
+        value['reviewText'] += '\r\nInventory digest: ' + value['inventoryDigest']
+    else:
+        value['reviewText'] = 'Original strict recovery receipt. No amended history exception is applied.'
+    return value
 
 
-RECEIPT_KIND = 'legacy-key-only-recovery-receipt-v1'
+LEGACY_RECEIPT_KIND = 'legacy-key-only-recovery-receipt-v1'
+RECEIPT_KIND = 'legacy-key-only-recovery-receipt-v2'
+_HISTORY_COUNTS = frozenset({'completedAttempts', 'verifiedAttempts', 'failedBeforeDispatchAttempts',
+    'technicalReadAttempts', 'technicalEffectAttempts', 'historicalBindings', 'unknownScopeBindings',
+    'historicalProfileHashes', 'mcpWriteOperations', 'ungrantedRequests', 'unresolvedAttempts'})
+
+
+def _history_counts(summary):
+    return {name: summary[name] for name in sorted(_HISTORY_COUNTS)}
 
 
 def _recovery_id(value):
@@ -267,10 +303,20 @@ def _read_receipt(journal, identity):
         envelope = json.loads(path.read_text(encoding='utf-8'))
         if not isinstance(envelope, dict) or set(envelope) != {'receipt', 'mac'}: raise ValueError()
         value = envelope['receipt']
-        if (not isinstance(value, dict) or set(value) != {'kind', 'recovery_id', 'phase', 'historyBasis',
-                'root_identity', 'key_identity', 'ledger_identity', 'ledger_size', 'ledger_checkpoint', 'scope_digest'} or
-                value['kind'] != RECEIPT_KIND or value['recovery_id'] != identity or
-                value['phase'] not in {'prepared', 'finalization-intent'} or value['historyBasis'] != 'owner-reviewed' or
+        fields = {'kind', 'recovery_id', 'phase', 'historyBasis', 'root_identity', 'key_identity',
+            'ledger_identity', 'ledger_size', 'ledger_checkpoint', 'scope_digest'}
+        if not isinstance(value, dict): raise ValueError()
+        amended = value.get('kind') == RECEIPT_KIND
+        if amended:
+            fields |= {'inventory_digest', 'history_summary'}
+            counts = value.get('history_summary')
+            if (not isinstance(value.get('inventory_digest'), str) or re.fullmatch('[a-f0-9]{64}', value['inventory_digest']) is None or
+                    not isinstance(counts, dict) or set(counts) != _HISTORY_COUNTS or
+                    any(type(count) is not int or count < 0 for count in counts.values()) or counts['unresolvedAttempts'] != 0):
+                raise ValueError()
+        if (set(value) != fields or value.get('kind') not in {LEGACY_RECEIPT_KIND, RECEIPT_KIND} or value['recovery_id'] != identity or
+                value['phase'] not in {'prepared', 'finalization-intent'} or
+                value['historyBasis'] != ('owner-reconciled-legacy-history' if amended else 'owner-reviewed') or
                 value['root_identity'] != list(_identity(journal.root)[:2]) or
                 value['key_identity'] != list(_identity(journal.key_path)) or
                 not isinstance(value['ledger_identity'], list) or len(value['ledger_identity']) != 2 or
@@ -298,7 +344,7 @@ def read_recovery_status(root, recovery_id):
     if marker is None and not ready: raise ScopeError('recovery-evidence-invalid')
     return {'state': 'ready' if ready else 'committed-unverified', 'ready': ready,
         'committed': True, 'fenceVerified': marker is not None, 'protocolVersion': 2,
-        'historyBasis': 'owner-reviewed'}
+        'historyBasis': receipt['historyBasis']}
 
 
 def inspect_interrupted_recovery(root, recovery_id, *, audit_path, scope, check_idle):
@@ -315,14 +361,22 @@ def inspect_interrupted_recovery(root, recovery_id, *, audit_path, scope, check_
     if (list(identity) != receipt['ledger_identity'] or len(raw) < receipt['ledger_size'] or
             hashlib.sha256(raw[:receipt['ledger_size']]).hexdigest() != receipt['ledger_checkpoint']):
         raise ScopeError('recovery-stale')
-    summary = _observations(records, scopes)
+    amended = receipt['kind'] == RECEIPT_KIND
+    if amended:
+        summary, inventory = _observations(records, scopes)
+        if (summary['inventoryDigest'] != receipt['inventory_digest'] or
+                _history_counts(summary) != receipt['history_summary']):
+            raise ScopeError('recovery-stale')
+    else:
+        summary, inventory = _strict_observations(records, scopes), []
     scope_digest = hashlib.sha256(canonical(scopes)).hexdigest()
     if scope_digest != receipt['scope_digest']: raise ScopeError('recovery-stale')
     summary.update(classification='interrupted-owner-reviewed-recovery', historyBasis='owner-review-required',
         missingEnvelope=False, scopes=scopes,
         uncertainty='Finalize only this authenticated technical recovery marker. A fresh owner review is required; the receipt is not approval.')
     return LegacyEvidence('finalize', journal.root, _identity(journal.key_path), identity, len(raw),
-        hashlib.sha256(raw).hexdigest(), scope_digest, summary, _identity(journal.root)[:2])
+        hashlib.sha256(raw).hexdigest(), scope_digest, summary, _identity(journal.root)[:2], inventory,
+        'reconcile-v2' if amended else 'strict-v1')
 
 
 def _recheck(evidence):
@@ -339,7 +393,7 @@ def _finish_locked(journal, evidence, recovery_id, before_publish):
     before_publish()
     _recheck(replace(evidence, mode='finalize'))
     journal.append({'event': 'legacy-recovery-owner-reviewed', 'request_id': recovery_id,
-        'state': 'finalization-intent', 'reason': 'owner-reviewed', 'generation': 2})
+        'state': 'finalization-intent', 'reason': receipt['historyBasis'], 'generation': 2})
     receipt['phase'] = 'finalization-intent'
     _save_receipt(journal, receipt)
     # Last required durable transition: no recursive resolve or subsequent receipt write.
@@ -377,11 +431,13 @@ def recover_key_only_v2(evidence, *, recovery_id, before_publish, backup_root):
         secure_paths.ensure_private_directory(backup)
         _private_write(backup / 'integrity.key', journal.key)
         _private_write(backup / 'evidence.json', canonical({'missingEnvelope': True,
-            'historyBasis': 'owner-reviewed', 'summary': evidence.summary,
+            'historyBasis': 'owner-reconciled-legacy-history', 'summary': evidence.summary,
+            'historyInventory': evidence.history_inventory,
             'ledger_checkpoint': evidence.ledger_checkpoint, 'lockMetadata': list(_identity(journal.lock_path))}))
         secure_paths.ensure_private_directory(journal.root)
         receipt = {'kind': RECEIPT_KIND, 'recovery_id': recovery_id, 'phase': 'prepared',
-            'historyBasis': 'owner-reviewed', 'root_identity': list(evidence.root_identity),
+            'historyBasis': 'owner-reconciled-legacy-history', 'root_identity': list(evidence.root_identity),
+            'inventory_digest': evidence.summary['inventoryDigest'], 'history_summary': _history_counts(evidence.summary),
             'key_identity': list(evidence.key_identity), 'ledger_checkpoint': evidence.ledger_checkpoint,
             'ledger_identity': list(evidence.ledger_identity), 'ledger_size': evidence.ledger_size,
             'scope_digest': evidence.scope_digest}

@@ -17,6 +17,7 @@ import ssh_vnext
 
 SCHEMA = "RemoteXHostKeys/v1"
 COMPATIBILITY_KEY_TYPES = "rsa,ecdsa,ed25519"
+_WINDOWS_KEYSCAN_MAX_SECONDS = 60
 _ALGORITHM_SCAN_ERROR = re.compile(
     r"(?:no matching .*host key|host key algorithm|(?:unknown|unsupported) key type)",
     re.IGNORECASE,
@@ -133,11 +134,13 @@ def _git_keyscan() -> str | None:
 
 def _scan(cfg: dict[str, Any], timeout: int) -> tuple[list[dict[str, str]], list[str]]:
     executable = core.find_executable("ssh-keyscan")
+    # Some Windows OpenSSH builds return no keys with a large -T value.
+    scan_timeout = min(timeout, _WINDOWS_KEYSCAN_MAX_SECONDS) if os.name == "nt" else timeout
 
     def run(key_types: str | None) -> dict[str, Any]:
         return execution.run_process(
-            _scan_argv(executable, cfg, timeout, key_types),
-            timeout=timeout + 2,
+            _scan_argv(executable, cfg, scan_timeout, key_types),
+            timeout=scan_timeout + 2,
             max_stdout_bytes=1024 * 1024,
             max_stderr_bytes=1024 * 1024,
             output_encoding="utf-8",

@@ -19,6 +19,11 @@ Named profiles for remote operations, local credential management, and evidence-
 
 ## Recent Versions
 
+Version `0.7.3` limits Windows host-key discovery to `ssh-keyscan -T 60` or
+less, with the existing two-second process allowance per attempt. Compatibility
+fallback uses the same limit. The requested SSH operation timeout and strict
+host-key verification stay unchanged.
+
 Version `0.7.2` repairs the legacy audit admission path. Fully paired, closed or
 expired history can reach one native **owner reconciliation** review even when
 historical site/account identities cannot be reconstructed. The form separates

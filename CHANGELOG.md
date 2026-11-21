@@ -14,6 +14,11 @@ initial changelog summarizes recent merged changes, not the complete Git history
 - Added a manifest-derived plugin catalog, installation/upgrade guide, and synthetic RemoteX visuals.
 - Added documentation consistency checks without changing plugin runtime behavior.
 
+## RemoteX 0.7.3
+
+- Fixed Windows OpenSSH compatibility when long SSH operation timeouts are passed to host-key discovery. Each scan attempt, including compatibility fallback, uses at most 60 seconds for `ssh-keyscan -T` and a 62-second process timeout.
+- Kept requested SSH execution timeouts, non-Windows scan behavior, fingerprint verification, and queue rules unchanged. Empty, timed-out, or mismatched key results still block execution.
+
 ## RemoteX 0.7.2
 
 - Fixed ordinary upgrade diagnostics for valid-key/missing-envelope state without creating or resetting recovery data. Invalid keys and corrupt envelopes remain distinct failures.
